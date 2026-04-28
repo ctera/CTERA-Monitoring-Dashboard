@@ -4586,6 +4586,7 @@ async function runAISummary(){
       const label = document.getElementById('environmentContextLabel');
       if (!select) return;
       const current = effectiveEnvironmentContext();
+      const queryEnv = currentQueryEnvironmentId();
       select.innerHTML = '';
       const adminOpt = document.createElement('option');
       adminOpt.value = 'admin';
@@ -4600,6 +4601,10 @@ async function runAISummary(){
       const hasCurrent = Array.from(select.options).some(opt => opt.value === current);
       const nextValue = hasCurrent ? current : 'admin';
       if (!hasCurrent || current !== nextValue) saveEnvironmentContext(nextValue);
+      if (!queryEnv && nextValue !== 'admin') {
+        navigateToEnvironment(nextValue);
+        return;
+      }
       select.value = nextValue;
       const selected = (environmentConfig.items || []).find(item => String(item.id) === String(nextValue));
       if (label) label.textContent = selected ? selected.name : 'Administration';
