@@ -135,7 +135,8 @@ DEFAULT_CONF = {
     "portal": {
         "servers_csv": _data_path("servers.csv"),
         "storage_csv": _data_path("storage.csv"),
-        "tasks_csv": _data_path("tasks.csv")
+        "tasks_csv": _data_path("tasks.csv"),
+        "licenses_csv": os.path.join(DEFAULT_DB_DIR, "licenses.csv")
     },
     "postgres": {
         "base_dir": DEFAULT_DB_DIR,
@@ -186,6 +187,7 @@ def load_conf():
             "servers_csv": os.path.join(data_dir, "servers.csv"),
             "storage_csv": os.path.join(data_dir, "storage.csv"),
             "tasks_csv": os.path.join(data_dir, "tasks.csv"),
+            "licenses_csv": os.path.join(db_dir, "licenses.csv"),
         }
         base["postgres"] = {**base.get("postgres", {}), "base_dir": db_dir}
         base["servers_health"] = {
@@ -197,7 +199,7 @@ def load_conf():
     base["csv_path"] = _abspath_from_app(base.get("csv_path"))
     base["tenants_csv"] = _abspath_from_app(base.get("tenants_csv"))
     portal = base.get("portal", {})
-    for key in ("servers_csv", "storage_csv", "tasks_csv"):
+    for key in ("servers_csv", "storage_csv", "tasks_csv", "licenses_csv"):
         portal[key] = _abspath_from_app(portal.get(key))
     base["portal"] = portal
     # fix postgres base dir
@@ -238,6 +240,7 @@ def load_conf_for_environment(env_id=None):
         "servers_csv": os.path.join(data_dir, "servers.csv"),
         "storage_csv": os.path.join(data_dir, "storage.csv"),
         "tasks_csv": os.path.join(data_dir, "tasks.csv"),
+        "licenses_csv": os.path.join(db_dir, "licenses.csv"),
     }
     cfg["postgres"] = {**(cfg.get("postgres") or {}), "base_dir": db_dir}
     cfg["servers_health"] = {
@@ -428,7 +431,7 @@ def resolve_brand(cfg):
             mime = "image/png" if ext == ".png" else ("image/svg+xml" if ext == ".svg" else "image/jpeg")
         with open(path, "rb") as f:
             logo_data_uri = f"data:{mime};base64,{base64.b64encode(f.read()).decode('ascii')}"
-    return {"title": title, "logo": logo_data_uri, "logo_height": logo_height}
+    return {"title": title, "logo": logo_data_uri, "icon": logo_data_uri, "logo_height": logo_height}
 
 
 # ---------------- CSV helpers ----------------
@@ -2906,6 +2909,7 @@ HTML = """
 <head>
   <meta charset="utf-8">
   <title>{{ brand.title }}</title>
+  {% if brand.icon %}<link rel="icon" type="image/png" href="{{ brand.icon }}">{% endif %}
   {% if refresh_seconds and refresh_seconds|int > 0 %}
   <meta http-equiv="refresh" content="{{ refresh_seconds|int }}">
   {% endif %}
@@ -3187,8 +3191,8 @@ HTML = """
 
     /* sub-tabs (for Postgres) */
     .subtabs { display:flex; gap:8px; margin: 8px 0 12px; flex-wrap: wrap; }
-    .subbtn, .healthsubbtn { padding:6px 10px; border:1px solid var(--border); border-bottom:none; border-top-left-radius:8px; border-top-right-radius:8px; background:#fff; color: var(--primary); cursor:pointer; position: relative; font-family:inherit; font-size:14px; font-weight:400; }
-    .subbtn.active, .healthsubbtn.active { border-color: var(--accent); color:#fff; background: var(--accent); }
+    .subbtn, .healthsubbtn, .portalsubbtn { padding:6px 10px; border:1px solid var(--border); border-bottom:none; border-top-left-radius:8px; border-top-right-radius:8px; background:#fff; color: var(--primary); cursor:pointer; position: relative; font-family:inherit; font-size:14px; font-weight:400; }
+    .subbtn.active, .healthsubbtn.active, .portalsubbtn.active { border-color: var(--accent); color:#fff; background: var(--accent); }
     .badge { position:absolute; top:-8px; right:-8px; background:#ec4899; color:#fff; font-size:12px; line-height:16px; padding:0 6px; border-radius: 999px; border:2px solid #fff; }
 
     .controls { display:flex; flex-wrap:wrap; gap:8px; align-items:center; margin-bottom: 8px; }
@@ -3458,6 +3462,22 @@ HTML = """
       const btn = document.querySelector('[data-sub="'+id+'"]');
       if (btn) btn.classList.add('active');
       savePgActive(id);
+    }
+
+    function savePortalActive(sub){
+      try{ localStorage.setItem('fd.portalActive', sub); }catch(e){}
+    }
+    function loadPortalActive(){
+      try{ return localStorage.getItem('fd.portalActive') || 'portal_overview'; }catch(e){ return 'portal_overview'; }
+    }
+    function showPortalTab(id){
+      document.querySelectorAll('.portalpane').forEach(p => p.style.display = 'none');
+      const pane = document.getElementById(id);
+      if (pane) pane.style.display = '';
+      document.querySelectorAll('.portalsubbtn').forEach(b => b.classList.remove('active'));
+      const btn = document.querySelector('[data-portal-sub="'+id+'"]');
+      if (btn) btn.classList.add('active');
+      savePortalActive(id);
     }
 
     function saveHealthActive(sub){
@@ -5163,6 +5183,7 @@ async function runAISummary(){
       if (!inAdmin && initialSection.startsWith('admin_')) initialTab = 'overview';
       renderEnvironmentSelector();
       showTab(initialTab);
+      if (document.getElementById('portal')) { showPortalTab(loadPortalActive()); }
       if (document.getElementById('pg')) { showPgTab(loadPgActive()); }
       if (document.getElementById('svrhlth')) { showHealthTab(loadHealthActive()); }
       hydrateLocalTimes();
@@ -6322,88 +6343,174 @@ async function runAISummary(){
       {% endfor %}
     </div>
 
-    <div class="controls">
-      <strong>Servers</strong>
-      <input id="q_servers" type="text" placeholder="Search servers…" oninput="filterTableByInput('serversTable','q_servers')" style="min-width:240px; margin-left:8px">
-      <div class="sub">File: <code>{{ portal_servers_src }}</code> &nbsp;•&nbsp; Updated: <span class="sub" data-local-time="{{ portal_servers_mtime }}">{{ portal_servers_mtime or '—' }}</span></div>
-    </div>
-    <div class="table-wrap" style="margin-bottom:12px">
-      <table id="serversTable">
-        <thead><tr>{% for h in servers_headers %}<th>{{ h }}</th>{% endfor %}</tr></thead>
-        <tbody>
-          {% for r in servers_rows %}
-          <tr>
-            {% for h in servers_headers %}
-              {% set cell = r.get(h, '') %}
-              {% set cls = style_server_cell(h, cell, r) %}
-              {% set sev = warn_server_cell(h, cell, r) %}
-              <td class="{{ cls }} {{ 'sev-critical' if sev == 'bad' else ('sev-warning' if sev == 'warn' else '') }}">
-                {% set key = h|string %}
-                {% if key == 'Connected' %}
-                  {% set b = (cell|string).lower() in ['true','1','yes','y','on'] %}
-                  <span class="pill {{ 'pill-ok' if b else 'pill-bad' }}">{{ 'Connected' if b else 'Disconnected' }}</span>
-                {% elif key == 'IsApplicationServer' and ((cell|string).lower() in ['true','1','yes','y','on']) %}
-                  <span class="pill pill-info">App</span>
-                {% elif key == 'IsMainDB' and ((cell|string).lower() in ['true','1','yes','y','on']) %}
-                  <span class="pill pill-info">MainDB</span>
-                {% else %}
-                  {{ display_cell(h, cell) }}
-                {% endif %}
-              </td>
-            {% endfor %}
-          </tr>
-          {% endfor %}
-        </tbody>
-      </table>
+    <div class="subtabs">
+      <button class="portalsubbtn" data-portal-sub="portal_overview" onclick="showPortalTab('portal_overview')">Overview</button>
+      <button class="portalsubbtn" data-portal-sub="portal_servers" onclick="showPortalTab('portal_servers')">Servers{% if c_servers.bad %}<span class="badge">{{ c_servers.bad }}</span>{% endif %}</button>
+      <button class="portalsubbtn" data-portal-sub="portal_storage" onclick="showPortalTab('portal_storage')">Storage Nodes{% if c_storage.bad %}<span class="badge">{{ c_storage.bad }}</span>{% endif %}</button>
+      <button class="portalsubbtn" data-portal-sub="portal_tasks" onclick="showPortalTab('portal_tasks')">Tasks{% if c_tasks.bad %}<span class="badge">{{ c_tasks.bad }}</span>{% endif %}</button>
+      <button class="portalsubbtn" data-portal-sub="portal_licenses" onclick="showPortalTab('portal_licenses')">Licenses{% if c_licenses.bad %}<span class="badge">{{ c_licenses.bad }}</span>{% endif %}</button>
     </div>
 
-    <div class="controls">
-      <strong>Storage Nodes</strong>
-      <input id="q_storage" type="text" placeholder="Search storage…" oninput="filterTableByInput('storageTable','q_storage')" style="min-width:240px; margin-left:8px">
-      <div class="sub">File: <code>{{ portal_storage_src }}</code> &nbsp;•&nbsp; Updated: <span class="sub" data-local-time="{{ portal_storage_mtime }}">{{ portal_storage_mtime or '—' }}</span></div>
-    </div>
-    <div class="table-wrap">
-      <table id="storageTable">
-        <thead><tr>{% for h in storage_headers %}<th>{{ display_header(h) }}</th>{% endfor %}</tr></thead>
-        <tbody>
-          {% for r in storage_rows %}
-          <tr>
-            {% for h in storage_headers %}
-              {% set cell = r.get(h, '') %}
-              {% set cls = style_storage_cell(h, cell, r) %}
-              {% set sev = warn_storage_cell(h, cell, r) %}
-              <td class="{{ cls }} {{ 'sev-critical' if sev == 'bad' else ('sev-warning' if sev == 'warn' else '') }}">{{ display_cell(h, cell) }}</td>
+    <div id="portal_overview" class="portalpane" style="display:none">
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>Section</th><th>Rows</th><th>Critical</th><th>Warning</th></tr></thead>
+          <tbody>
+            {% for card in portal_section_cards %}
+            <tr>
+              <td>{{ card.label }}</td>
+              <td>{{ card.rows }}</td>
+              <td>{{ card.bad }}</td>
+              <td>{{ card.warn }}</td>
+            </tr>
             {% endfor %}
-          </tr>
-          {% endfor %}
-        </tbody>
-      </table>
+          </tbody>
+        </table>
+      </div>
+      <div class="viz-grid two" style="margin-top:12px;">
+        <section class="viz-panel">
+          <h3>License Summary</h3>
+          <div class="headline-metrics">
+            <div class="headline-metric"><div class="metric-label">Rows</div><div class="metric-value">{{ licenses_rows|length }}</div></div>
+            <div class="headline-metric"><div class="metric-label">Valid</div><div class="metric-value ok">{{ valid_licenses }}</div></div>
+            <div class="headline-metric"><div class="metric-label">Expired</div><div class="metric-value {{ 'crit' if expired_licenses else '' }}">{{ expired_licenses }}</div></div>
+            <div class="headline-metric"><div class="metric-label">Portal Licenses</div><div class="metric-value">{{ portal_license_rows }}</div></div>
+          </div>
+        </section>
+      </div>
     </div>
 
-    <div class="controls" style="margin-top:12px">
-      <strong>Tasks</strong>
-      <input id="q_tasks" type="text" placeholder="Search tasks..." oninput="filterTableByInput('tasksTable','q_tasks')" style="min-width:240px; margin-left:8px">
-      <div class="sub">File: <code>{{ portal_tasks_src }}</code> &nbsp;•&nbsp; Updated: <span class="sub" data-local-time="{{ portal_tasks_mtime }}">{{ portal_tasks_mtime or '—' }}</span></div>
-    </div>
-    <div class="table-wrap">
-      <table id="tasksTable">
-        <thead><tr>{% for h in tasks_headers %}<th>{{ display_header(h) }}</th>{% endfor %}</tr></thead>
-        <tbody>
-          {% for r in tasks_rows %}
-          <tr>
-            {% for h in tasks_headers %}
-              {% set cell = r.get(h, '') %}
-              {% set cls = style_tasks_cell(h, cell, r) %}
-              {% set sev = warn_task_cell(h, cell, r) %}
-              <td class="{{ cls }} {{ 'sev-critical' if sev == 'bad' else ('sev-warning' if sev == 'warn' else '') }}">{{ display_cell(h, cell) }}</td>
+    <div id="portal_servers" class="portalpane" style="display:none">
+      <div class="controls">
+        <strong>Servers</strong>
+        <input id="q_servers" type="text" placeholder="Search servers?" oninput="filterTableByInput('serversTable','q_servers')" style="min-width:240px; margin-left:8px">
+        <div class="sub">File: <code>{{ portal_servers_src }}</code> &nbsp;?&nbsp; Updated: <span class="sub" data-local-time="{{ portal_servers_mtime }}">{{ portal_servers_mtime or '?' }}</span></div>
+      </div>
+      <div class="table-wrap" style="margin-bottom:12px">
+        <table id="serversTable">
+          <thead><tr>{% for h in servers_headers %}<th>{{ h }}</th>{% endfor %}</tr></thead>
+          <tbody>
+            {% for r in servers_rows %}
+            <tr>
+              {% for h in servers_headers %}
+                {% set cell = r.get(h, '') %}
+                {% set cls = style_server_cell(h, cell, r) %}
+                {% set sev = warn_server_cell(h, cell, r) %}
+                <td class="{{ cls }} {{ 'sev-critical' if sev == 'bad' else ('sev-warning' if sev == 'warn' else '') }}">
+                  {% set key = h|string %}
+                  {% if key == 'Connected' %}
+                    {% set b = (cell|string).lower() in ['true','1','yes','y','on'] %}
+                    <span class="pill {{ 'pill-ok' if b else 'pill-bad' }}">{{ 'Connected' if b else 'Disconnected' }}</span>
+                  {% elif key == 'IsApplicationServer' and ((cell|string).lower() in ['true','1','yes','y','on']) %}
+                    <span class="pill pill-info">App</span>
+                  {% elif key == 'IsMainDB' and ((cell|string).lower() in ['true','1','yes','y','on']) %}
+                    <span class="pill pill-info">MainDB</span>
+                  {% else %}
+                    {{ display_cell(h, cell) }}
+                  {% endif %}
+                </td>
+              {% endfor %}
+            </tr>
             {% endfor %}
-          </tr>
-          {% endfor %}
-        </tbody>
-      </table>
+          </tbody>
+        </table>
+      </div>
+    </div>
+
+    <div id="portal_storage" class="portalpane" style="display:none">
+      <div class="controls">
+        <strong>Storage Nodes</strong>
+        <input id="q_storage" type="text" placeholder="Search storage?" oninput="filterTableByInput('storageTable','q_storage')" style="min-width:240px; margin-left:8px">
+        <div class="sub">File: <code>{{ portal_storage_src }}</code> &nbsp;?&nbsp; Updated: <span class="sub" data-local-time="{{ portal_storage_mtime }}">{{ portal_storage_mtime or '?' }}</span></div>
+      </div>
+      <div class="table-wrap">
+        <table id="storageTable">
+          <thead><tr>{% for h in storage_headers %}<th>{{ display_header(h) }}</th>{% endfor %}</tr></thead>
+          <tbody>
+            {% for r in storage_rows %}
+            <tr>
+              {% for h in storage_headers %}
+                {% set cell = r.get(h, '') %}
+                {% set cls = style_storage_cell(h, cell, r) %}
+                {% set sev = warn_storage_cell(h, cell, r) %}
+                <td class="{{ cls }} {{ 'sev-critical' if sev == 'bad' else ('sev-warning' if sev == 'warn' else '') }}">{{ display_cell(h, cell) }}</td>
+              {% endfor %}
+            </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+    </div>
+
+    <div id="portal_tasks" class="portalpane" style="display:none">
+      <div class="controls" style="margin-top:12px">
+        <strong>Tasks</strong>
+        <input id="q_tasks" type="text" placeholder="Search tasks..." oninput="filterTableByInput('tasksTable','q_tasks')" style="min-width:240px; margin-left:8px">
+        <div class="sub">File: <code>{{ portal_tasks_src }}</code> &nbsp;?&nbsp; Updated: <span class="sub" data-local-time="{{ portal_tasks_mtime }}">{{ portal_tasks_mtime or '?' }}</span></div>
+      </div>
+      <div class="table-wrap">
+        <table id="tasksTable">
+          <thead><tr>{% for h in tasks_headers %}<th>{{ display_header(h) }}</th>{% endfor %}</tr></thead>
+          <tbody>
+            {% for r in tasks_rows %}
+            <tr>
+              {% for h in tasks_headers %}
+                {% set cell = r.get(h, '') %}
+                {% set cls = style_tasks_cell(h, cell, r) %}
+                {% set sev = warn_task_cell(h, cell, r) %}
+                <td class="{{ cls }} {{ 'sev-critical' if sev == 'bad' else ('sev-warning' if sev == 'warn' else '') }}">{{ display_cell(h, cell) }}</td>
+              {% endfor %}
+            </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+    </div>
+
+    <div id="portal_licenses" class="portalpane" style="display:none">
+      <div class="controls">
+        <strong>Licenses</strong>
+        <input id="q_licenses" type="text" placeholder="Search licenses?" oninput="filterTableByInput('licensesTable','q_licenses')" style="min-width:240px; margin-left:8px">
+        <div class="sub">File: <code>{{ portal_licenses_src }}</code> &nbsp;?&nbsp; Updated: <span class="sub" data-local-time="{{ portal_licenses_mtime }}">{{ portal_licenses_mtime or '?' }}</span></div>
+      </div>
+      <div class="viz-grid two" style="margin-bottom:12px;">
+        <section class="viz-panel">
+          <h3>License Counts</h3>
+          <div class="headline-metrics">
+            <div class="headline-metric"><div class="metric-label">Rows</div><div class="metric-value">{{ licenses_rows|length }}</div></div>
+            <div class="headline-metric"><div class="metric-label">Valid</div><div class="metric-value ok">{{ valid_licenses }}</div></div>
+            <div class="headline-metric"><div class="metric-label">Expired</div><div class="metric-value {{ 'crit' if expired_licenses else '' }}">{{ expired_licenses }}</div></div>
+            <div class="headline-metric"><div class="metric-label">Portal Licenses</div><div class="metric-value">{{ portal_license_rows }}</div></div>
+          </div>
+        </section>
+      </div>
+      <div class="table-wrap">
+        <table id="licensesTable">
+          <thead><tr>{% for h in licenses_display_headers %}<th>{{ display_header(h) }}</th>{% endfor %}</tr></thead>
+          <tbody>
+            {% for r in licenses_rows %}
+            <tr>
+              {% for h in licenses_display_headers %}
+                {% set cell = r.get(h, '') %}
+                {% set lower = (cell|string).lower() %}
+                {% set is_expired = h == 'expired' and lower in ['true','1','yes','y','on'] %}
+                {% set is_invalid = h == 'valid' and lower in ['false','0','no','n','off'] %}
+                <td class="{{ 'sev-critical' if is_expired or is_invalid else '' }}">
+                  {% if h in ['expired','valid','portal_license','antivirus','varonis','key_manager','dlp','global_file_lock'] and lower in ['true','false','1','0','yes','no','y','n','on','off'] %}
+                    {% set b = lower in ['true','1','yes','y','on'] %}
+                    <span class="pill {{ 'pill-ok' if b else 'pill-muted' }}">{{ 'Yes' if b else 'No' }}</span>
+                  {% else %}
+                    {{ display_cell(h, cell) }}
+                  {% endif %}
+                </td>
+              {% endfor %}
+            </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
     </div>
   </div>
-
   <!-- POSTGRES (with sub-tabs) -->
   <div id="pg" class="tabpane" style="display:none">
     <div class="legend">
@@ -6872,6 +6979,7 @@ LOGIN_HTML = """
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>CTERA Monitoring Dashboard Login</title>
+  {% if login_icon %}<link rel="icon" type="image/png" href="{{ login_icon }}">{% endif %}
   <style>
     :root {
       --bg:#eef2f7;
@@ -7066,12 +7174,14 @@ def login():
         return redirect(url_for("index"))
     if session.get("local_user_id"):
         return redirect(request.args.get("next") or url_for("index"))
+    brand = resolve_brand(load_conf())
     return render_template_string(
         LOGIN_HTML,
         error="",
         next_url=request.args.get("next") or "/",
         product_name=PRODUCT_NAME,
         app_version=APP_VERSION,
+        login_icon=brand.get("icon"),
     )
 
 
@@ -7082,6 +7192,7 @@ def login_post():
     username = str(request.form.get("username") or "").strip()
     password = str(request.form.get("password") or "")
     next_url = str(request.form.get("next") or "/").strip() or "/"
+    brand = resolve_brand(load_conf())
     with _notifications_conn() as conn:
         row = conn.execute(
             "SELECT id, username, password_hash, enabled FROM local_users WHERE lower(username) = lower(?)",
@@ -7094,6 +7205,7 @@ def login_post():
             next_url=next_url,
             product_name=PRODUCT_NAME,
             app_version=APP_VERSION,
+            login_icon=brand.get("icon"),
         ), 401
     session.clear()
     session["local_user_id"] = int(row["id"])
@@ -7638,6 +7750,7 @@ def build_ai_summary_data(env_id=None):
     servers_rows, servers_headers = read_csv_rows(portal_cfg.get("servers_csv"))
     storage_rows, storage_headers = read_csv_rows(portal_cfg.get("storage_csv"))
     tasks_rows, tasks_headers = read_csv_rows(portal_cfg.get("tasks_csv"))
+    licenses_rows, licenses_headers = read_csv_rows(portal_cfg.get("licenses_csv"))
     tasks_rows = filter_dashboard_tasks(tasks_rows)
 
     warn_server_cell = make_portal_warn_fn(ext, "servers")
@@ -7647,9 +7760,16 @@ def build_ai_summary_data(env_id=None):
     c_servers = _count_row_severity(servers_rows, servers_headers, warn_server_cell)
     c_storage = _count_row_severity(storage_rows, storage_headers, warn_storage_cell)
     c_tasks = _count_row_severity(tasks_rows, tasks_headers, warn_task_cell)
+    c_licenses_bad = 0
+    for row in licenses_rows:
+        expired = str(row.get("expired") or "").strip().lower() in {"true", "1", "yes", "y", "on"}
+        valid = str(row.get("valid") or "").strip().lower()
+        invalid = valid in {"false", "0", "no", "n", "off"}
+        if expired or invalid:
+            c_licenses_bad += 1
 
     portal_counts = {
-        "bad": c_servers["bad"] + c_storage["bad"] + c_tasks["bad"],
+        "bad": c_servers["bad"] + c_storage["bad"] + c_tasks["bad"] + c_licenses_bad,
         "warn": c_servers["warn"] + c_storage["warn"] + c_tasks["warn"],
     }
 
@@ -7695,6 +7815,7 @@ def build_ai_summary_data(env_id=None):
             "servers_rows": len(servers_rows),
             "storage_rows": len(storage_rows),
             "tasks_rows": len(tasks_rows),
+            "licenses_rows": len(licenses_rows),
             "critical_rows": portal_counts["bad"],
             "warning_rows": portal_counts["warn"],
         },
@@ -7835,12 +7956,36 @@ def index():
     servers_rows, servers_headers = read_csv_rows(cfg["portal"]["servers_csv"])
     storage_rows, storage_headers = read_csv_rows(cfg["portal"]["storage_csv"])
     tasks_rows, tasks_headers = read_csv_rows((cfg.get("portal") or {}).get("tasks_csv"))
+    licenses_rows, licenses_headers = read_csv_rows((cfg.get("portal") or {}).get("licenses_csv"))
     if not tasks_rows:
         alt = os.path.join(APP_DIR, "..", "task.csv")
         tr, th = read_csv_rows(alt)
         if tr:
             tasks_rows, tasks_headers = tr, th
     tasks_rows = filter_dashboard_tasks(tasks_rows)
+    hidden_license_headers = {"db_id", "index", "key", "pg_host", "pg_port", "pg_db", "cluster", "collected_at"}
+    preferred_license_headers = [
+        "original_key",
+        "valid",
+        "expired",
+        "expiration_date",
+        "portal_license",
+        "vgateways4",
+        "vgateways8",
+        "vgateways32",
+        "vgateways64",
+        "vgateways128",
+        "vgateways256",
+        "storage",
+        "cloud_drives",
+        "cloud_drives_lite",
+        "appliances",
+        "server_agents",
+        "workstation_agents",
+    ]
+    licenses_visible_set = [h for h in licenses_headers if h not in hidden_license_headers]
+    licenses_display_headers = [h for h in preferred_license_headers if h in licenses_visible_set]
+    licenses_display_headers.extend([h for h in licenses_visible_set if h not in licenses_display_headers])
 
     warn_server_cell = make_portal_warn_fn(ext, "servers")
     warn_storage_cell = make_portal_warn_fn(ext, "storage")
@@ -7853,14 +7998,26 @@ def index():
     c_servers = _count_row_severity(servers_rows, servers_headers, warn_server_cell)
     c_storage = _count_row_severity(storage_rows, storage_headers, warn_storage_cell)
     c_tasks = _count_row_severity(tasks_rows, tasks_headers, warn_task_cell)
+    licenses_bad = 0
+    for row in licenses_rows:
+        expired = str(row.get("expired") or "").strip().lower() in {"true", "1", "yes", "y", "on"}
+        valid = str(row.get("valid") or "").strip().lower()
+        invalid = valid in {"false", "0", "no", "n", "off"}
+        if expired or invalid:
+            licenses_bad += 1
+    c_licenses = {"bad": licenses_bad, "warn": 0}
+    valid_licenses = sum(1 for row in licenses_rows if str(row.get("valid") or "").strip().lower() in {"true", "1", "yes", "y", "on"})
+    expired_licenses = sum(1 for row in licenses_rows if str(row.get("expired") or "").strip().lower() in {"true", "1", "yes", "y", "on"})
+    portal_license_rows = sum(1 for row in licenses_rows if str(row.get("portal_license") or "").strip().lower() in {"true", "1", "yes", "y", "on"})
     portal_counts = {
-        "bad": c_servers["bad"] + c_storage["bad"] + c_tasks["bad"],
-        "warn": c_servers["warn"] + c_storage["warn"] + c_tasks["warn"],
+        "bad": c_servers["bad"] + c_storage["bad"] + c_tasks["bad"] + c_licenses["bad"],
+        "warn": c_servers["warn"] + c_storage["warn"] + c_tasks["warn"] + c_licenses["warn"],
     }
     portal_section_cards = [
         _section_card("Servers", len(servers_rows), c_servers),
         _section_card("Storage", len(storage_rows), c_storage),
         _section_card("Tasks", len(tasks_rows), c_tasks),
+        _section_card("Licenses", len(licenses_rows), c_licenses),
     ]
 
     # POSTGRES — build topic views + compute warn counts
@@ -7962,12 +8119,14 @@ def index():
     portal_servers_src = _norm_src(portal_servers_src)
     portal_storage_src = _norm_src(portal_storage_src)
     portal_tasks_src = _norm_src(portal_tasks_src)
+    portal_licenses_src = _norm_src(portal_cfg.get("licenses_csv", ""))
 
     portal_servers_mtime = _file_mtime_iso(portal_servers_src)
     portal_storage_mtime = _file_mtime_iso(portal_storage_src)
     portal_tasks_mtime = _file_mtime_iso(portal_tasks_src)
+    portal_licenses_mtime = _file_mtime_iso(portal_licenses_src)
 
-    portal_rows_total = len(servers_rows) + len(storage_rows) + len(tasks_rows)
+    portal_rows_total = len(servers_rows) + len(storage_rows) + len(tasks_rows) + len(licenses_rows)
     pg_rows_total = sum(len(v.get("rows", [])) for v in pg_views)
     overview_cards = [
         _overview_card("Tenants", "tenants", len(tenants_rows), tenants_counts, tenants_mtime),
@@ -7994,6 +8153,7 @@ def index():
         {"label": "Portal Servers", "updated_utc": portal_servers_mtime},
         {"label": "Portal Storage", "updated_utc": portal_storage_mtime},
         {"label": "Portal Tasks", "updated_utc": portal_tasks_mtime},
+        {"label": "Portal Licenses", "updated_utc": portal_licenses_mtime},
         {"label": "Postgres", "updated_utc": _file_mtime_iso(os.path.join(base_dir, "wraparound_summary.csv"))},
         {"label": "Servers Health", "updated_utc": metrics_mtime},
     ]
@@ -8027,9 +8187,13 @@ def index():
         servers_rows=servers_rows, servers_headers=servers_headers,
         storage_rows=storage_rows, storage_headers=storage_headers,
         tasks_rows=tasks_rows, tasks_headers=tasks_headers,
+        licenses_rows=licenses_rows, licenses_headers=licenses_headers,
+        licenses_display_headers=licenses_display_headers,
+        c_servers=c_servers, c_storage=c_storage, c_tasks=c_tasks, c_licenses=c_licenses,
         warn_server_cell=warn_server_cell, warn_storage_cell=warn_storage_cell, warn_task_cell=warn_task_cell,
         style_server_cell=style_server_cell, style_storage_cell=style_storage_cell, style_tasks_cell=style_tasks_cell,
         portal_counts=portal_counts, portal_section_cards=portal_section_cards,
+        valid_licenses=valid_licenses, expired_licenses=expired_licenses, portal_license_rows=portal_license_rows,
         # postgres (sub-tabs)
         pg_base_dir=base_dir, pg_views=pg_views, warn_pg=warn_pg, style_pg=style_pg, pg_counts=pg_counts, pg_topic_chart=pg_topic_chart,
         # servers health
@@ -8041,8 +8205,8 @@ def index():
         consul_csv=consul_csv, consul_mtime=consul_mtime, consul_rows=consul_rows, consul_headers=consul_headers,
         consul_summary=consul_summary, consul_status_chart=consul_status_chart,
         # portal sources
-        portal_servers_src=portal_servers_src, portal_storage_src=portal_storage_src, portal_tasks_src=portal_tasks_src,
-        portal_servers_mtime=portal_servers_mtime, portal_storage_mtime=portal_storage_mtime, portal_tasks_mtime=portal_tasks_mtime,
+        portal_servers_src=portal_servers_src, portal_storage_src=portal_storage_src, portal_tasks_src=portal_tasks_src, portal_licenses_src=portal_licenses_src,
+        portal_servers_mtime=portal_servers_mtime, portal_storage_mtime=portal_storage_mtime, portal_tasks_mtime=portal_tasks_mtime, portal_licenses_mtime=portal_licenses_mtime,
         # tenants
         tenants_src=tenants_src, tenants_mtime=tenants_mtime,
         tenants_rows=tenants_rows, tenants_headers=tenants_headers, style_tenants=style_tenants,

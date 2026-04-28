@@ -9,6 +9,7 @@ Collects:
   4) Table sizes (table/index/total/TOAST)
   5) Table bloat (community SQL by default; no extensions needed)
   6) Index bloat (community SQL by default; no extensions needed)
+  7) Licenses
 
 Bloat methods:
   - community  : uses community SQL from pg_stats/pg_class (no extensions needed)
@@ -264,6 +265,41 @@ def get_vacuum_analyze_stats(cur):
     """
     return fetch_dicts(cur, sql)
 
+
+def get_licenses(cur):
+    sql = """
+    SELECT
+        db_id,
+        index,
+        key,
+        original_key,
+        expired,
+        expiration_date,
+        appliances,
+        server_agents,
+        workstation_agents,
+        cloud_drives,
+        cloud_drives_lite,
+        valid,
+        antivirus,
+        varonis,
+        key_manager,
+        dlp,
+        portal_license,
+        vgateways4,
+        vgateways8,
+        vgateways32,
+        vgateways64,
+        vgateways128,
+        vgateways256,
+        storage,
+        comment,
+        global_file_lock
+    FROM licenses
+    ORDER BY expiration_date NULLS LAST, index;
+    """
+    return fetch_dicts(cur, sql)
+
 # 4) Table sizes
 def get_table_sizes(cur, min_bytes):
     sql = """
@@ -481,6 +517,7 @@ def main():
             wrap_sum = get_wraparound_summary(cur)
             vac = get_vacuum_analyze_stats(cur)
             sizes = get_table_sizes(cur, args.min_size_bytes)
+            licenses = get_licenses(cur)
 
             # Bloat with resilient fallback
             try:
@@ -530,6 +567,7 @@ def main():
     wrap_sum = stamp_rows(wrap_sum, _collect_meta)
     vac = stamp_rows(vac, _collect_meta)
     sizes = stamp_rows(sizes, _collect_meta)
+    licenses = stamp_rows(licenses, _collect_meta)
     tbl_bloat = stamp_rows(tbl_bloat, _collect_meta)
     idx_bloat = stamp_rows(idx_bloat, _collect_meta)
 
@@ -540,6 +578,7 @@ def main():
         "wraparound_summary": wrap_sum,
         "vacuum_analyze_stats": vac,
         "table_sizes": sizes,
+        "licenses": licenses,
         "table_bloat": tbl_bloat,
         "index_bloat": idx_bloat,
         "meta": {
@@ -583,6 +622,12 @@ def main():
         export_csv(f"{base}/table_sizes.csv", sizes, [
             "schema","table","table_bytes","indexes_bytes","toast_and_other_bytes","total_bytes"
         ] + META_COLS)
+        export_csv(f"{base}/licenses.csv", licenses, [
+            "db_id","index","key","original_key","expired","expiration_date","appliances",
+            "server_agents","workstation_agents","cloud_drives","cloud_drives_lite","valid",
+            "antivirus","varonis","key_manager","dlp","portal_license","vgateways4","vgateways8",
+            "vgateways32","vgateways64","vgateways128","vgateways256","storage","comment","global_file_lock"
+        ] + META_COLS)
 
         # Unified headers for both modes
         TABLE_BLOAT_HEADERS = [
@@ -617,6 +662,8 @@ def main():
                       "last_analyze","last_autoanalyze","vacuum_count","autovacuum_count","analyze_count","autoanalyze_count"])
     print("\n=== Table sizes ===")
     print_table(sizes, ["schema","table","table_bytes","indexes_bytes","toast_and_other_bytes","total_bytes"])
+    print("\n=== Licenses ===")
+    print_table(licenses, ["index","key","expired","expiration_date","appliances","server_agents","workstation_agents","cloud_drives","valid","portal_license"])
     print("\n=== Table bloat ===")
     if tbl_bloat and 'tblname' in tbl_bloat[0]:
         print_table(tbl_bloat, ["current_database","schemaname","tblname","real_size","real_size_bytes",
