@@ -1,0 +1,8 @@
+flask
+pandas
+pyyaml
+requests
+cterasdk
+psycopg2-binary
+paramiko
+openai

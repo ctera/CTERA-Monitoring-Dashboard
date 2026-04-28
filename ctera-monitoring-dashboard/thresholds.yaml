@@ -1,0 +1,131 @@
+# CTERA Monitoring Dashboard thresholds
+# Defaults tuned from customer sample data in data.zip.
+# Goal: highlight real outliers without lighting up everything by default.
+
+filers:
+  default:
+    uploadingFiles:
+      warn: { gt: 10000 }
+      crit: { gt: 30000 }
+    scanningFiles:
+      warn: { gt: 1000000 }
+      crit: { gt: 1500000 }
+    EvictionPercentage:
+      warn: { ge: 80 }
+      crit: { ge: 85 }
+    Alerts:
+      warn: { ge: 10 }
+      crit: { ge: 20 }
+    "CloudSync Status":
+      warn: { eq: UploadIsStalled }
+      crit: { eq: NoFolder }
+    "AD Domain Status":
+      warn: { ne: Ok }
+    "Max Memory":
+      warn: { ge: 80 }
+      crit: { ge: 90 }
+    "Max CPU":
+      warn: { ge: 80 }
+      crit: { ge: 95 }
+
+tenants:
+  default:
+    Deleted:
+      warn: { eq: true }
+
+portal:
+  servers:
+    default:
+      Connected:
+        crit: { eq: false }
+
+  storage:
+    default:
+      ReadOnly:
+        crit: { eq: true }
+
+  tasks:
+    ignore_tasknames:
+      - CSRRequestsProcessor
+      - Antivirus background scanning - MainDB
+    default:
+      State:
+        crit: { eq: failed }
+      ElapsedSeconds:
+        warn: { ge: 7200 }
+        crit: { ge: 43200 }
+
+servers_health:
+  default:
+    Connected:
+      crit: { eq: false }
+    Load1:
+      warn: { ge: 8 }
+      crit: { ge: 16 }
+    MemUsedPct:
+      warn: { ge: 85 }
+      crit: { ge: 92 }
+    RootDiskUsedPct:
+      warn: { ge: 80 }
+      crit: { ge: 90 }
+    DataPoolUsedPct:
+      warn: { ge: 80 }
+      crit: { ge: 90 }
+    DBArchivePoolUsedPct:
+      warn: { ge: 80 }
+      crit: { ge: 90 }
+    CPUIOWaitPct:
+      warn: { ge: 15 }
+      crit: { ge: 30 }
+    CPUIDLEPct:
+      warn: { le: 15 }
+      crit: { le: 5 }
+
+postgres:
+  long_running_queries:
+    default:
+      runtime:
+        warn: { ge: 30 }
+        crit: { ge: 60 }
+
+  wraparound_database:
+    default:
+      pct_of_max:
+        warn: { ge: 70 }
+        crit: { ge: 85 }
+
+  wraparound_summary:
+    default:
+      percent_towards_wraparound:
+        warn: { ge: 70 }
+        crit: { ge: 85 }
+      percent_towards_emergency_autovac:
+        warn: { ge: 80 }
+        crit: { ge: 90 }
+
+  wraparound_top_tables:
+    default:
+      pct_of_max:
+        warn: { ge: 70 }
+        crit: { ge: 85 }
+      size_bytes:
+        warn: { gt: 10737418240 }
+        crit: { gt: 53687091200 }
+
+  table_bloat:
+    default:
+      bloat_size:
+        warn: { gt: 536870912 }
+        crit: { gt: 2147483648 }
+
+  index_bloat:
+    default:
+      bloat_size:
+        warn: { gt: 268435456 }
+        crit: { gt: 1073741824 }
+
+  vacuum_analyze_stats:
+    default:
+      n_dead_tup:
+        warn: { ge: 1000000 }
+        crit: { ge: 5000000 }

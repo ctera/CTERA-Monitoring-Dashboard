@@ -1,0 +1,48 @@
+
+# Minimal config for the CSV dashboard.
+# Admins usually update /etc/ctera-monitoring-dashboard.env, not this file.
+csv_path: /var/lib/ctera-monitoring-dashboard/data/filer.csv
+tenants_csv: /var/lib/ctera-monitoring-dashboard/data/tenants.csv
+refresh_seconds: 0          # set to e.g. 30 to auto-refresh
+derive_cpu_mem: true        # if "Current Performance" column exists, split CPU/Mem numbers
+thresholds_from:
+    path: /opt/monitoring/ctera-monitoring-dashboard/thresholds.yaml        # external policy file
+    # (optional) you can also export FEATHERDASH_THRESHOLDS=/path/to/file and omit "path"
+
+theme:
+  preset: ctera   # use the CTERA-ish palette below
+  # you can override any of these if you want different shades
+  primary: "#5B5BD6"   # sidebar/purple vibe
+  accent:  "#00BCD4"   # cyan text/buttons
+  bg:      "#F7F8FB"   # page background
+  surface: "#FFFFFF"   # cards/table background
+  text:    "#111827"   # main text
+  muted:   "#6B7280"   # secondary text
+  border:  "#E5E7EB"   # dividers
+  header:  "#F3F4F6"   # table header bg
+  hover:   "#FAFAFA"   # row hover
+
+brand:
+  title: "CTERA Dashboard"
+  logo_path: "./ctera.png"   # path relative to dashboard/ (or absolute)
+  logo_height: 40            # px
+
+postgres:
+  base_dir: /var/lib/ctera-monitoring-dashboard/data/db
+  topics:
+    long_running_queries: "long_running_queries.csv"
+    wraparound_database: "wraparound_database.csv"
+    wraparound_top_tables: "wraparound_top_tables.csv"
+    wraparound_summary: "wraparound_summary.csv"
+    vacuum_analyze_stats: "vacuum_analyze_stats.csv"
+    table_sizes: "table_sizes.csv"
+    table_bloat: "table_bloat.csv"
+    index_bloat: "index_bloat.csv"
+
+portal:
+  servers_csv: /var/lib/ctera-monitoring-dashboard/data/servers.csv
+  storage_csv: /var/lib/ctera-monitoring-dashboard/data/storage.csv
+  tasks_csv: /var/lib/ctera-monitoring-dashboard/data/tasks.csv
+
+servers_health:
+  metrics_csv: /var/lib/ctera-monitoring-dashboard/data/server_metrics.csv

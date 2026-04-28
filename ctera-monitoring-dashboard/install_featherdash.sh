@@ -1,0 +1,570 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+PRODUCT_NAME="CTERA Monitoring Dashboard"
+PRODUCT_SLUG="ctera-monitoring-dashboard"
+LEGACY_SERVICE_NAME="featherdash"
+INSTALL_DIR="/opt/monitoring/ctera-monitoring-dashboard"
+CONFIG_FILE="/etc/ctera-monitoring-dashboard.env"
+DATA_DIR="/var/lib/ctera-monitoring-dashboard/data"
+LOG_DIR="/var/log/ctera-monitoring-dashboard"
+SERVICE_USER="ctera-monitoring"
+ARCHIVE=""
+NONINTERACTIVE=0
+SKIP_CONFIRM=0
+DASHBOARD_PORT="8080"
+
+usage() {
+  cat <<'EOF'
+Usage:
+  sudo bash ./install.sh [options]
+
+Options:
+  --install-dir /opt/monitoring/ctera-monitoring-dashboard   App location
+  --config-file /etc/ctera-monitoring-dashboard.env          One admin-editable config file
+  --data-dir /var/lib/ctera-monitoring-dashboard/data        One CSV data location
+  --user ctera-monitoring                                     Dedicated service user
+  --archive /path/to/ctera-monitoring-dashboard.tgz          Extract archive before installing
+  --non-interactive                           Use defaults and blank credentials
+  --yes                                       Do not ask for final confirmation
+
+Recommended:
+  sudo tar -xzf ctera-monitoring-dashboard.tgz -C /opt/monitoring
+  cd /opt/monitoring/ctera-monitoring-dashboard
+  sudo bash ./install.sh
+EOF
+}
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --install-dir)
+      INSTALL_DIR="${2:-}"
+      shift 2
+      ;;
+    --config-file)
+      CONFIG_FILE="${2:-}"
+      shift 2
+      ;;
+    --data-dir)
+      DATA_DIR="${2:-}"
+      shift 2
+      ;;
+    --user)
+      SERVICE_USER="${2:-}"
+      shift 2
+      ;;
+    --archive)
+      ARCHIVE="${2:-}"
+      shift 2
+      ;;
+    --non-interactive)
+      NONINTERACTIVE=1
+      shift
+      ;;
+    --yes|-y)
+      SKIP_CONFIRM=1
+      shift
+      ;;
+    -h|--help)
+      usage
+      exit 0
+      ;;
+    *)
+      echo "Unknown argument: $1" >&2
+      usage
+      exit 1
+      ;;
+  esac
+done
+
+if [[ "${EUID}" -ne 0 ]]; then
+  echo "Run this installer as root, for example: sudo bash ./install_featherdash.sh" >&2
+  exit 1
+fi
+
+if [[ -z "${INSTALL_DIR}" || -z "${CONFIG_FILE}" || -z "${DATA_DIR}" || -z "${SERVICE_USER}" ]]; then
+  echo "Install dir, config file, data dir, and user must not be empty." >&2
+  exit 1
+fi
+
+DB_DIR="${DATA_DIR}/db"
+
+section() {
+  echo
+  echo "==> $1"
+}
+
+print_banner() {
+  cat <<EOF
+${PRODUCT_NAME} prompted installer
+
+This will install ${PRODUCT_NAME} with:
+  App code:     ${INSTALL_DIR}
+  Config file:  ${CONFIG_FILE}
+  CSV data:     ${DATA_DIR}
+  Logs:         ${LOG_DIR}
+  Service user: ${SERVICE_USER}
+  Port:         ${DASHBOARD_PORT}
+
+This installer sets up the platform only.
+
+After install, sign in to the UI and add one or more portal environments under:
+  Administration -> Portal Environments
+EOF
+}
+
+prompt_value() {
+  local label="$1"
+  local default="${2:-}"
+  local secret="${3:-0}"
+  local required="${4:-0}"
+  local value
+
+  if [[ "${NONINTERACTIVE}" -eq 1 ]]; then
+    printf '%s' "${default}"
+    return
+  fi
+
+  while true; do
+    if [[ "${secret}" -eq 1 ]]; then
+      printf '%s: ' "${label}" >&2
+      read -r -s value
+      printf '\n' >&2
+    elif [[ -n "${default}" ]]; then
+      printf '%s [%s]: ' "${label}" "${default}" >&2
+      read -r value
+      value="${value:-${default}}"
+    else
+      printf '%s: ' "${label}" >&2
+      read -r value
+    fi
+    if [[ "${required}" -eq 0 || -n "${value}" ]]; then
+      break
+    fi
+    echo "  ${label} is required." >&2
+  done
+  printf '%s' "${value}"
+}
+
+prompt_yes_no() {
+  local label="$1"
+  local default="${2:-n}"
+  local answer
+
+  if [[ "${NONINTERACTIVE}" -eq 1 ]]; then
+    [[ "${default}" =~ ^[Yy]$ ]]
+    return
+  fi
+
+  while true; do
+    if [[ "${default}" =~ ^[Yy]$ ]]; then
+      printf '%s [Y/n]: ' "${label}" >&2
+      read -r answer
+      answer="${answer:-Y}"
+    else
+      printf '%s [y/N]: ' "${label}" >&2
+      read -r answer
+      answer="${answer:-N}"
+    fi
+    case "${answer}" in
+      y|Y|yes|YES) return 0 ;;
+      n|N|no|NO) return 1 ;;
+      *) echo "  Please answer yes or no." >&2 ;;
+    esac
+  done
+}
+
+prompt_positive_int() {
+  local label="$1"
+  local default="$2"
+  local value
+
+  if [[ "${NONINTERACTIVE}" -eq 1 ]]; then
+    printf '%s' "${default}"
+    return
+  fi
+
+  while true; do
+    value="$(prompt_value "${label}" "${default}" 0 1)"
+    if [[ "${value}" =~ ^[0-9]+$ && "${value}" -gt 0 ]]; then
+      printf '%s' "${value}"
+      return
+    fi
+    echo "  Enter a whole number greater than 0." >&2
+  done
+}
+
+cron_every_minutes() {
+  local minutes="$1"
+
+  if [[ "${minutes}" -lt 60 ]]; then
+    if (( 60 % minutes == 0 )); then
+      printf '*/%s * * * *' "${minutes}"
+    else
+      echo "Collector minutes must divide evenly into 60, for example 5, 10, 15, 20, 30, or 60." >&2
+      return 1
+    fi
+  elif (( minutes % 60 == 0 )); then
+    local hours=$((minutes / 60))
+    if [[ "${hours}" -eq 1 ]]; then
+      printf '0 * * * *'
+    else
+      printf '0 */%s * * *' "${hours}"
+    fi
+  else
+    echo "Collector minutes must be less than 60 or a whole number of hours." >&2
+    return 1
+  fi
+}
+
+cron_every_hours() {
+  local hours="$1"
+
+  if [[ "${hours}" -eq 1 ]]; then
+    printf '0 * * * *'
+  else
+    printf '0 */%s * * *' "${hours}"
+  fi
+}
+
+env_quote() {
+  local value="$1"
+  value="${value//\'/\'\\\'\'}"
+  printf "'%s'" "${value}"
+}
+
+sh_quote() {
+  local value="$1"
+  value="${value//\'/\'\\\'\'}"
+  printf "'%s'" "${value}"
+}
+
+setup_ssh_key() {
+  local key_path="$1"
+  local ssh_user="$2"
+  local main_db_host="$3"
+  local ssh_password="$4"
+  local key_dir
+  local pub_key
+
+  key_dir="$(dirname "${key_path}")"
+  mkdir -p "${key_dir}"
+
+  if [[ ! -f "${key_path}" ]]; then
+    section "Generating ${PRODUCT_NAME} SSH key"
+    ssh-keygen -t ed25519 -N "" -C "${PRODUCT_SLUG}@$(hostname -f 2>/dev/null || hostname)" -f "${key_path}"
+  else
+    echo "Using existing SSH key: ${key_path}"
+  fi
+
+  chmod 700 "${key_dir}"
+  chmod 600 "${key_path}"
+  pub_key="$(cat "${key_path}.pub")"
+
+  if [[ -n "${main_db_host//[[:space:]]/}" ]]; then
+    section "Installing ${PRODUCT_NAME} public key on MainDB server"
+    apt install -y sshpass openssh-client
+    echo "  Installing key on ${ssh_user}@${main_db_host}"
+    sshpass -p "${ssh_password}" ssh -o StrictHostKeyChecking=accept-new -o ConnectTimeout=10 "${ssh_user}@${main_db_host}" \
+      "mkdir -p ~/.ssh && chmod 700 ~/.ssh && grep -qxF '${pub_key}' ~/.ssh/authorized_keys 2>/dev/null || echo '${pub_key}' >> ~/.ssh/authorized_keys && chmod 600 ~/.ssh/authorized_keys"
+  fi
+}
+
+remote_root_exec() {
+  local main_db_host="$1"
+  local ssh_user="$2"
+  local key_path="$3"
+  local ssh_password="$4"
+  local sudo_password="$5"
+  local use_sudo="$6"
+  local remote_cmd="$7"
+  local quoted_remote_cmd
+  local quoted_password
+  local sudo_cmd
+
+  quoted_remote_cmd="$(sh_quote "${remote_cmd}")"
+
+  if [[ "${use_sudo}" -eq 1 ]]; then
+    if [[ -n "${sudo_password}" ]]; then
+      quoted_password="$(sh_quote "${sudo_password}")"
+      sudo_cmd="printf '%s\n' ${quoted_password} | sudo -S -p '' bash -lc ${quoted_remote_cmd}"
+    else
+      sudo_cmd="sudo -n bash -lc ${quoted_remote_cmd}"
+    fi
+  else
+    sudo_cmd="bash -lc ${quoted_remote_cmd}"
+  fi
+
+  if [[ -n "${ssh_password}" ]]; then
+    apt install -y sshpass openssh-client >&2
+    sshpass -p "${ssh_password}" ssh -o StrictHostKeyChecking=accept-new -o ConnectTimeout=10 "${ssh_user}@${main_db_host}" "${sudo_cmd}"
+  else
+    ssh -i "${key_path}" -o StrictHostKeyChecking=accept-new -o ConnectTimeout=10 "${ssh_user}@${main_db_host}" "${sudo_cmd}"
+  fi
+}
+
+reveal_postgres_password() {
+  local main_db_host="$1"
+  local ssh_user="$2"
+  local key_path="$3"
+  local ssh_password="$4"
+  local sudo_password="$5"
+  local use_sudo="$6"
+  local reveal_cmd
+  local output
+
+  if [[ -z "${main_db_host//[[:space:]]/}" ]]; then
+    return 1
+  fi
+
+  section "Retrieving Postgres password from MainDB" >&2
+  reveal_cmd="/usr/local/ctera/jdk/bin/java -cp '/usr/local/ctera/apache-tomcat/lib/portal/*:/usr/local/ctera/apache-tomcat/lib/common.jar' com.ctera.utils.password.PostgresPasswordTool \$(cat /etc/ctera/portal_key) \$(grep CTERA_LOCAL_POSTGRES_PASS /etc/ctera/portal.cfg | cut -d '=' -f2) reveal"
+  output="$(remote_root_exec "${main_db_host}" "${ssh_user}" "${key_path}" "${ssh_password}" "${sudo_password}" "${use_sudo}" "${reveal_cmd}" 2>/dev/null || true)"
+
+  output="$(printf '%s\n' "${output}" | tr -d '\r' | sed -n '/./p' | tail -n 1)"
+  if [[ -z "${output}" ]]; then
+    echo "  Could not retrieve the Postgres password automatically." >&2
+    return 1
+  fi
+
+  printf '%s' "${output}"
+}
+
+replace_token() {
+  local file="$1"
+  local token="$2"
+  local value="$3"
+  local escaped
+  escaped="$(printf '%s' "${value}" | sed 's/[\/&]/\\&/g')"
+  sed -i "s|${token}|${escaped}|g" "${file}"
+}
+
+run_with_spinner() {
+  local label="$1"
+  local log_path="$2"
+  shift 2
+  local pid
+  local spinner='|/-\'
+  local i=0
+  local rc
+
+  echo "  Running ${label} collector..."
+  echo "  Watch progress in another terminal with:"
+  echo "    tail -F ${log_path}"
+
+  "$@" >> "${log_path}" 2>&1 &
+  pid=$!
+
+  while kill -0 "${pid}" >/dev/null 2>&1; do
+    i=$(( (i + 1) % 4 ))
+    printf '\r  %s %s collector is still running...' "${spinner:$i:1}" "${label}"
+    sleep 0.2
+  done
+
+  wait "${pid}" || rc=$?
+  rc="${rc:-0}"
+  printf '\r'
+  if [[ "${rc}" -eq 0 ]]; then
+    echo "  [done] ${label} collector finished."
+  else
+    echo "  [failed] ${label} collector failed. Check ${log_path}"
+  fi
+  return "${rc}"
+}
+
+print_banner
+if [[ "${NONINTERACTIVE}" -eq 0 && "${SKIP_CONFIRM}" -eq 0 ]]; then
+  echo
+  read -r -p "Continue with install? [Y/n]: " CONFIRM
+  case "${CONFIRM:-Y}" in
+    y|Y|yes|YES) ;;
+    *) echo "Install cancelled."; exit 0 ;;
+  esac
+fi
+
+section "Installing OS packages"
+apt update
+apt install -y python3 python3-venv python3-pip cron curl jq net-tools openssh-client
+
+if ! id -u "${SERVICE_USER}" >/dev/null 2>&1; then
+  section "Creating service user: ${SERVICE_USER}"
+  useradd --system --home "${INSTALL_DIR}" --shell /usr/sbin/nologin "${SERVICE_USER}"
+fi
+
+if [[ -n "${ARCHIVE}" ]]; then
+  if [[ ! -f "${ARCHIVE}" ]]; then
+    echo "Archive not found: ${ARCHIVE}" >&2
+    exit 1
+  fi
+  mkdir -p "$(dirname "${INSTALL_DIR}")"
+  tar -xzf "${ARCHIVE}" -C "$(dirname "${INSTALL_DIR}")"
+elif [[ "$(pwd)" != "${INSTALL_DIR}" ]]; then
+  mkdir -p "${INSTALL_DIR}"
+  cp -a . "${INSTALL_DIR}/"
+fi
+
+cd "${INSTALL_DIR}"
+mkdir -p "${DATA_DIR}" "${DB_DIR}" "${LOG_DIR}"
+
+section "Preparing centralized CSV data directory"
+for csv_name in filer.csv tenants.csv servers.csv storage.csv tasks.csv task.csv server_metrics.csv; do
+  if [[ -f "${INSTALL_DIR}/${csv_name}" && ! -f "${DATA_DIR}/${csv_name}" ]]; then
+    mv "${INSTALL_DIR}/${csv_name}" "${DATA_DIR}/${csv_name}"
+  fi
+  if [[ -f "${INSTALL_DIR}/data/${csv_name}" && ! -f "${DATA_DIR}/${csv_name}" ]]; then
+    mv "${INSTALL_DIR}/data/${csv_name}" "${DATA_DIR}/${csv_name}"
+  fi
+done
+for source_dir in "${INSTALL_DIR}/db" "${INSTALL_DIR}/db.csv" "${INSTALL_DIR}/data/db"; do
+  if [[ -d "${source_dir}" ]]; then
+    for db_csv in "${source_dir}"/*.csv; do
+      if [[ -f "${db_csv}" && ! -f "${DB_DIR}/$(basename "${db_csv}")" ]]; then
+        mv "${db_csv}" "${DB_DIR}/"
+      fi
+    done
+  fi
+done
+
+section "Creating Python virtualenv"
+python3 -m venv "${INSTALL_DIR}/venv"
+"${INSTALL_DIR}/venv/bin/python" -m pip install --upgrade pip
+"${INSTALL_DIR}/venv/bin/pip" install -r "${INSTALL_DIR}/requirements.txt"
+
+CONFIGURE_ENV=1
+if [[ -f "${CONFIG_FILE}" ]]; then
+  section "Existing configuration found"
+  if prompt_yes_no "Keep existing ${CONFIG_FILE} runtime settings?" "y"; then
+    CONFIGURE_ENV=0
+  else
+    CONFIG_BACKUP="${CONFIG_FILE}.bak.$(date +%Y%m%d%H%M%S)"
+    cp -p "${CONFIG_FILE}" "${CONFIG_BACKUP}"
+    echo "  Backed up existing config to ${CONFIG_BACKUP}"
+  fi
+fi
+
+if [[ "${CONFIGURE_ENV}" -eq 1 ]]; then
+  section "Creating base runtime config"
+  CTERA_HOST=""
+  CTERA_USERNAME=""
+  CTERA_PASSWORD=""
+  PGHOST=""
+  PGPORT="5432"
+  PGDATABASE="postgres"
+  PGUSER="postgres"
+  PGPASSWORD=""
+  SERVER_SSH_USER="root"
+  ROOT_KEY="${INSTALL_DIR}/ssh/id_ed25519"
+  OPENAI_API_KEY=""
+  DASHBOARD_PORT="8080"
+
+  DASHBOARD_PORT="$(prompt_positive_int "Dashboard port" "8080")"
+
+  umask 077
+  cat > "${CONFIG_FILE}" <<EOF
+CTERA_HOST=$(env_quote "${CTERA_HOST}")
+CTERA_USERNAME=$(env_quote "${CTERA_USERNAME}")
+CTERA_PASSWORD=$(env_quote "${CTERA_PASSWORD}")
+CTERA_VERIFY_SSL=false
+PGHOST=$(env_quote "${PGHOST}")
+PGPORT=$(env_quote "${PGPORT}")
+PGDATABASE=$(env_quote "${PGDATABASE}")
+PGUSER=$(env_quote "${PGUSER}")
+PGPASSWORD=$(env_quote "${PGPASSWORD}")
+SERVER_SSH_USER=$(env_quote "${SERVER_SSH_USER}")
+ROOT_KEY=$(env_quote "${ROOT_KEY}")
+SERVER_METRICS_MODE=jump
+SERVER_METRICS_TARGET_USER=ctera
+SERVER_METRICS_JUMP_HOST=$(env_quote "${PGHOST}")
+SERVER_METRICS_JUMP_USER=$(env_quote "${SERVER_SSH_USER}")
+SERVER_METRICS_JUMP_RUN_AS_USER=ctera
+SERVER_METRICS_SUDO=true
+OPENAI_API_KEY=$(env_quote "${OPENAI_API_KEY}")
+PORT=${DASHBOARD_PORT}
+FEATHERDASH_DATA_DIR=${DATA_DIR}
+FEATHERDASH_DB_DIR=${DB_DIR}
+FEATHERDASH_THRESHOLDS=${INSTALL_DIR}/thresholds.yaml
+PYTHONUNBUFFERED=1
+EOF
+else
+  section "Keeping existing ${CONFIG_FILE}"
+  if [[ -f "${CONFIG_FILE}" ]]; then
+    existing_port="$(grep '^PORT=' "${CONFIG_FILE}" | tail -n1 | cut -d '=' -f2- | sed -e "s/^['\"]//" -e "s/['\"]$//" || true)"
+    if [[ -n "${existing_port}" ]]; then
+      DASHBOARD_PORT="${existing_port}"
+    fi
+  fi
+fi
+chmod 600 "${CONFIG_FILE}"
+
+chmod +x "${INSTALL_DIR}"/*jobs.sh
+chmod +x "${INSTALL_DIR}/scheduler_jobs.sh"
+chmod +x "${INSTALL_DIR}/install_featherdash.sh"
+touch "${LOG_DIR}/portal.log" "${LOG_DIR}/filer.log" "${LOG_DIR}/scheduler.log"
+chown -R "${SERVICE_USER}:${SERVICE_USER}" "${INSTALL_DIR}" "${DATA_DIR}" "${LOG_DIR}"
+chown root:"${SERVICE_USER}" "${CONFIG_FILE}"
+chmod 640 "${CONFIG_FILE}"
+
+if systemctl list-unit-files | grep -q "^${LEGACY_SERVICE_NAME}\.service"; then
+  section "Stopping previous ${LEGACY_SERVICE_NAME} service"
+  systemctl disable --now "${LEGACY_SERVICE_NAME}" || true
+  rm -f "/etc/systemd/system/${LEGACY_SERVICE_NAME}.service"
+fi
+rm -f "/etc/cron.d/${LEGACY_SERVICE_NAME}" || true
+
+section "Installing systemd service"
+SERVICE_TMP="$(mktemp)"
+cp "${INSTALL_DIR}/deploy/featherdash.service" "${SERVICE_TMP}"
+replace_token "${SERVICE_TMP}" "__INSTALL_DIR__" "${INSTALL_DIR}"
+replace_token "${SERVICE_TMP}" "__CONFIG_FILE__" "${CONFIG_FILE}"
+replace_token "${SERVICE_TMP}" "__SERVICE_USER__" "${SERVICE_USER}"
+replace_token "${SERVICE_TMP}" "__PRODUCT_NAME__" "${PRODUCT_NAME}"
+cp "${SERVICE_TMP}" "/etc/systemd/system/${PRODUCT_SLUG}.service"
+rm -f "${SERVICE_TMP}"
+systemctl daemon-reload
+systemctl enable --now "${PRODUCT_SLUG}"
+
+section "Collector schedule"
+SCHEDULER_CRON="*/5 * * * *"
+echo "  The host scheduler wakes every 5 minutes."
+echo "  Each enabled portal environment then runs only when its own saved interval is due."
+echo "  Per-portal collector timing is managed in the UI under Administration -> Portals."
+
+section "Installing cron collectors"
+CRON_FILE="/etc/cron.d/${PRODUCT_SLUG}"
+CRON_TMP="$(mktemp)"
+cp "${INSTALL_DIR}/deploy/crontab.featherdash" "${CRON_TMP}"
+replace_token "${CRON_TMP}" "__INSTALL_DIR__" "${INSTALL_DIR}"
+replace_token "${CRON_TMP}" "__SERVICE_USER__" "${SERVICE_USER}"
+replace_token "${CRON_TMP}" "__LOG_DIR__" "${LOG_DIR}"
+cp "${CRON_TMP}" "${CRON_FILE}"
+rm -f "${CRON_TMP}"
+chmod 644 "${CRON_FILE}"
+systemctl enable --now cron
+
+echo
+echo "${PRODUCT_NAME} install complete."
+echo
+echo "Open the dashboard:"
+echo "  http://<instance-ip>:${DASHBOARD_PORT}/"
+echo
+echo "Next step:"
+echo "  Sign in to the dashboard and go to Administration -> Portal Environments"
+echo "  to add your portal systems."
+echo
+echo "Health check:"
+echo "  http://<instance-ip>:${DASHBOARD_PORT}/healthz"
+echo
+echo "App code:     ${INSTALL_DIR}"
+echo "Admin config: ${CONFIG_FILE}"
+echo "CSV data:     ${DATA_DIR}"
+echo "Logs:         ${LOG_DIR}"
+echo "Service user: ${SERVICE_USER}"
+echo "Scheduler:    ${SCHEDULER_CRON}"
+echo
+echo "Useful checks:"
+echo "  sudo systemctl status ${PRODUCT_SLUG} --no-pager"
+echo "  curl -I http://127.0.0.1:${DASHBOARD_PORT}/healthz"
+echo "  sudo journalctl -u ${PRODUCT_SLUG} -n 100 --no-pager"
+echo "  sudo tail -F ${LOG_DIR}/portal.log"
+echo "  sudo tail -F ${LOG_DIR}/filer.log"
+echo "  sudo tail -F ${LOG_DIR}/scheduler.log"

@@ -1,0 +1,1 @@
+*/5 * * * * __SERVICE_USER__ __INSTALL_DIR__/scheduler_jobs.sh >> __LOG_DIR__/scheduler.log 2>&1
