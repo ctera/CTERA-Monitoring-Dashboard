@@ -6,7 +6,25 @@ The application runs on Linux as a systemd service and uses scheduled collector 
 
 ## Repository
 
+```text
 https://github.com/ctera/CTERA-Monitoring-Dashboard
+```
+
+## Supported Platforms
+
+This installer currently supports Ubuntu/Debian based Linux servers.
+
+| Platform | Status | Notes |
+|---|---|---|
+| Ubuntu | Supported | Recommended platform |
+| Debian | Supported | Expected to work |
+| RHEL / Rocky / AlmaLinux / Oracle Linux | Coming soon | Installer support for `dnf` and `yum` is planned |
+| CentOS | Coming soon | Older CentOS versions may require additional package adjustments |
+| Windows | Not supported | Windows can be used to download and upload files, but the dashboard service should run on Linux |
+
+The current installer uses `apt`, so it should be run on Ubuntu or Debian based systems.
+
+Support for RHEL-style systems is coming soon.
 
 ## Default Layout
 
@@ -22,6 +40,8 @@ https://github.com/ctera/CTERA-Monitoring-Dashboard
 | Cron file | `/etc/cron.d/ctera-monitoring-dashboard` |
 | Default port | `8080` |
 
+---
+
 # Install
 
 There are three supported install options.
@@ -35,6 +55,8 @@ There are three supported install options.
 | Option 3 | Clone repository with Git | Servers that should be updated later with `git pull` |
 
 Most users should use **Install Option 1**.
+
+---
 
 ## Install Option 1: Download ZIP From GitHub Website and Upload to Server
 
@@ -74,7 +96,16 @@ Upload the ZIP file to:
 /tmp/ctera-monitoring-dashboard.zip
 ```
 
-### Step 3: Extract into the application directory
+### Step 3: Install unzip if needed
+
+Run this on the Linux server:
+
+```bash
+sudo apt update
+sudo apt install -y unzip
+```
+
+### Step 4: Extract into the application directory
 
 Run this on the Linux server:
 
@@ -90,18 +121,27 @@ sudo unzip -q /tmp/ctera-monitoring-dashboard.zip -d /tmp/ctera-monitoring-dashb
 sudo cp -a /tmp/ctera-monitoring-dashboard-unzip/CTERA-Monitoring-Dashboard-main/. /opt/monitoring/ctera-monitoring-dashboard/
 ```
 
-### Step 4: Run the installer
+### Step 5: Run the installer
 
 ```bash
 cd /opt/monitoring/ctera-monitoring-dashboard
 sudo bash ./install.sh
 ```
 
+---
+
 ## Install Option 2: Download Package Directly on Server
 
 Use this option when the Linux server has internet access and can reach GitHub.
 
-### Step 1: Download the package
+### Step 1: Install wget if needed
+
+```bash
+sudo apt update
+sudo apt install -y wget
+```
+
+### Step 2: Download the package
 
 ```bash
 cd /tmp
@@ -110,7 +150,7 @@ sudo rm -f ctera-monitoring-dashboard.tar.gz
 sudo wget -O ctera-monitoring-dashboard.tar.gz https://github.com/ctera/CTERA-Monitoring-Dashboard/archive/refs/heads/main.tar.gz
 ```
 
-### Step 2: Extract into the application directory
+### Step 3: Extract into the application directory
 
 ```bash
 sudo rm -rf /opt/monitoring/ctera-monitoring-dashboard
@@ -121,12 +161,14 @@ sudo tar -xzf /tmp/ctera-monitoring-dashboard.tar.gz \
   --strip-components=1
 ```
 
-### Step 3: Run the installer
+### Step 4: Run the installer
 
 ```bash
 cd /opt/monitoring/ctera-monitoring-dashboard
 sudo bash ./install.sh
 ```
+
+---
 
 ## Install Option 3: Clone Repository With Git
 
@@ -134,17 +176,9 @@ Use this option only if the installed server should use `git pull` directly.
 
 ### Step 1: Install Git
 
-On Ubuntu or Debian:
-
 ```bash
 sudo apt update
 sudo apt install -y git
-```
-
-On RHEL, Rocky, AlmaLinux, or Oracle Linux:
-
-```bash
-sudo dnf install -y git
 ```
 
 ### Step 2: Clone the repository
@@ -163,6 +197,8 @@ cd ctera-monitoring-dashboard
 sudo bash ./install.sh
 ```
 
+---
+
 ## Open the Dashboard
 
 After installation, open:
@@ -177,6 +213,8 @@ Health check:
 http://<server-ip>:8080/healthz
 ```
 
+---
+
 # Upgrade
 
 There are three supported upgrade options.
@@ -190,6 +228,8 @@ There are three supported upgrade options.
 | Option 3 | Git pull from cloned repository | Servers originally installed with `git clone` |
 
 Most users should use **Upgrade Option 1**.
+
+---
 
 ## Upgrade Option 1: Download ZIP From GitHub Website and Upload to Server
 
@@ -223,7 +263,16 @@ Upload the ZIP file to:
 /tmp/ctera-monitoring-dashboard.zip
 ```
 
-### Step 3: Extract the upgrade package under `/tmp`
+### Step 3: Install unzip if needed
+
+Run this on the Linux server:
+
+```bash
+sudo apt update
+sudo apt install -y unzip
+```
+
+### Step 4: Extract the upgrade package under `/tmp`
 
 Run this on the Linux server:
 
@@ -236,6 +285,54 @@ sudo mkdir -p /tmp/ctera-monitoring-dashboard-unzip
 sudo unzip -q /tmp/ctera-monitoring-dashboard.zip -d /tmp/ctera-monitoring-dashboard-unzip
 
 sudo cp -a /tmp/ctera-monitoring-dashboard-unzip/CTERA-Monitoring-Dashboard-main/. /tmp/ctera-monitoring-dashboard/
+```
+
+### Step 5: Run the upgrade
+
+```bash
+cd /tmp/ctera-monitoring-dashboard
+sudo bash ./upgrade.sh
+```
+
+The upgrade script updates the installed application under:
+
+```text
+/opt/monitoring/ctera-monitoring-dashboard
+```
+
+It also creates a backup before applying the update.
+
+---
+
+## Upgrade Option 2: Download Package Directly on Server
+
+Use this option when the Linux server has internet access and can reach GitHub.
+
+### Step 1: Install wget if needed
+
+```bash
+sudo apt update
+sudo apt install -y wget
+```
+
+### Step 2: Download the latest package
+
+```bash
+cd /tmp
+
+sudo rm -f ctera-monitoring-dashboard.tar.gz
+sudo wget -O ctera-monitoring-dashboard.tar.gz https://github.com/ctera/CTERA-Monitoring-Dashboard/archive/refs/heads/main.tar.gz
+```
+
+### Step 3: Extract under `/tmp`
+
+```bash
+sudo rm -rf /tmp/ctera-monitoring-dashboard
+sudo mkdir -p /tmp/ctera-monitoring-dashboard
+
+sudo tar -xzf /tmp/ctera-monitoring-dashboard.tar.gz \
+  -C /tmp/ctera-monitoring-dashboard \
+  --strip-components=1
 ```
 
 ### Step 4: Run the upgrade
@@ -253,44 +350,7 @@ The upgrade script updates the installed application under:
 
 It also creates a backup before applying the update.
 
-## Upgrade Option 2: Download Package Directly on Server
-
-Use this option when the Linux server has internet access and can reach GitHub.
-
-### Step 1: Download the latest package
-
-```bash
-cd /tmp
-
-sudo rm -f ctera-monitoring-dashboard.tar.gz
-sudo wget -O ctera-monitoring-dashboard.tar.gz https://github.com/ctera/CTERA-Monitoring-Dashboard/archive/refs/heads/main.tar.gz
-```
-
-### Step 2: Extract under `/tmp`
-
-```bash
-sudo rm -rf /tmp/ctera-monitoring-dashboard
-sudo mkdir -p /tmp/ctera-monitoring-dashboard
-
-sudo tar -xzf /tmp/ctera-monitoring-dashboard.tar.gz \
-  -C /tmp/ctera-monitoring-dashboard \
-  --strip-components=1
-```
-
-### Step 3: Run the upgrade
-
-```bash
-cd /tmp/ctera-monitoring-dashboard
-sudo bash ./upgrade.sh
-```
-
-The upgrade script updates the installed application under:
-
-```text
-/opt/monitoring/ctera-monitoring-dashboard
-```
-
-It also creates a backup before applying the update.
+---
 
 ## Upgrade Option 3: Git Pull From Cloned Repository
 
@@ -302,6 +362,8 @@ cd /opt/monitoring/ctera-monitoring-dashboard
 sudo git pull
 sudo bash ./upgrade.sh
 ```
+
+---
 
 # Backup and Restore
 
@@ -326,6 +388,8 @@ Example:
 ```bash
 sudo bash /opt/monitoring-backup/ctera-monitoring-dashboard-<version>-<timestamp>/restore.sh
 ```
+
+---
 
 # Runtime Configuration
 
@@ -365,6 +429,8 @@ After changing the environment file:
 sudo systemctl restart ctera-monitoring-dashboard
 ```
 
+---
+
 # Service Management
 
 Check service status:
@@ -390,6 +456,8 @@ Follow logs:
 ```bash
 sudo journalctl -u ctera-monitoring-dashboard -f
 ```
+
+---
 
 # Collector Jobs
 
@@ -422,6 +490,8 @@ sudo tail -F /var/log/ctera-monitoring-dashboard/portal.log
 sudo tail -F /var/log/ctera-monitoring-dashboard/filer.log
 ```
 
+---
+
 # Data Output
 
 Dashboard CSV files are stored in:
@@ -443,6 +513,8 @@ ls -lh /var/lib/ctera-monitoring-dashboard/data
 ls -lh /var/lib/ctera-monitoring-dashboard/data/db
 ```
 
+---
+
 # Validate Installation
 
 ```bash
@@ -452,6 +524,8 @@ curl -I http://127.0.0.1:8080/healthz
 sudo systemctl status ctera-monitoring-dashboard --no-pager
 sudo journalctl -u ctera-monitoring-dashboard -n 100 --no-pager
 ```
+
+---
 
 # Troubleshooting
 
