@@ -3,22 +3,28 @@ set -euo pipefail
 
 timestamp_log() {
   while IFS= read -r line; do
-    printf '%s %s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "${line}"
+    local prefix=""
+    if [[ -n "${FEATHERDASH_ENV_LABEL:-}" ]]; then
+      prefix="[${FEATHERDASH_ENV_LABEL}] "
+    fi
+    printf '%s %s%s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "${prefix}" "${line}"
   done
 }
 
-exec > >(timestamp_log) 2>&1
-
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 FEATHERDASH_CONFIG="${FEATHERDASH_CONFIG:-/etc/ctera-monitoring-dashboard.env}"
-
-echo "Starting portal_jobs.sh"
 
 cd "${SCRIPT_DIR}"
 
 set -a
 source "${FEATHERDASH_CONFIG}"
 set +a
+
+FEATHERDASH_ENV_LABEL="${FEATHERDASH_ENV_NAME:-${CTERA_HOST:-portal}}"
+
+exec > >(timestamp_log) 2>&1
+
+echo "Starting portal_jobs.sh"
 
 CTERA_HOST="${CTERA_HOST:-${PORTAL:-}}"
 CTERA_USERNAME="${CTERA_USERNAME:-${CTERA_USER:-}}"
@@ -113,6 +119,7 @@ if [[ "${JUMP_HOST_ENABLED}" =~ ^(1|true|yes|on)$ ]]; then
     JUMP_SOCKET="/tmp/ctera-monitoring-dashboard-jump-${RANDOM}-${RANDOM}.sock"
     JUMP_TARGET="${JUMP_SSH_USER}@${JUMP_HOST}"
     ssh -M -S "${JUMP_SOCKET}" -fnNT \
+      -o BatchMode=yes \
       -o ExitOnForwardFailure=yes \
       -o StrictHostKeyChecking=no \
       -o UserKnownHostsFile=/dev/null \
@@ -151,6 +158,7 @@ if [[ "${JUMP_HOST_ENABLED}" =~ ^(1|true|yes|on)$ ]]; then
     TUNNEL_SOCKET="/tmp/ctera-monitoring-dashboard-local-${RANDOM}-${RANDOM}.sock"
     TUNNEL_TARGET="${JUMP_TARGET}"
     ssh -M -S "${TUNNEL_SOCKET}" -fnNT \
+      -o BatchMode=yes \
       -o ExitOnForwardFailure=yes \
       -o StrictHostKeyChecking=no \
       -o UserKnownHostsFile=/dev/null \
@@ -164,6 +172,7 @@ if [[ "${JUMP_HOST_ENABLED}" =~ ^(1|true|yes|on)$ ]]; then
     TUNNEL_TARGET="${SERVER_SSH_USER}@${PGHOST}"
     PROXY_CMD="ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o IdentitiesOnly=yes -i ${ROOT_KEY} -W %h:%p ${JUMP_SSH_USER}@${JUMP_HOST}"
     ssh -M -S "${TUNNEL_SOCKET}" -fnNT \
+      -o BatchMode=yes \
       -o ExitOnForwardFailure=yes \
       -o StrictHostKeyChecking=no \
       -o UserKnownHostsFile=/dev/null \

@@ -1775,6 +1775,24 @@ def _ensure_runtime_keypair(env):
     return base
 
 
+def _normalize_bootstrap_auth_modes(env):
+    env = dict(env or {})
+    ssh_user = str(env.get("ssh_username") or "root").strip() or "root"
+    ssh_key_path = str(env.get("ssh_key_path") or "").strip()
+    if ssh_key_path and os.path.exists(ssh_key_path):
+        env["ssh_mode"] = "root_key" if ssh_user == "root" else "user_key_sudo"
+        env["ssh_password"] = ""
+        env["sudo_required"] = 0 if ssh_user == "root" else 1
+
+    if bool(env.get("jump_host_enabled")):
+        jump_user = str(env.get("jump_ssh_username") or "root").strip() or "root"
+        jump_key_path = str(env.get("jump_ssh_key_path") or "").strip()
+        if jump_key_path and os.path.exists(jump_key_path):
+            env["jump_ssh_mode"] = "root_key" if jump_user == "root" else "user_key"
+            env["jump_ssh_password"] = ""
+    return env
+
+
 def _install_runtime_public_key(client, private_key_path):
     pub_path = private_key_path + ".pub"
     with open(pub_path, "r", encoding="utf-8") as handle:
@@ -1877,9 +1895,33 @@ def _bootstrap_environment_runtime(env_id):
     env = _get_environment(env_id, include_secret=True)
     if not env:
         raise ValueError("Select a saved portal environment first.")
+    ssh_mode_current = str(env.get("ssh_mode") or "root_password").strip()
+    jump_mode_current = str(env.get("jump_ssh_mode") or "root_password").strip()
+    allow_pre_normalize = ssh_mode_current not in {"root_password", "user_password_sudo"} and jump_mode_current not in {"root_password", "user_password"}
+    normalized_before = _normalize_bootstrap_auth_modes(env) if allow_pre_normalize else dict(env)
+    if allow_pre_normalize and any(normalized_before.get(key) != env.get(key) for key in ("ssh_mode", "ssh_password", "sudo_required", "jump_ssh_mode", "jump_ssh_password")):
+        env = _update_environment_bootstrap_fields(
+            env_id,
+            ssh_key_path=normalized_before.get("ssh_key_path") or "",
+            jump_ssh_key_path=normalized_before.get("jump_ssh_key_path") or "",
+            ssh_mode=normalized_before.get("ssh_mode") or "",
+            ssh_username=normalized_before.get("ssh_username") or "",
+            ssh_password=normalized_before.get("ssh_password") or "",
+            jump_ssh_mode=normalized_before.get("jump_ssh_mode") or "",
+            jump_ssh_password=normalized_before.get("jump_ssh_password") or "",
+            pg_password=normalized_before.get("pg_password") or "",
+        )
     runtime_key_path = _ensure_runtime_keypair(env)
-    needs_key_install = not (str(env.get("ssh_key_path") or "").strip() and os.path.exists(str(env.get("ssh_key_path") or "").strip()))
-    needs_jump_key_install = bool(env.get("jump_host_enabled")) and not (str(env.get("jump_ssh_key_path") or "").strip() and os.path.exists(str(env.get("jump_ssh_key_path") or "").strip()))
+    ssh_mode_current = str(env.get("ssh_mode") or "root_password").strip()
+    jump_mode_current = str(env.get("jump_ssh_mode") or "root_password").strip()
+    needs_key_install = (
+        ssh_mode_current in {"root_password", "user_password_sudo"}
+        or not (str(env.get("ssh_key_path") or "").strip() and os.path.exists(str(env.get("ssh_key_path") or "").strip()))
+    )
+    needs_jump_key_install = bool(env.get("jump_host_enabled")) and (
+        jump_mode_current in {"root_password", "user_password"}
+        or not (str(env.get("jump_ssh_key_path") or "").strip() and os.path.exists(str(env.get("jump_ssh_key_path") or "").strip()))
+    )
     needs_pg_password = not str(env.get("pg_password") or "").strip()
     preconfigured_jump = bool(env.get("jump_host_enabled")) and bool(env.get("main_db_via_jump_preconfigured"))
     if not needs_key_install and not needs_jump_key_install and not needs_pg_password:
@@ -1925,6 +1967,7 @@ def _bootstrap_environment_runtime(env_id):
                 jump_client.close()
             except Exception:
                 pass
+        env = _normalize_bootstrap_auth_modes(env)
         return _update_environment_bootstrap_fields(
             env_id,
             ssh_key_path=env.get("ssh_key_path") or "",
@@ -1962,6 +2005,7 @@ def _bootstrap_environment_runtime(env_id):
                 jump_client.close()
             except Exception:
                 pass
+    env = _normalize_bootstrap_auth_modes(env)
     return _update_environment_bootstrap_fields(
         env_id,
         ssh_key_path=env.get("ssh_key_path") or "",

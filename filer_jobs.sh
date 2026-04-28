@@ -3,22 +3,28 @@ set -euo pipefail
 
 timestamp_log() {
   while IFS= read -r line; do
-    printf '%s %s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "${line}"
+    local prefix=""
+    if [[ -n "${FEATHERDASH_ENV_LABEL:-}" ]]; then
+      prefix="[${FEATHERDASH_ENV_LABEL}] "
+    fi
+    printf '%s %s%s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "${prefix}" "${line}"
   done
 }
 
-exec > >(timestamp_log) 2>&1
-
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 FEATHERDASH_CONFIG="${FEATHERDASH_CONFIG:-/etc/ctera-monitoring-dashboard.env}"
-
-echo "Starting filer_jobs.sh"
 
 cd "${SCRIPT_DIR}"
 
 set -a
 source "${FEATHERDASH_CONFIG}"
 set +a
+
+FEATHERDASH_ENV_LABEL="${FEATHERDASH_ENV_NAME:-${CTERA_HOST:-filer}}"
+
+exec > >(timestamp_log) 2>&1
+
+echo "Starting filer_jobs.sh"
 
 CTERA_HOST="${CTERA_HOST:-${PORTAL:-}}"
 CTERA_USERNAME="${CTERA_USERNAME:-${CTERA_USER:-}}"
