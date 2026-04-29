@@ -54,7 +54,23 @@ There are three supported install options.
 | Option 2 | Download package directly on the Linux server | Servers with internet access to GitHub |
 | Option 3 | Clone repository with Git | Servers that should be updated later with `git pull` |
 
-Most users should use **Install Option 1**.
+Most users should use **Install Option 2** or the quick tarball flow below.
+
+---
+
+## Recommended Quick Install (Tarball)
+
+Use this when you want the shortest install path with the packaged installer:
+
+```bash
+cd /tmp
+curl -L https://github.com/ctera/CTERA-Monitoring-Dashboard/archive/refs/heads/main.tar.gz -o ctera-monitoring-dashboard.tar.gz
+rm -rf /tmp/ctera-monitoring-dashboard
+mkdir -p /tmp/ctera-monitoring-dashboard
+sudo tar -xzf /tmp/ctera-monitoring-dashboard.tar.gz -C /tmp/ctera-monitoring-dashboard --strip-components=1
+cd /tmp/ctera-monitoring-dashboard
+sudo bash ./install.sh
+```
 
 ---
 
@@ -227,7 +243,24 @@ There are three supported upgrade options.
 | Option 2 | Download package directly on the Linux server | Servers with internet access to GitHub |
 | Option 3 | Git pull from cloned repository | Servers originally installed with `git clone` |
 
-Most users should use **Upgrade Option 1**.
+Most users should use **Upgrade Option 2** or the one-command upgrade below.
+
+---
+
+## Recommended One-Command Upgrade
+
+Use this when the Linux server can reach GitHub and you want the shortest supported upgrade path.
+
+```bash
+cd /tmp && sudo rm -rf /tmp/ctera-monitoring-dashboard && curl -L https://github.com/ctera/CTERA-Monitoring-Dashboard/archive/refs/heads/main.tar.gz -o /tmp/ctera-monitoring-dashboard.tar.gz && sudo mkdir -p /tmp/ctera-monitoring-dashboard && sudo tar -xzf /tmp/ctera-monitoring-dashboard.tar.gz -C /tmp/ctera-monitoring-dashboard --strip-components=1 && cd /tmp/ctera-monitoring-dashboard && sudo bash ./upgrade.sh --install-dir /opt/monitoring/ctera-monitoring-dashboard
+```
+
+What this does:
+- downloads the latest package under `/tmp`
+- extracts it into `/tmp/ctera-monitoring-dashboard`
+- runs `upgrade.sh` from the new package directory
+- creates a backup and restore script before changing the installed copy
+- preserves customer settings and merges new default threshold entries into `thresholds.yaml`
 
 ---
 
@@ -301,6 +334,11 @@ The upgrade script updates the installed application under:
 ```
 
 It also creates a backup before applying the update.
+
+Current upgrade behavior:
+- preserves existing runtime configuration
+- preserves dashboard UI config
+- merges `thresholds.yaml` by keeping installed values and adding any missing shipped defaults
 
 ---
 

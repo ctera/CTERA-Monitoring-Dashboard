@@ -174,6 +174,40 @@ restore_if_present() {
   fi
 }
 
+merge_thresholds_if_needed() {
+  local existing_path="${TMP_BACKUP}/thresholds.yaml"
+  local shipped_path="${INSTALL_DIR}/thresholds.yaml"
+  if [[ ! -f "${existing_path}" || ! -f "${shipped_path}" ]]; then
+    return
+  fi
+  "${INSTALL_DIR}/venv/bin/python" - "${existing_path}" "${shipped_path}" <<'PY'
+import copy
+import sys
+from pathlib import Path
+import yaml
+
+existing_path = Path(sys.argv[1])
+shipped_path = Path(sys.argv[2])
+
+def merge_keep_existing(existing, shipped):
+    if isinstance(existing, dict) and isinstance(shipped, dict):
+        merged = copy.deepcopy(existing)
+        for key, value in shipped.items():
+            if key in merged:
+                merged[key] = merge_keep_existing(merged[key], value)
+            else:
+                merged[key] = copy.deepcopy(value)
+        return merged
+    return copy.deepcopy(existing)
+
+existing = yaml.safe_load(existing_path.read_text(encoding="utf-8")) or {}
+shipped = yaml.safe_load(shipped_path.read_text(encoding="utf-8")) or {}
+merged = merge_keep_existing(existing, shipped)
+shipped_path.write_text(yaml.safe_dump(merged, sort_keys=False, allow_unicode=False), encoding="utf-8", newline="\n")
+PY
+  echo "Thresholds merged: kept installed values and added any new shipped defaults."
+}
+
 preserve_if_present "thresholds.yaml"
 preserve_if_present "dashboard/config.yaml"
 
@@ -305,7 +339,6 @@ echo "Backup created at ${BACKUP_DIR}"
 section "Copying updated application files"
 cp -a "${SCRIPT_DIR}/." "${INSTALL_DIR}/"
 
-restore_if_present "thresholds.yaml"
 restore_if_present "dashboard/config.yaml"
 
 chmod +x \
@@ -323,6 +356,9 @@ fi
 
 section "Installing Python requirements"
 "${INSTALL_DIR}/venv/bin/pip" install -r "${INSTALL_DIR}/requirements.txt"
+
+section "Merging threshold defaults"
+merge_thresholds_if_needed
 
 section "Fixing ownership"
 mkdir -p "${DATA_DIR}" "${LOG_DIR}"
