@@ -6447,11 +6447,11 @@ async function runAISummary(){
 
     <div class="subtabs">
       <button class="portalsubbtn" data-portal-sub="portal_overview" onclick="showPortalTab('portal_overview')">Overview</button>
-      <button class="portalsubbtn" data-portal-sub="portal_servers" onclick="showPortalTab('portal_servers')">Servers{% if c_servers.bad %}<span class="badge">{{ c_servers.bad }}</span>{% endif %}</button>
-      <button class="portalsubbtn" data-portal-sub="portal_storage" onclick="showPortalTab('portal_storage')">Storage Nodes{% if c_storage.bad %}<span class="badge">{{ c_storage.bad }}</span>{% endif %}</button>
-      <button class="portalsubbtn" data-portal-sub="portal_tasks" onclick="showPortalTab('portal_tasks')">Tasks{% if c_tasks.bad %}<span class="badge">{{ c_tasks.bad }}</span>{% endif %}</button>
-      <button class="portalsubbtn" data-portal-sub="portal_licenses" onclick="showPortalTab('portal_licenses')">Licenses{% if c_licenses.bad %}<span class="badge">{{ c_licenses.bad }}</span>{% endif %}</button>
-    </div>
+      <button class="portalsubbtn" data-portal-sub="portal_servers" onclick="showPortalTab('portal_servers')">Servers{% if c_servers.bad %}<span class="badge">{{ c_servers.bad }}</span>{% endif %}{% if c_servers.warn %}<span class="tabbadge warn" style="margin-left:6px;">{{ c_servers.warn }}</span>{% endif %}</button>
+      <button class="portalsubbtn" data-portal-sub="portal_storage" onclick="showPortalTab('portal_storage')">Storage Nodes{% if c_storage.bad %}<span class="badge">{{ c_storage.bad }}</span>{% endif %}{% if c_storage.warn %}<span class="tabbadge warn" style="margin-left:6px;">{{ c_storage.warn }}</span>{% endif %}</button>
+      <button class="portalsubbtn" data-portal-sub="portal_tasks" onclick="showPortalTab('portal_tasks')">Tasks{% if c_tasks.bad %}<span class="badge">{{ c_tasks.bad }}</span>{% endif %}{% if c_tasks.warn %}<span class="tabbadge warn" style="margin-left:6px;">{{ c_tasks.warn }}</span>{% endif %}</button>
+      <button class="portalsubbtn" data-portal-sub="portal_licenses" onclick="showPortalTab('portal_licenses')">Licenses{% if c_licenses.bad %}<span class="badge">{{ c_licenses.bad }}</span>{% endif %}{% if c_licenses.warn %}<span class="tabbadge warn" style="margin-left:6px;">{{ c_licenses.warn }}</span>{% endif %}</button>
+      </div>
 
     <div id="portal_overview" class="portalpane" style="display:none">
       <div class="table-wrap">
@@ -6653,6 +6653,9 @@ async function runAISummary(){
           {{ v.title }}
           {% if v.bad_rows_count and v.bad_rows_count > 0 %}
             <span class="badge" title="{{ v.bad_cells_count }} bad cells">{{ v.bad_rows_count }}</span>
+          {% endif %}
+          {% if v.warn_rows_count and v.warn_rows_count > 0 %}
+            <span class="tabbadge warn" style="margin-left:6px;" title="Warning rows">{{ v.warn_rows_count }}</span>
           {% endif %}
         </button>
       {% endfor %}
