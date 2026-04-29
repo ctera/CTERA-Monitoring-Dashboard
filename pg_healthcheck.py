@@ -109,6 +109,17 @@ def fetch_dicts(cur, sql, params=None):
     rows = cur.fetchall()
     return [{cols[i]: r[i] for i in range(len(cols))} for r in rows]
 
+
+def get_table_columns(cur, table_name, schema_name="public"):
+    sql = """
+    SELECT column_name
+    FROM information_schema.columns
+    WHERE table_schema = %s AND table_name = %s
+    ORDER BY ordinal_position
+    """
+    cur.execute(sql, (schema_name, table_name))
+    return [row[0] for row in cur.fetchall()]
+
 # ----------------- Formatting helpers -----------------
 
 def fmt_timedelta(td):
@@ -267,38 +278,49 @@ def get_vacuum_analyze_stats(cur):
 
 
 def get_licenses(cur):
-    sql = """
+    preferred_columns = [
+        "db_id",
+        "index",
+        "key",
+        "original_key",
+        "expired",
+        "expiration_date",
+        "appliances",
+        "server_agents",
+        "workstation_agents",
+        "cloud_drives",
+        "cloud_drives_lite",
+        "valid",
+        "antivirus",
+        "varonis",
+        "key_manager",
+        "dlp",
+        "portal_license",
+        "vgateways4",
+        "vgateways8",
+        "vgateways32",
+        "vgateways64",
+        "vgateways128",
+        "vgateways256",
+        "storage",
+        "comment",
+        "global_file_lock",
+    ]
+    existing = set(get_table_columns(cur, "licenses"))
+    selected = [col for col in preferred_columns if col in existing]
+    if not selected:
+        return []
+    sql = f"""
     SELECT
-        db_id,
-        index,
-        key,
-        original_key,
-        expired,
-        expiration_date,
-        appliances,
-        server_agents,
-        workstation_agents,
-        cloud_drives,
-        cloud_drives_lite,
-        valid,
-        antivirus,
-        varonis,
-        key_manager,
-        dlp,
-        portal_license,
-        vgateways4,
-        vgateways8,
-        vgateways32,
-        vgateways64,
-        vgateways128,
-        vgateways256,
-        storage,
-        comment,
-        global_file_lock
+        {", ".join(selected)}
     FROM licenses
     ORDER BY expiration_date NULLS LAST, index;
     """
-    return fetch_dicts(cur, sql)
+    rows = fetch_dicts(cur, sql)
+    for row in rows:
+        for col in preferred_columns:
+            row.setdefault(col, "")
+    return rows
 
 # 4) Table sizes
 def get_table_sizes(cur, min_bytes):
