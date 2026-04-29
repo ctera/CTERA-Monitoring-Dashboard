@@ -6274,7 +6274,7 @@ async function runAISummary(){
 
     <div class="subtabs">
       <button class="tenantsubbtn" data-tenant-sub="tenants_active" onclick="showTenantSubTab('tenants_active')">Active</button>
-      <button class="tenantsubbtn" data-tenant-sub="tenants_deleted" onclick="showTenantSubTab('tenants_deleted')">Deleted{% if deleted_tenants_rows|length %}<span class="badge">{{ deleted_tenants_rows|length }}</span>{% endif %}</button>
+      <button class="tenantsubbtn" data-tenant-sub="tenants_deleted" onclick="showTenantSubTab('tenants_deleted')">Deleted</button>
     </div>
 
     <div id="tenants_active" class="tenantpane" style="display:none">
