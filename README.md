@@ -72,6 +72,13 @@ cd /tmp/ctera-monitoring-dashboard
 sudo bash ./install.sh
 ```
 
+This uses `/tmp/ctera-monitoring-dashboard` only as a temporary staging folder for the package.
+The installer's default final application path is:
+
+```text
+/opt/monitoring/ctera-monitoring-dashboard
+```
+
 ---
 
 ## Install Option 1: Download ZIP From GitHub Website and Upload to Server
