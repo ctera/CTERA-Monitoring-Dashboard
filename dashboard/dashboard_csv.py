@@ -8187,10 +8187,15 @@ def index():
     overall_rows = sum(card["rows"] for card in overview_cards)
     overall_bad = sum(card["bad"] for card in overview_cards)
     overall_warn = sum(card["warn"] for card in overview_cards)
-    if overall_bad:
+    has_portal_critical = portal_counts["bad"] > 0
+    has_postgres_critical = pg_counts["bad"] > 0
+    has_servers_health_critical = hosts_counts["bad"] > 0
+    has_high_risk_critical = has_portal_critical or has_postgres_critical or has_servers_health_critical
+    edge_only_critical = edge_counts["bad"] > 0 and not has_high_risk_critical
+    if has_high_risk_critical:
         overall_risk_label = "High Risk"
         overall_risk_class = "risk-high"
-    elif overall_warn:
+    elif edge_only_critical or overall_warn:
         overall_risk_label = "Medium Risk"
         overall_risk_class = "risk-medium"
     else:

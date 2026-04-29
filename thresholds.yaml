@@ -42,7 +42,7 @@ portal:
   storage:
     default:
       ReadOnly:
-        crit: { eq: true }
+        warn: { eq: true }
 
   tasks:
     ignore_tasknames:
