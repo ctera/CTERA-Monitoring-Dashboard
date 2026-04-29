@@ -79,20 +79,6 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
-if [[ "${EUID}" -ne 0 ]]; then
-  echo "Run this installer as root, for example: sudo bash ./install_featherdash.sh" >&2
-  exit 1
-fi
-
-detect_platform_tools
-
-if [[ -z "${INSTALL_DIR}" || -z "${CONFIG_FILE}" || -z "${DATA_DIR}" || -z "${SERVICE_USER}" ]]; then
-  echo "Install dir, config file, data dir, and user must not be empty." >&2
-  exit 1
-fi
-
-DB_DIR="${DATA_DIR}/db"
-
 section() {
   echo
   echo "==> $1"
@@ -154,6 +140,20 @@ install_ssh_helper_packages() {
       ;;
   esac
 }
+
+if [[ "${EUID}" -ne 0 ]]; then
+  echo "Run this installer as root, for example: sudo bash ./install_featherdash.sh" >&2
+  exit 1
+fi
+
+detect_platform_tools
+
+if [[ -z "${INSTALL_DIR}" || -z "${CONFIG_FILE}" || -z "${DATA_DIR}" || -z "${SERVICE_USER}" ]]; then
+  echo "Install dir, config file, data dir, and user must not be empty." >&2
+  exit 1
+fi
+
+DB_DIR="${DATA_DIR}/db"
 
 print_banner() {
   cat <<EOF
