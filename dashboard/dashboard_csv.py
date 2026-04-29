@@ -2149,7 +2149,7 @@ def _save_environment(payload):
     if not portal_fqdn:
         raise ValueError("Portal FQDN is required.")
     if not ctera_username:
-        raise ValueError("CTERA read-only username is required.")
+        raise ValueError("CTERA Portal Read-Only Global Administrator is required.")
     if not main_db_ip:
         raise ValueError("MainDB IP is required.")
     if not ctera_password.strip():
@@ -4982,7 +4982,7 @@ async function runAISummary(){
 
       if (!String(payload.environment_name || '').trim()) return 'Environment name is required.';
       if (!String(payload.portal_fqdn || '').trim()) return 'Portal FQDN is required.';
-      if (!String(payload.ctera_username || '').trim()) return 'CTERA read-only username is required.';
+      if (!String(payload.ctera_username || '').trim()) return 'CTERA Portal Read-Only Global Administrator is required.';
       if (!String(payload.main_db_ip || '').trim()) return 'MainDB IP is required.';
       if (!String(payload.ctera_password || '').trim() && !hasSavedCteraPassword) return 'CTERA password is required.';
       if (useJumpHost && !String(payload.jump_host || '').trim()) return 'Jump host is required when jump-host access is enabled.';
@@ -6954,7 +6954,7 @@ async function runAISummary(){
             <input id="envPortalFqdn" class="threshold-input" type="text" placeholder="files.example.com">
           </div>
           <div class="threshold-field">
-            <label for="envCteraUsername">CTERA Read-Only Username</label>
+            <label for="envCteraUsername">CTERA Portal Read-Only Global Administrator</label>
             <input id="envCteraUsername" class="threshold-input" type="text" placeholder="monitoring">
           </div>
           <div class="threshold-field">
