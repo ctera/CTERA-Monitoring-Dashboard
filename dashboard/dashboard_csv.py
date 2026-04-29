@@ -3024,6 +3024,7 @@ HTML = """
     .topbar h2 { margin:0; color:rgb(44, 68, 83); font-size:16px; font-weight:700; line-height:24px; }
     .topbar-sub { color:rgb(64, 95, 110); font-size:13px; font-weight:400; line-height:20px; margin-top:4px; }
     .topbar-meta { display:flex; flex-wrap:wrap; gap:10px; align-items:center; justify-content:flex-end; }
+    .topbar-actions { display:flex; align-items:center; gap:8px; flex-wrap:wrap; justify-content:flex-end; }
     .top-context { display:flex; flex-direction:column; gap:4px; min-width:240px; }
     .top-context label { color:rgb(99, 118, 131); font-size:11px; font-weight:600; line-height:14px; text-transform:uppercase; letter-spacing:.04em; }
     .top-context select {
@@ -3043,6 +3044,7 @@ HTML = """
     .top-user { display:inline-flex; align-items:center; gap:8px; flex-wrap:wrap; }
     .top-user-name { display:inline-flex; align-items:center; gap:8px; padding:8px 12px; border-radius:999px; background:#f8fafc; color:rgb(44, 68, 83); font-size:12px; font-weight:700; border:1px solid #dbe4f0; }
     .top-user-name strong { font-weight:800; color:#1f2937; }
+    .refresh-note { color:var(--muted); font-size:12px; font-weight:700; }
     .top-logout { display:inline-flex; align-items:center; justify-content:center; min-height:36px; padding:8px 12px; border-radius:999px; border:1px solid #dbe4f0; background:#ffffff; color:rgb(44, 68, 83); font-size:12px; font-weight:800; text-decoration:none; }
     .top-logout:hover { border-color:#c7d2fe; background:#f8fafc; color:#312e81; }
     .content-shell { padding:20px 24px 28px; min-width:0; }
@@ -3698,12 +3700,35 @@ async function runAISummary(){
       });
     }
 
+    let jobStatusSnapshot = { portal: null, filer: null };
+    let autoRefreshTimer = null;
+
+    function refreshCurrentView(forceMessage){
+      const btn = document.getElementById('globalRefreshBtn');
+      const note = document.getElementById('refreshNote');
+      if (btn) btn.disabled = true;
+      if (note) note.textContent = forceMessage || 'Refreshing data...';
+      window.setTimeout(() => {
+        window.location.reload();
+      }, 250);
+    }
+
+    function scheduleAutoRefresh(message){
+      if (autoRefreshTimer) return;
+      const note = document.getElementById('refreshNote');
+      if (note) note.textContent = message || 'Collector finished. Refreshing data...';
+      autoRefreshTimer = window.setTimeout(() => refreshCurrentView(message || 'Refreshing data...'), 900);
+    }
+
     async function refreshJobStatus(){
       try{
         const resp = await fetch('/job_status');
         const data = await resp.json();
+        let shouldAutoRefresh = false;
         ['portal','filer'].forEach(name => {
           const card = data[name] || {};
+          const previousStatus = jobStatusSnapshot[name];
+          const currentStatus = card.status || 'idle';
           const badge = document.getElementById('jobBadge_' + name);
           const started = document.getElementById('jobStarted_' + name);
           const finished = document.getElementById('jobFinished_' + name);
@@ -3722,10 +3747,17 @@ async function runAISummary(){
           if (tailCmd) tailCmd.textContent = card.tail_command || '';
           if (tail) tail.textContent = card.tail || 'No recent log lines.';
           if (btn) btn.disabled = (card.status === 'running');
+          if (previousStatus === 'running' && currentStatus !== 'running') {
+            shouldAutoRefresh = true;
+          }
+          jobStatusSnapshot[name] = currentStatus;
         });
         const allBtn = document.getElementById('runBtn_all');
         if (allBtn) {
           allBtn.disabled = ['portal','filer'].some(name => (data[name] || {}).status === 'running');
+        }
+        if (shouldAutoRefresh) {
+          scheduleAutoRefresh('Collector finished. Refreshing data...');
         }
       } catch (e) {
         console.error('job status failed', e);
@@ -5447,6 +5479,10 @@ async function runAISummary(){
           <div class="topbar-sub">Portal-style monitoring view for collectors, tenants, filers, database health, and server posture.</div>
         </div>
         <div class="topbar-meta">
+          <div class="topbar-actions">
+            <button id="globalRefreshBtn" class="ops-btn" type="button" onclick="refreshCurrentView('Refreshing data...')">Refresh</button>
+            <span id="refreshNote" class="refresh-note"></span>
+          </div>
           <div class="top-context">
             <label for="environmentContextSelect">Context</label>
             <select id="environmentContextSelect" onchange="handleEnvironmentContextChange()">
