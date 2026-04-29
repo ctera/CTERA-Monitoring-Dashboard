@@ -236,7 +236,8 @@ def merge_keep_existing(existing, shipped):
 existing = yaml.safe_load(existing_path.read_text(encoding="utf-8")) or {}
 shipped = yaml.safe_load(shipped_path.read_text(encoding="utf-8")) or {}
 merged = merge_keep_existing(existing, shipped)
-shipped_path.write_text(yaml.safe_dump(merged, sort_keys=False, allow_unicode=False), encoding="utf-8", newline="\n")
+with shipped_path.open("w", encoding="utf-8", newline="\n") as handle:
+    handle.write(yaml.safe_dump(merged, sort_keys=False, allow_unicode=False))
 PY
   echo "Thresholds merged: kept installed values and added any new shipped defaults."
 }
