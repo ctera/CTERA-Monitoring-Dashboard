@@ -13,6 +13,8 @@ ARCHIVE=""
 NONINTERACTIVE=0
 SKIP_CONFIRM=0
 DASHBOARD_PORT="8080"
+PKG_MGR=""
+CRON_SERVICE_NAME="cron"
 
 usage() {
   cat <<'EOF'
@@ -82,6 +84,8 @@ if [[ "${EUID}" -ne 0 ]]; then
   exit 1
 fi
 
+detect_platform_tools
+
 if [[ -z "${INSTALL_DIR}" || -z "${CONFIG_FILE}" || -z "${DATA_DIR}" || -z "${SERVICE_USER}" ]]; then
   echo "Install dir, config file, data dir, and user must not be empty." >&2
   exit 1
@@ -92,6 +96,63 @@ DB_DIR="${DATA_DIR}/db"
 section() {
   echo
   echo "==> $1"
+}
+
+detect_platform_tools() {
+  if command -v apt >/dev/null 2>&1; then
+    PKG_MGR="apt"
+    CRON_SERVICE_NAME="cron"
+  elif command -v dnf >/dev/null 2>&1; then
+    PKG_MGR="dnf"
+    CRON_SERVICE_NAME="crond"
+  elif command -v yum >/dev/null 2>&1; then
+    PKG_MGR="yum"
+    CRON_SERVICE_NAME="crond"
+  else
+    echo "Unsupported system: no apt, dnf, or yum package manager found." >&2
+    exit 1
+  fi
+}
+
+install_os_packages() {
+  case "${PKG_MGR}" in
+    apt)
+      apt update
+      apt install -y "$@"
+      ;;
+    dnf)
+      dnf install -y "$@"
+      ;;
+    yum)
+      yum install -y "$@"
+      ;;
+    *)
+      echo "Package manager not initialized." >&2
+      exit 1
+      ;;
+  esac
+}
+
+install_base_packages() {
+  case "${PKG_MGR}" in
+    apt)
+      install_os_packages python3 python3-venv python3-pip cron curl jq net-tools openssh-client
+      ;;
+    dnf|yum)
+      install_os_packages python3 python3-pip cronie curl jq net-tools openssh-clients sshpass
+      ;;
+  esac
+}
+
+install_ssh_helper_packages() {
+  case "${PKG_MGR}" in
+    apt)
+      install_os_packages sshpass openssh-client
+      ;;
+    dnf|yum)
+      install_os_packages sshpass openssh-clients
+      ;;
+  esac
 }
 
 print_banner() {
@@ -263,7 +324,7 @@ setup_ssh_key() {
 
   if [[ -n "${main_db_host//[[:space:]]/}" ]]; then
     section "Installing ${PRODUCT_NAME} public key on MainDB server"
-    apt install -y sshpass openssh-client
+    install_ssh_helper_packages
     echo "  Installing key on ${ssh_user}@${main_db_host}"
     sshpass -p "${ssh_password}" ssh -o StrictHostKeyChecking=accept-new -o ConnectTimeout=10 "${ssh_user}@${main_db_host}" \
       "mkdir -p ~/.ssh && chmod 700 ~/.ssh && grep -qxF '${pub_key}' ~/.ssh/authorized_keys 2>/dev/null || echo '${pub_key}' >> ~/.ssh/authorized_keys && chmod 600 ~/.ssh/authorized_keys"
@@ -296,7 +357,7 @@ remote_root_exec() {
   fi
 
   if [[ -n "${ssh_password}" ]]; then
-    apt install -y sshpass openssh-client >&2
+    install_ssh_helper_packages >&2
     sshpass -p "${ssh_password}" ssh -o StrictHostKeyChecking=accept-new -o ConnectTimeout=10 "${ssh_user}@${main_db_host}" "${sudo_cmd}"
   else
     ssh -i "${key_path}" -o StrictHostKeyChecking=accept-new -o ConnectTimeout=10 "${ssh_user}@${main_db_host}" "${sudo_cmd}"
@@ -383,8 +444,7 @@ if [[ "${NONINTERACTIVE}" -eq 0 && "${SKIP_CONFIRM}" -eq 0 ]]; then
 fi
 
 section "Installing OS packages"
-apt update
-apt install -y python3 python3-venv python3-pip cron curl jq net-tools openssh-client
+install_base_packages
 
 if ! id -u "${SERVICE_USER}" >/dev/null 2>&1; then
   section "Creating service user: ${SERVICE_USER}"
@@ -539,7 +599,7 @@ replace_token "${CRON_TMP}" "__LOG_DIR__" "${LOG_DIR}"
 cp "${CRON_TMP}" "${CRON_FILE}"
 rm -f "${CRON_TMP}"
 chmod 644 "${CRON_FILE}"
-systemctl enable --now cron
+systemctl enable --now "${CRON_SERVICE_NAME}"
 
 echo
 echo "${PRODUCT_NAME} install complete."
@@ -560,6 +620,7 @@ echo "CSV data:     ${DATA_DIR}"
 echo "Logs:         ${LOG_DIR}"
 echo "Service user: ${SERVICE_USER}"
 echo "Scheduler:    ${SCHEDULER_CRON}"
+echo "Cron service: ${CRON_SERVICE_NAME}"
 echo
 echo "Useful checks:"
 echo "  sudo systemctl status ${PRODUCT_SLUG} --no-pager"
