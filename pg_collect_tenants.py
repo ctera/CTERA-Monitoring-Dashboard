@@ -6,15 +6,18 @@ import argparse, csv, os, subprocess, time, sys
 import psycopg2, psycopg2.extras
 
 def fetch_tenants(conn):
-    # Pull tenant name from base_objects, plan name via plans→base_objects,
-    # and use base_objects.is_deleted as "Deleted".
+    # Pull tenant name and create_date from base_objects, plan name via
+    # plans->base_objects, and use base_objects.is_deleted plus
+    # portals.deletion_date for tenant lifecycle state.
     q = """
     SELECT
         p.uid                                         AS uid,
         bo.name                                       AS tenant,
         p.portal_type                                 AS portal_type,
         p.enable_reseller_provisioning                AS enable_reseller_provisioning,
+        bo.create_date                                AS created_date,
         bo.is_deleted                                 AS deleted,
+        p.deletion_date                               AS deleted_date,
         boplan.name                                   AS plan_name
     FROM portals p
     JOIN base_objects bo
@@ -31,7 +34,7 @@ def fetch_tenants(conn):
 
 def write_csv(rows, out_path):
     headers = ["UID","Tenant","PortalType",
-               "EnableResellerProvisioning","Deleted","PlanName"]
+               "EnableResellerProvisioning","Active","Deleted","CreatedDate","DeletedDate","PlanName"]
     tmp = out_path + ".tmp"
     os.makedirs(os.path.dirname(out_path) or ".", exist_ok=True)
     with open(tmp, "w", newline="", encoding="utf-8-sig") as f:
@@ -43,7 +46,10 @@ def write_csv(rows, out_path):
                 "Tenant": r.get("tenant",""),
                 "PortalType": r.get("portal_type",""),
                 "EnableResellerProvisioning": r.get("enable_reseller_provisioning",""),
+                "Active": not bool(r.get("deleted", False)),
                 "Deleted": r.get("deleted",""),
+                "CreatedDate": r.get("created_date",""),
+                "DeletedDate": r.get("deleted_date",""),
                 "PlanName": r.get("plan_name",""),
             })
     os.replace(tmp, out_path)
@@ -139,4 +145,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-

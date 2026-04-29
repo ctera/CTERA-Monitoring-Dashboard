@@ -3235,8 +3235,8 @@ HTML = """
 
     /* sub-tabs (for Postgres) */
     .subtabs { display:flex; gap:8px; margin: 8px 0 12px; flex-wrap: wrap; }
-    .subbtn, .healthsubbtn, .portalsubbtn { padding:6px 10px; border:1px solid var(--border); border-bottom:none; border-top-left-radius:8px; border-top-right-radius:8px; background:#fff; color: var(--primary); cursor:pointer; position: relative; font-family:inherit; font-size:14px; font-weight:400; }
-    .subbtn.active, .healthsubbtn.active, .portalsubbtn.active { border-color: var(--accent); color:#fff; background: var(--accent); }
+    .subbtn, .healthsubbtn, .portalsubbtn, .tenantsubbtn { padding:6px 10px; border:1px solid var(--border); border-bottom:none; border-top-left-radius:8px; border-top-right-radius:8px; background:#fff; color: var(--primary); cursor:pointer; position: relative; font-family:inherit; font-size:14px; font-weight:400; }
+    .subbtn.active, .healthsubbtn.active, .portalsubbtn.active, .tenantsubbtn.active { border-color: var(--accent); color:#fff; background: var(--accent); }
     .badge { position:absolute; top:-8px; right:-8px; background:#ec4899; color:#fff; font-size:12px; line-height:16px; padding:0 6px; border-radius: 999px; border:2px solid #fff; }
 
     .controls { display:flex; flex-wrap:wrap; gap:8px; align-items:center; margin-bottom: 8px; }
@@ -3522,6 +3522,23 @@ HTML = """
       const btn = document.querySelector('[data-portal-sub="'+id+'"]');
       if (btn) btn.classList.add('active');
       savePortalActive(id);
+    }
+
+    function showTenantSubTab(id){
+      document.querySelectorAll('.tenantpane').forEach(p => p.style.display = 'none');
+      const pane = document.getElementById(id);
+      if (pane) pane.style.display = '';
+      document.querySelectorAll('.tenantsubbtn').forEach(b => b.classList.remove('active'));
+      const btn = document.querySelector('[data-tenant-sub="'+id+'"]');
+      if (btn) btn.classList.add('active');
+      try{ localStorage.setItem('fd.tenantsActive', id); }catch(e){}
+    }
+    function loadTenantActive(){
+      try{ return localStorage.getItem('fd.tenantsActive') || 'tenants_active'; }catch(e){ return 'tenants_active'; }
+    }
+    function filterTenantTables(){
+      filterTableByInput('tenantsTableActive','q_tenants');
+      filterTableByInput('tenantsTableDeleted','q_tenants');
     }
 
     function saveHealthActive(sub){
@@ -5230,11 +5247,12 @@ async function runAISummary(){
       const initialSection = NAV_SECTION_MAP[initialTab] || '';
       if (inAdmin && !initialSection.startsWith('admin_')) initialTab = 'admin_env';
       if (!inAdmin && initialSection.startsWith('admin_')) initialTab = 'overview';
-      renderEnvironmentSelector();
-      showTab(initialTab);
-      if (document.getElementById('portal')) { showPortalTab(loadPortalActive()); }
-      if (document.getElementById('pg')) { showPgTab(loadPgActive()); }
-      if (document.getElementById('svrhlth')) { showHealthTab(loadHealthActive()); }
+        renderEnvironmentSelector();
+        showTab(initialTab);
+        if (document.getElementById('tenants')) { showTenantSubTab(loadTenantActive()); }
+        if (document.getElementById('portal')) { showPortalTab(loadPortalActive()); }
+        if (document.getElementById('pg')) { showPgTab(loadPgActive()); }
+        if (document.getElementById('svrhlth')) { showHealthTab(loadHealthActive()); }
       hydrateLocalTimes();
       clearEnvironmentForm();
       reconcileContextAndActiveTab();
@@ -6216,7 +6234,7 @@ async function runAISummary(){
     </div>
     <div class="controls">
       <strong>Tenants</strong>
-      <input id="q_tenants" type="text" placeholder="Search tenants…" oninput="filterTableByInput('tenantsTable','q_tenants')" style="min-width:240px; margin-left:8px">
+      <input id="q_tenants" type="text" placeholder="Search tenants…" oninput="filterTenantTables()" style="min-width:240px; margin-left:8px">
     </div>
     <div class="sub">File: <code>{{ tenants_src }}</code> &nbsp;•&nbsp; Updated: <span class="sub" data-local-time="{{ tenants_mtime }}">{{ tenants_mtime or '—' }}</span> {% if refresh_seconds|int>0 %}<span>· auto {{ refresh_seconds|int }}s</span>{% endif %}</div>
 
@@ -6251,33 +6269,68 @@ async function runAISummary(){
           {% endfor %}
         </div>
       </section>
-      {% endif %}
+    {% endif %}
+  </div>
+
+    <div class="subtabs">
+      <button class="tenantsubbtn" data-tenant-sub="tenants_active" onclick="showTenantSubTab('tenants_active')">Active</button>
+      <button class="tenantsubbtn" data-tenant-sub="tenants_deleted" onclick="showTenantSubTab('tenants_deleted')">Deleted{% if deleted_tenants_rows|length %}<span class="badge">{{ deleted_tenants_rows|length }}</span>{% endif %}</button>
     </div>
 
-    <div class="table-wrap">
-      <table id="tenantsTable">
-        <thead>
-          <tr>{% for h in tenants_headers %}<th title="{{ h }}">{{ h }}</th>{% endfor %}</tr>
-        </thead>
-        <tbody>
-          {% for r in tenants_rows %}
-          <tr>
-            {% for h in tenants_headers %}
-              {% set cell = r.get(h, '') %}
-              {% set cls = style_tenants(h, cell, r) %}
-              <td class="{{ cls }}">
-                {% if h.lower() == 'deleted' %}
-                  {% set b = (cell|string).lower() in ['true','1','yes','y','on'] %}
-                  <span class="pill {{ 'pill-info' if b else 'pill-ok' }}">{{ 'Deleted' if b else 'Active' }}</span>
-                {% else %}
-                  {{ display_cell(h, cell) }}
-                {% endif %}
-              </td>
+    <div id="tenants_active" class="tenantpane" style="display:none">
+      <div class="table-wrap">
+        <table id="tenantsTableActive">
+          <thead>
+            <tr>{% for h in tenants_headers %}<th title="{{ h }}">{{ h }}</th>{% endfor %}</tr>
+          </thead>
+          <tbody>
+            {% for r in active_tenants_rows %}
+            <tr>
+              {% for h in tenants_headers %}
+                {% set cell = r.get(h, '') %}
+                {% set cls = style_tenants(h, cell, r) %}
+                <td class="{{ cls }}">
+                  {% if h.lower() == 'deleted' %}
+                    {% set b = (cell|string).lower() in ['true','1','yes','y','on'] %}
+                    <span class="pill {{ 'pill-info' if b else 'pill-ok' }}">{{ 'Deleted' if b else 'Active' }}</span>
+                  {% else %}
+                    {{ display_cell(h, cell) }}
+                  {% endif %}
+                </td>
+              {% endfor %}
+            </tr>
             {% endfor %}
-          </tr>
-          {% endfor %}
-        </tbody>
-      </table>
+          </tbody>
+        </table>
+      </div>
+    </div>
+
+    <div id="tenants_deleted" class="tenantpane" style="display:none">
+      <div class="table-wrap">
+        <table id="tenantsTableDeleted">
+          <thead>
+            <tr>{% for h in tenants_headers %}<th title="{{ h }}">{{ h }}</th>{% endfor %}</tr>
+          </thead>
+          <tbody>
+            {% for r in deleted_tenants_rows %}
+            <tr>
+              {% for h in tenants_headers %}
+                {% set cell = r.get(h, '') %}
+                {% set cls = style_tenants(h, cell, r) %}
+                <td class="{{ cls }}">
+                  {% if h.lower() == 'deleted' %}
+                    {% set b = (cell|string).lower() in ['true','1','yes','y','on'] %}
+                    <span class="pill {{ 'pill-info' if b else 'pill-ok' }}">{{ 'Deleted' if b else 'Active' }}</span>
+                  {% else %}
+                    {{ display_cell(h, cell) }}
+                  {% endif %}
+                </td>
+              {% endfor %}
+            </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
     </div>
   </div>
 
@@ -7626,6 +7679,26 @@ def _tenant_summary(rows):
     return {"total": total, "active": max(total - deleted, 0), "deleted": deleted}
 
 
+def _tenant_is_deleted(row):
+    val = str((row or {}).get("Deleted", "")).strip().lower()
+    return val in {"true", "1", "yes", "y", "on", "deleted"}
+
+
+def _tenant_deleted_sort_key(row):
+    raw = str((row or {}).get("DeletedDate", "") or "").strip()
+    if not raw:
+        return (0, datetime.min)
+    for fmt in ("%Y-%m-%d", "%Y-%m-%d %H:%M:%S", "%Y-%m-%dT%H:%M:%S"):
+        try:
+            return (1, datetime.strptime(raw[:19], fmt))
+        except ValueError:
+            continue
+    try:
+        return (1, datetime.fromisoformat(raw.replace("Z", "+00:00")).replace(tzinfo=None))
+    except Exception:
+        return (0, datetime.min)
+
+
 def _gauge(label, rows, columns):
     values = []
     for row in rows:
@@ -7985,6 +8058,12 @@ def index():
     # Tenants don't use warn() thresholds today; just show 0/0
     tenants_counts = {"bad": 0, "warn": 0}
     tenant_summary = _tenant_summary(tenants_rows)
+    active_tenants_rows = [row for row in tenants_rows if not _tenant_is_deleted(row)]
+    deleted_tenants_rows = sorted(
+        [row for row in tenants_rows if _tenant_is_deleted(row)],
+        key=_tenant_deleted_sort_key,
+        reverse=True,
+    )
     tenant_type_chart = _top_counts(tenants_rows, ["PortalType", "Type"], limit=4)
 
     # EDGE
@@ -8265,7 +8344,8 @@ def index():
         tenants_src=tenants_src, tenants_mtime=tenants_mtime,
         tenants_rows=tenants_rows, tenants_headers=tenants_headers, style_tenants=style_tenants,
         tenants_counts=tenants_counts, tenant_summary=tenant_summary, tenant_type_chart=tenant_type_chart,
-    )
+        active_tenants_rows=active_tenants_rows, deleted_tenants_rows=deleted_tenants_rows,
+      )
 
 
 if __name__ == "__main__":
