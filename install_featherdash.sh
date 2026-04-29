@@ -141,6 +141,32 @@ install_ssh_helper_packages() {
   esac
 }
 
+configure_local_firewall() {
+  local port="$1"
+
+  section "Configuring local firewall for port ${port}"
+
+  if command -v firewall-cmd >/dev/null 2>&1; then
+    if firewall-cmd --state >/dev/null 2>&1; then
+      firewall-cmd --quiet --add-port="${port}/tcp"
+      firewall-cmd --quiet --permanent --add-port="${port}/tcp"
+      echo "  Opened TCP/${port} in firewalld."
+      return 0
+    fi
+  fi
+
+  if command -v ufw >/dev/null 2>&1; then
+    if ufw status 2>/dev/null | grep -qi '^status: active'; then
+      ufw allow "${port}/tcp" >/dev/null 2>&1 || true
+      echo "  Opened TCP/${port} in ufw."
+      return 0
+    fi
+  fi
+
+  echo "  No active supported firewall manager detected. Skipping automatic firewall rule."
+  return 0
+}
+
 if [[ "${EUID}" -ne 0 ]]; then
   echo "Run this installer as root, for example: sudo bash ./install_featherdash.sh" >&2
   exit 1
@@ -600,6 +626,8 @@ cp "${CRON_TMP}" "${CRON_FILE}"
 rm -f "${CRON_TMP}"
 chmod 644 "${CRON_FILE}"
 systemctl enable --now "${CRON_SERVICE_NAME}"
+
+configure_local_firewall "${DASHBOARD_PORT}"
 
 echo
 echo "${PRODUCT_NAME} install complete."
