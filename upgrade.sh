@@ -22,6 +22,7 @@ BACKUP_ROOT="${DEFAULT_BACKUP_ROOT}"
 SERVICE_FILE="${DEFAULT_SERVICE_FILE}"
 CRON_FILE="${DEFAULT_CRON_FILE}"
 NONINTERACTIVE=0
+THRESHOLD_STRATEGY="merge"
 
 usage() {
   cat <<'EOF'
@@ -35,6 +36,7 @@ Options:
   --log-dir /var/log/ctera-monitoring-dashboard
   --user ctera-monitoring
   --backup-root /opt/monitoring-backup
+  --threshold-strategy merge|replace
   --non-interactive
   -h, --help
 EOF
@@ -64,6 +66,10 @@ while [[ $# -gt 0 ]]; do
       ;;
     --backup-root)
       BACKUP_ROOT="${2:-}"
+      shift 2
+      ;;
+    --threshold-strategy)
+      THRESHOLD_STRATEGY="${2:-}"
       shift 2
       ;;
     --non-interactive)
@@ -102,6 +108,31 @@ prompt_value() {
   printf '%s' "${value:-${default}}"
 }
 
+prompt_threshold_strategy() {
+  local value
+
+  if [[ "${NONINTERACTIVE}" -eq 1 ]]; then
+    printf '%s' "${THRESHOLD_STRATEGY}"
+    return
+  fi
+
+  echo >&2
+  echo "Threshold handling:" >&2
+  echo "  [1] Keep existing thresholds and merge in new missing defaults (Recommended)" >&2
+  echo "  [2] Replace thresholds with the latest shipped defaults" >&2
+  echo "      This overwrites the installed thresholds.yaml and does not merge old settings." >&2
+  printf 'Choose [1/2] [1]: ' >&2
+  read -r value
+  case "${value:-1}" in
+    1|merge|MERGE) printf 'merge' ;;
+    2|replace|REPLACE) printf 'replace' ;;
+    *)
+      echo "Unknown threshold choice: ${value}. Using merge." >&2
+      printf 'merge'
+      ;;
+  esac
+}
+
 section() {
   echo
   echo "==> $1"
@@ -128,6 +159,7 @@ copy_dir_contents() {
 if [[ "${NONINTERACTIVE}" -eq 0 ]]; then
   INSTALL_DIR="$(prompt_value "Current installation directory" "${INSTALL_DIR}")"
   BACKUP_ROOT="$(prompt_value "Backup location" "${BACKUP_ROOT}")"
+  THRESHOLD_STRATEGY="$(prompt_threshold_strategy)"
 fi
 
 if [[ ! -d "${INSTALL_DIR}" ]]; then
@@ -157,6 +189,7 @@ echo "Data dir:     ${DATA_DIR}"
 echo "Log dir:      ${LOG_DIR}"
 echo "Service user: ${SERVICE_USER}"
 echo "Backup dir:   ${BACKUP_DIR}"
+echo "Thresholds:   ${THRESHOLD_STRATEGY}"
 
 preserve_if_present() {
   local rel_path="$1"
@@ -208,7 +241,9 @@ PY
   echo "Thresholds merged: kept installed values and added any new shipped defaults."
 }
 
-preserve_if_present "thresholds.yaml"
+if [[ "${THRESHOLD_STRATEGY}" == "merge" ]]; then
+  preserve_if_present "thresholds.yaml"
+fi
 preserve_if_present "dashboard/config.yaml"
 
 section "Creating backup"
@@ -357,8 +392,13 @@ fi
 section "Installing Python requirements"
 "${INSTALL_DIR}/venv/bin/pip" install -r "${INSTALL_DIR}/requirements.txt"
 
-section "Merging threshold defaults"
-merge_thresholds_if_needed
+if [[ "${THRESHOLD_STRATEGY}" == "merge" ]]; then
+  section "Merging threshold defaults"
+  merge_thresholds_if_needed
+else
+  section "Replacing thresholds"
+  echo "Thresholds replaced with the latest shipped defaults."
+fi
 
 section "Fixing ownership"
 mkdir -p "${DATA_DIR}" "${LOG_DIR}"
