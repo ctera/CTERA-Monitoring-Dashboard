@@ -317,8 +317,11 @@ def gather_docker_rows(meta, exec_fn, previous_counts):
             inspect_text = exec_fn(inspect_cmd).strip()
             inspect_data = parse_docker_inspect_line(inspect_text)
             container_name = container["ContainerName"] or inspect_data["InspectName"]
-            prev_restart_count = previous_counts.get((meta["Host"], container_name), 0)
+            container_key = (meta["Host"], container_name)
+            has_baseline = container_key in previous_counts
+            prev_restart_count = previous_counts.get(container_key, 0)
             restart_count = inspect_data["RestartCount"]
+            restart_delta = max(0, restart_count - prev_restart_count) if has_baseline else 0
             docker_rows.append({
                 "SourceName": meta["Name"],
                 "SourceHost": meta["Host"],
@@ -332,7 +335,7 @@ def gather_docker_rows(meta, exec_fn, previous_counts):
                 "State": inspect_data["State"],
                 "Health": inspect_data["Health"],
                 "RestartCount": restart_count,
-                "RestartDelta": max(0, restart_count - prev_restart_count),
+                "RestartDelta": restart_delta,
                 "RestartPolicy": inspect_data["RestartPolicy"],
                 "StartedAt": inspect_data["StartedAt"],
                 "FinishedAt": inspect_data["FinishedAt"],
