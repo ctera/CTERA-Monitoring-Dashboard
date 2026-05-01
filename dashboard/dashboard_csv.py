@@ -922,6 +922,25 @@ def make_servers_health_warn_fn(ext):
     return warn
 
 
+def make_docker_warn_fn(ext):
+    def _rules(row):
+        eff = {}
+        sec = (ext.get("servers_health") or {}) if isinstance(ext, dict) else {}
+        docker = (sec.get("docker") or {}) if isinstance(sec, dict) else {}
+        if isinstance(docker, dict):
+            eff.update(docker.get("default", {}) or {})
+            eff.update((docker.get("by_source_name", {}) or {}).get(row.get("SourceName", ""), {}) or {})
+            eff.update((docker.get("by_source_host", {}) or {}).get(row.get("SourceHost", ""), {}) or {})
+            eff.update((docker.get("by_source_uid", {}) or {}).get(row.get("SourceUID", ""), {}) or {})
+        return eff
+
+    def warn(col, val, row):
+        rule = _rules(row).get(col)
+        return eval_level(val, rule) if rule else ''
+
+    return warn
+
+
 def make_servers_health_style_fn(ext):
     def _rules(row):
         eff = {}
@@ -2397,6 +2416,8 @@ def _warn_fn_for_dataset(cfg, dataset_key):
         return lambda field_name, value, row: make_portal_warn_fn(ext, "tasks")(field_name, value, row)
     if dataset_key == "servers_health":
         return lambda field_name, value, row: make_servers_health_warn_fn(ext)(field_name, value, row)
+    if dataset_key == "servers_health_docker":
+        return lambda field_name, value, row: make_docker_warn_fn(ext)(field_name, value, row)
     if dataset_key.startswith("postgres:"):
         topic = dataset_key.split(":", 1)[1]
         return lambda field_name, value, row: make_pg_warn_fn(ext)(topic, field_name, value, row)
@@ -2685,6 +2706,9 @@ def _threshold_dataset_configs(cfg):
     metrics_csv = (cfg.get("servers_health") or {}).get("metrics_csv")
     if metrics_csv:
         datasets.append({"key": "servers_health", "label": "Servers Health", "kind": "servers_health", "path": metrics_csv})
+    docker_csv = (cfg.get("servers_health") or {}).get("docker_csv")
+    if docker_csv:
+        datasets.append({"key": "servers_health_docker", "label": "Servers Health: Docker", "kind": "servers_health_docker", "path": docker_csv})
 
     base_dir = pg_cfg.get("base_dir") or ""
     for topic, filename in (pg_cfg.get("topics") or {}).items():
@@ -2783,6 +2807,10 @@ def _dataset_rule_container(doc, dataset_key, create=False):
     if dataset_key == "servers_health":
         sec = doc.setdefault("servers_health", {}) if create else (doc.get("servers_health") or {})
         return sec.setdefault("default", {}) if create else (sec.get("default") or {})
+    if dataset_key == "servers_health_docker":
+        sec = doc.setdefault("servers_health", {}) if create else (doc.get("servers_health") or {})
+        docker = sec.setdefault("docker", {}) if create else (sec.get("docker") or {})
+        return docker.setdefault("default", {}) if create else (docker.get("default") or {})
     if dataset_key.startswith("portal_"):
         sec_name = dataset_key.replace("portal_", "", 1)
         portal = doc.setdefault("portal", {}) if create else (doc.get("portal") or {})
@@ -2813,6 +2841,16 @@ def _prune_empty_threshold_sections(doc, dataset_key):
         if not ((doc.get("servers_health") or {}).get("default")):
             (doc.get("servers_health") or {}).pop("default", None)
         if not (doc.get("servers_health") or {}):
+            doc.pop("servers_health", None)
+        return
+    if dataset_key == "servers_health_docker":
+        sec = doc.get("servers_health") or {}
+        docker = sec.get("docker") or {}
+        if not (docker.get("default") or {}):
+            docker.pop("default", None)
+        if not docker:
+            sec.pop("docker", None)
+        if not sec:
             doc.pop("servers_health", None)
         return
     if dataset_key.startswith("portal_"):

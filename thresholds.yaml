@@ -78,6 +78,18 @@ servers_health:
     CPUIDLEPct:
       warn: { le: 15 }
       crit: { le: 5 }
+  docker:
+    default:
+      CollectionError:
+        crit: { ne: "" }
+      State:
+        crit: { ne: running }
+      Health:
+        warn: { eq: starting }
+        crit: { eq: unhealthy }
+      RestartDelta:
+        warn: { ge: 1 }
+        crit: { ge: 3 }
 
 postgres:
   long_running_queries:
