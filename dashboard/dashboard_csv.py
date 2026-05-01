@@ -3279,7 +3279,7 @@ HTML = """
     }
 
     #dockerTable tbody tr.docker-group-even td:not(.sev-critical):not(.sev-warning):not(.sev-ok):not(.sev-muted){
-      background: #f7fafc;
+      background: #edf2f7;
     }
 
     #dockerTable tbody tr.docker-group-odd td:not(.sev-critical):not(.sev-warning):not(.sev-ok):not(.sev-muted){
