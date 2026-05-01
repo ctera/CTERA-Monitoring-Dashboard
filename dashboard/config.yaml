@@ -46,3 +46,6 @@ portal:
 
 servers_health:
   metrics_csv: /var/lib/ctera-monitoring-dashboard/data/server_metrics.csv
+  nomad_csv: /var/lib/ctera-monitoring-dashboard/data/nomad_nodes.csv
+  consul_csv: /var/lib/ctera-monitoring-dashboard/data/consul_members.csv
+  docker_csv: /var/lib/ctera-monitoring-dashboard/data/docker_containers.csv

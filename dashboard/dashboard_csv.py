@@ -155,6 +155,7 @@ DEFAULT_CONF = {
         "metrics_csv": _data_path("server_metrics.csv"),
         "nomad_csv": _data_path("nomad_nodes.csv"),
         "consul_csv": _data_path("consul_members.csv"),
+        "docker_csv": _data_path("docker_containers.csv"),
     }
 }
 
@@ -195,6 +196,7 @@ def load_conf():
             "metrics_csv": os.path.join(data_dir, "server_metrics.csv"),
             "nomad_csv": os.path.join(data_dir, "nomad_nodes.csv"),
             "consul_csv": os.path.join(data_dir, "consul_members.csv"),
+            "docker_csv": os.path.join(data_dir, "docker_containers.csv"),
         }
     base["csv_path"] = _abspath_from_app(base.get("csv_path"))
     base["tenants_csv"] = _abspath_from_app(base.get("tenants_csv"))
@@ -218,6 +220,7 @@ def load_conf():
     sh["metrics_csv"] = _abspath_from_app(sh.get("metrics_csv"))
     sh["nomad_csv"] = _abspath_from_app(sh.get("nomad_csv"))
     sh["consul_csv"] = _abspath_from_app(sh.get("consul_csv"))
+    sh["docker_csv"] = _abspath_from_app(sh.get("docker_csv"))
     base["servers_health"] = sh
     return base
 
@@ -248,6 +251,7 @@ def load_conf_for_environment(env_id=None):
         "metrics_csv": os.path.join(data_dir, "server_metrics.csv"),
         "nomad_csv": os.path.join(data_dir, "nomad_nodes.csv"),
         "consul_csv": os.path.join(data_dir, "consul_members.csv"),
+        "docker_csv": os.path.join(data_dir, "docker_containers.csv"),
     }
     return cfg
 
@@ -6765,6 +6769,7 @@ async function runAISummary(){
       <button class="healthsubbtn" data-health-sub="health_overview" onclick="showHealthTab('health_overview')">Overview</button>
       <button class="healthsubbtn" data-health-sub="health_nomad" onclick="showHealthTab('health_nomad')">Nomad{% if nomad_summary.tone != 'ok' %}<span class="badge">{{ nomad_summary.sources_checked }}</span>{% endif %}</button>
       <button class="healthsubbtn" data-health-sub="health_consul" onclick="showHealthTab('health_consul')">Consul{% if consul_summary.tone != 'ok' %}<span class="badge">{{ consul_summary.sources_checked }}</span>{% endif %}</button>
+      <button class="healthsubbtn" data-health-sub="health_docker" onclick="showHealthTab('health_docker')">Docker{% if docker_summary.bad %}<span class="badge">{{ docker_summary.bad }}</span>{% endif %}{% if docker_summary.warn %}<span class="tabbadge warn" style="margin-left:6px;">{{ docker_summary.warn }}</span>{% endif %}</button>
     </div>
 
     <div id="health_overview" class="healthpane" style="display:none">
@@ -6942,6 +6947,52 @@ async function runAISummary(){
                 {% set is_status_bad = h == 'Status' and (cell|string|lower) not in ['alive', ''] %}
                 {% set is_view_warn = h == 'ViewHash' and consul_summary.distinct_views > 1 %}
                 <td class="{{ 'sev-critical' if is_error else ('sev-warning' if is_status_bad or is_view_warn else '') }}">{{ display_cell(h, cell) }}</td>
+              {% endfor %}
+            </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+    </div>
+
+    <div id="health_docker" class="healthpane" style="display:none">
+      <div class="sub">File: <code>{{ docker_csv }}</code> &nbsp;?&nbsp; Updated: <span class="sub" data-local-time="{{ docker_mtime }}">{{ docker_mtime or '?' }}</span></div>
+      <div class="viz-grid two">
+        <section class="viz-panel">
+          <h3>Docker Restart Watch</h3>
+          <div class="headline-metrics">
+            <div class="headline-metric"><div class="metric-label">Status</div><div class="metric-value {{ docker_summary.tone }}">{{ docker_summary.label }}</div></div>
+            <div class="headline-metric"><div class="metric-label">Containers</div><div class="metric-value">{{ docker_summary.total }}</div></div>
+            <div class="headline-metric"><div class="metric-label">Flapping</div><div class="metric-value">{{ docker_summary.flapping }}</div></div>
+            <div class="headline-metric"><div class="metric-label">Boot Grace</div><div class="metric-value">{{ docker_summary.grace }}</div></div>
+          </div>
+          <div class="sub">Restart deltas are only counted after the host has been up for at least 10 minutes, so normal container recovery after a reboot does not raise noisy alerts.</div>
+        </section>
+        <section class="viz-panel">
+          <h3>Container State</h3>
+          <div class="bar-list">
+            {% for item in docker_summary.status_chart %}
+            <div class="bar-row">
+              <span class="bar-label">{{ item.label }}</span>
+              <span class="bar-track"><span class="bar-fill {{ item.tone }}" style="width:{{ item.pct }}%"></span></span>
+              <span class="bar-value">{{ item.value }}</span>
+            </div>
+            {% endfor %}
+          </div>
+        </section>
+      </div>
+      <div class="controls">
+        <input id="q_docker" type="text" placeholder="Search Docker rows?" oninput="filterTableByInput('dockerTable','q_docker')" style="min-width:280px">
+      </div>
+      <div class="table-wrap">
+        <table id="dockerTable">
+          <thead><tr>{% for h in docker_headers %}<th>{{ display_header(h) }}</th>{% endfor %}</tr></thead>
+          <tbody>
+            {% for r in docker_rows %}
+            <tr>
+              {% for h in docker_headers %}
+                {% set cls = docker_row_class(r, h) %}
+                <td class="{{ cls }}">{{ display_cell(h, r.get(h, '')) }}</td>
               {% endfor %}
             </tr>
             {% endfor %}
@@ -7860,6 +7911,103 @@ def _cluster_status_chart(rows, field_name):
     return _with_status_tones(_top_counts(rows, [field_name], limit=8, empty_label="Unknown"))
 
 
+def _docker_row_severity(row):
+    error = str(row.get("CollectionError") or "").strip()
+    if error:
+        return "bad"
+    recently_booted = str(row.get("RecentlyBooted") or "").strip().lower() in {"true", "1", "yes", "y", "on"}
+    if recently_booted:
+        return ""
+    state = str(row.get("State") or "").strip().lower()
+    health = str(row.get("Health") or "").strip().lower()
+    status_text = str(row.get("StatusText") or "").strip().lower()
+    restart_delta = to_int(row.get("RestartDelta"), 0) or 0
+    if state in {"restarting", "dead", "removing", "exited"}:
+        return "bad"
+    if "restarting" in status_text:
+        return "bad"
+    if health == "unhealthy":
+        return "bad"
+    if restart_delta >= 3:
+        return "bad"
+    if health == "starting":
+        return "warn"
+    if restart_delta > 0:
+        return "warn"
+    return ""
+
+
+def _docker_row_class(row, header):
+    sev = _docker_row_severity(row)
+    if header == "CollectionError" and str(row.get(header) or "").strip():
+        return "sev-critical"
+    if header in {"State", "Health", "RestartCount", "RestartDelta", "GraceState", "StatusText"}:
+        if sev == "bad":
+            return "sev-critical"
+        if sev == "warn":
+            return "sev-warning"
+    return ""
+
+
+def _docker_counts(rows):
+    counts = {"bad": 0, "warn": 0}
+    for row in rows:
+        sev = _docker_row_severity(row)
+        if sev == "bad":
+            counts["bad"] += 1
+        elif sev == "warn":
+            counts["warn"] += 1
+    return counts
+
+
+def _docker_summary(rows):
+    counts = _docker_counts(rows)
+    status_counts = Counter()
+    restarting = unhealthy = flapping = grace = 0
+    for row in rows:
+        state = str(row.get("State") or "").strip().lower()
+        health = str(row.get("Health") or "").strip().lower()
+        restart_delta = to_int(row.get("RestartDelta"), 0) or 0
+        recently_booted = str(row.get("RecentlyBooted") or "").strip().lower() in {"true", "1", "yes", "y", "on"}
+        if state:
+            status_counts[state] += 1
+        if state == "restarting":
+            restarting += 1
+        if health == "unhealthy":
+            unhealthy += 1
+        if restart_delta > 0 and not recently_booted:
+            flapping += 1
+        if recently_booted:
+            grace += 1
+    tone = "ok"
+    label = "Healthy"
+    if counts["bad"] > 0:
+        tone = "crit"
+        label = "Critical"
+    elif counts["warn"] > 0:
+        tone = "warn"
+        label = "Warning"
+    chart = []
+    for key, value in status_counts.most_common(8):
+        chart.append({
+            "label": key.title(),
+            "value": value,
+            "tone": "crit" if key in {"restarting", "exited", "dead"} else ("warn" if key in {"created", "paused"} else "ok"),
+        })
+    return {
+        "bad": counts["bad"],
+        "warn": counts["warn"],
+        "total": len(rows),
+        "restarting": restarting,
+        "unhealthy": unhealthy,
+        "flapping": flapping,
+        "grace": grace,
+        "label": label,
+        "tone": tone,
+        "status_chart": _with_status_tones(chart),
+    }
+
+
 def _section_card(label, rows_total, counts):
     bad = int((counts or {}).get("bad", 0) or 0)
     warn = int((counts or {}).get("warn", 0) or 0)
@@ -8252,20 +8400,27 @@ def index():
     host_status_chart = _with_status_tones(_top_counts(hosts_rows, ["Status", "Connected"], limit=6))
     nomad_csv = (cfg.get("servers_health") or {}).get("nomad_csv") or ""
     consul_csv = (cfg.get("servers_health") or {}).get("consul_csv") or ""
+    docker_csv = (cfg.get("servers_health") or {}).get("docker_csv") or ""
     if nomad_csv and not os.path.isabs(nomad_csv):
         nomad_csv = os.path.join(APP_DIR, nomad_csv)
     if consul_csv and not os.path.isabs(consul_csv):
         consul_csv = os.path.join(APP_DIR, consul_csv)
+    if docker_csv and not os.path.isabs(docker_csv):
+        docker_csv = os.path.join(APP_DIR, docker_csv)
     nomad_csv = os.path.normpath(os.path.abspath(nomad_csv)) if nomad_csv else ""
     consul_csv = os.path.normpath(os.path.abspath(consul_csv)) if consul_csv else ""
+    docker_csv = os.path.normpath(os.path.abspath(docker_csv)) if docker_csv else ""
     nomad_mtime = _file_mtime_iso(nomad_csv)
     consul_mtime = _file_mtime_iso(consul_csv)
+    docker_mtime = _file_mtime_iso(docker_csv)
     nomad_rows, nomad_headers = read_csv_rows(nomad_csv)
     consul_rows, consul_headers = read_csv_rows(consul_csv)
+    docker_rows, docker_headers = read_csv_rows(docker_csv)
     nomad_summary = _cluster_consistency_summary(nomad_rows, "NodeID", ok_values={"ready"})
     consul_summary = _cluster_consistency_summary(consul_rows, "Node", ok_values={"alive"})
     nomad_status_chart = _cluster_status_chart(nomad_rows, "Status")
     consul_status_chart = _cluster_status_chart(consul_rows, "Status")
+    docker_summary = _docker_summary(docker_rows)
 
     # portal CSV sources (for "File: ...")
     portal_cfg = cfg.get("portal") or {}
@@ -8328,6 +8483,7 @@ def index():
         {"label": "Portal Licenses", "updated_utc": portal_licenses_mtime},
         {"label": "Postgres", "updated_utc": _file_mtime_iso(os.path.join(base_dir, "wraparound_summary.csv"))},
         {"label": "Servers Health", "updated_utc": metrics_mtime},
+        {"label": "Docker", "updated_utc": docker_mtime},
     ]
 
     return render_template_string(
@@ -8376,6 +8532,8 @@ def index():
         nomad_summary=nomad_summary, nomad_status_chart=nomad_status_chart,
         consul_csv=consul_csv, consul_mtime=consul_mtime, consul_rows=consul_rows, consul_headers=consul_headers,
         consul_summary=consul_summary, consul_status_chart=consul_status_chart,
+        docker_csv=docker_csv, docker_mtime=docker_mtime, docker_rows=docker_rows, docker_headers=docker_headers,
+        docker_summary=docker_summary, docker_row_class=_docker_row_class,
         # portal sources
         portal_servers_src=portal_servers_src, portal_storage_src=portal_storage_src, portal_tasks_src=portal_tasks_src, portal_licenses_src=portal_licenses_src,
         portal_servers_mtime=portal_servers_mtime, portal_storage_mtime=portal_storage_mtime, portal_tasks_mtime=portal_tasks_mtime, portal_licenses_mtime=portal_licenses_mtime,

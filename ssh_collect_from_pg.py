@@ -17,6 +17,7 @@ import hashlib
 import os
 import shlex
 import time
+import json
 
 import paramiko
 import psycopg2
@@ -243,6 +244,123 @@ def parse_consul_members(text):
     return rows
 
 
+def parse_docker_ps(text):
+    rows = []
+    for line in text.splitlines():
+        if not line.strip():
+            continue
+        parts = line.split("\t")
+        while len(parts) < 4:
+            parts.append("")
+        rows.append({
+            "ContainerID": parts[0].strip(),
+            "ContainerName": parts[1].strip(),
+            "Image": parts[2].strip(),
+            "StatusText": parts[3].strip(),
+        })
+    return rows
+
+
+def parse_docker_inspect_line(line):
+    parts = line.rstrip("\n").split("\t")
+    while len(parts) < 8:
+        parts.append("")
+    return {
+        "ContainerID": parts[0].strip(),
+        "InspectName": parts[1].strip().lstrip("/"),
+        "State": parts[2].strip(),
+        "Health": parts[3].strip(),
+        "RestartCount": to_int(parts[4], 0) or 0,
+        "RestartPolicy": parts[5].strip(),
+        "StartedAt": parts[6].strip(),
+        "FinishedAt": parts[7].strip(),
+    }
+
+
+def load_previous_docker_counts(path):
+    previous = {}
+    if not path or not os.path.exists(path):
+        return previous
+    try:
+        with open(path, "r", encoding="utf-8", newline="") as handle:
+            reader = csv.DictReader(handle)
+            for row in reader:
+                key = (
+                    str(row.get("SourceHost", "")).strip(),
+                    str(row.get("ContainerName", "")).strip(),
+                )
+                previous[key] = to_int(row.get("RestartCount"), 0) or 0
+    except Exception:
+        return {}
+    return previous
+
+
+def gather_docker_rows(meta, exec_fn, previous_counts):
+    docker_rows = []
+    host_uptime = to_int(meta.get("HostUptimeSeconds"), 0) or 0
+    recently_booted = host_uptime > 0 and host_uptime < 600
+    try:
+        ps_text = exec_fn(
+            "if command -v docker >/dev/null 2>&1; then docker ps -a --format '{{.ID}}\t{{.Names}}\t{{.Image}}\t{{.Status}}'; else echo '__DOCKER_NOT_INSTALLED__'; fi"
+        )
+        if "__DOCKER_NOT_INSTALLED__" in ps_text:
+            raise RuntimeError("docker command not installed")
+        containers = parse_docker_ps(ps_text)
+        for container in containers:
+            inspect_cmd = (
+                "docker inspect --format "
+                "'{{.Id}}\t{{.Name}}\t{{.State.Status}}\t{{if .State.Health}}{{.State.Health.Status}}{{end}}\t{{.RestartCount}}\t{{.HostConfig.RestartPolicy.Name}}\t{{.State.StartedAt}}\t{{.State.FinishedAt}}' "
+                + shlex.quote(container["ContainerID"])
+            )
+            inspect_text = exec_fn(inspect_cmd).strip()
+            inspect_data = parse_docker_inspect_line(inspect_text)
+            container_name = container["ContainerName"] or inspect_data["InspectName"]
+            prev_restart_count = previous_counts.get((meta["Host"], container_name), 0)
+            restart_count = inspect_data["RestartCount"]
+            docker_rows.append({
+                "SourceName": meta["Name"],
+                "SourceHost": meta["Host"],
+                "SourceUID": meta["UID"],
+                "HostUptimeSeconds": host_uptime,
+                "RecentlyBooted": "True" if recently_booted else "False",
+                "GraceState": "Host reboot grace" if recently_booted else "",
+                "ContainerID": inspect_data["ContainerID"] or container["ContainerID"],
+                "ContainerName": container_name,
+                "Image": container["Image"],
+                "State": inspect_data["State"],
+                "Health": inspect_data["Health"],
+                "RestartCount": restart_count,
+                "RestartDelta": max(0, restart_count - prev_restart_count),
+                "RestartPolicy": inspect_data["RestartPolicy"],
+                "StartedAt": inspect_data["StartedAt"],
+                "FinishedAt": inspect_data["FinishedAt"],
+                "StatusText": container["StatusText"],
+                "CollectionError": "",
+            })
+    except Exception as exc:
+        docker_rows.append({
+            "SourceName": meta["Name"],
+            "SourceHost": meta["Host"],
+            "SourceUID": meta["UID"],
+            "HostUptimeSeconds": host_uptime,
+            "RecentlyBooted": "True" if recently_booted else "False",
+            "GraceState": "Host reboot grace" if recently_booted else "",
+            "ContainerID": "",
+            "ContainerName": "",
+            "Image": "",
+            "State": "ERROR",
+            "Health": "",
+            "RestartCount": "",
+            "RestartDelta": "",
+            "RestartPolicy": "",
+            "StartedAt": "",
+            "FinishedAt": "",
+            "StatusText": "",
+            "CollectionError": str(exc),
+        })
+    return docker_rows
+
+
 # ---------------------------
 # Metric gatherer over SSH
 # ---------------------------
@@ -449,6 +567,7 @@ def main():
     ap.add_argument("--out", required=True, help="Output CSV path")
     ap.add_argument("--nomad-out", default=None, help="Optional CSV output path for Nomad node status snapshots")
     ap.add_argument("--consul-out", default=None, help="Optional CSV output path for Consul member snapshots")
+    ap.add_argument("--docker-out", default=None, help="Optional CSV output path for Docker container snapshots")
 
     args = ap.parse_args()
 
@@ -467,6 +586,8 @@ def main():
     rows_out = []
     nomad_rows_out = []
     consul_rows_out = []
+    docker_rows_out = []
+    previous_docker_counts = load_previous_docker_counts(args.docker_out) if args.docker_out else {}
 
     # Prepare SSH auth
     pkey = load_pkey(args.key, args.passphrase) if args.key else None
@@ -666,9 +787,12 @@ def main():
                 "CPUIDLEPct":     fmt_pct(m["CPUIDLEPct"]),
             }
             rows_out.append(row)
+            meta["HostUptimeSeconds"] = m["UptimeSeconds"]
             cluster_nomad_rows, cluster_consul_rows = gather_cluster_rows(meta, exec_fn)
             nomad_rows_out.extend(cluster_nomad_rows)
             consul_rows_out.extend(cluster_consul_rows)
+            if args.docker_out:
+                docker_rows_out.extend(gather_docker_rows(meta, exec_fn, previous_docker_counts))
 
         except Exception as e:
             try:
@@ -720,6 +844,27 @@ def main():
                 "Segment": "",
                 "CollectionError": str(e),
             })
+            if args.docker_out:
+                docker_rows_out.append({
+                    "SourceName": meta["Name"],
+                    "SourceHost": meta["Host"],
+                    "SourceUID": meta["UID"],
+                    "HostUptimeSeconds": "",
+                    "RecentlyBooted": "",
+                    "GraceState": "",
+                    "ContainerID": "",
+                    "ContainerName": "",
+                    "Image": "",
+                    "State": "ERROR",
+                    "Health": "",
+                    "RestartCount": "",
+                    "RestartDelta": "",
+                    "RestartPolicy": "",
+                    "StartedAt": "",
+                    "FinishedAt": "",
+                    "StatusText": "",
+                    "CollectionError": str(e),
+                })
 
     # Write CSV
     headers = [
@@ -768,6 +913,21 @@ def main():
             for r in consul_rows_out:
                 w.writerow({h: r.get(h, "") for h in consul_headers})
         os.replace(tmp, args.consul_out)
+
+    if args.docker_out:
+        docker_headers = [
+            "SourceName","SourceHost","SourceUID","HostUptimeSeconds","RecentlyBooted","GraceState",
+            "ContainerID","ContainerName","Image","State","Health","RestartCount","RestartDelta",
+            "RestartPolicy","StartedAt","FinishedAt","StatusText","CollectionError"
+        ]
+        tmp = args.docker_out + ".tmp"
+        os.makedirs(os.path.dirname(args.docker_out), exist_ok=True)
+        with open(tmp, "w", newline="", encoding="utf-8") as f:
+            w = csv.DictWriter(f, fieldnames=docker_headers)
+            w.writeheader()
+            for r in docker_rows_out:
+                w.writerow({h: r.get(h, "") for h in docker_headers})
+        os.replace(tmp, args.docker_out)
 
     if jump_client:
         jump_client.close()
