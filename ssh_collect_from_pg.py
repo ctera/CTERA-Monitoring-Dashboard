@@ -262,18 +262,20 @@ def parse_docker_ps(text):
 
 
 def parse_docker_inspect_line(line):
-    parts = line.rstrip("\n").split("\t")
-    while len(parts) < 8:
-        parts.append("")
+    payload = json.loads((line or "").strip() or "{}")
+    state = payload.get("State") or {}
+    health = state.get("Health") or {}
+    host_config = payload.get("HostConfig") or {}
+    restart_policy = host_config.get("RestartPolicy") or {}
     return {
-        "ContainerID": parts[0].strip(),
-        "InspectName": parts[1].strip().lstrip("/"),
-        "State": parts[2].strip(),
-        "Health": parts[3].strip(),
-        "RestartCount": to_int(parts[4], 0) or 0,
-        "RestartPolicy": parts[5].strip(),
-        "StartedAt": parts[6].strip(),
-        "FinishedAt": parts[7].strip(),
+        "ContainerID": str(payload.get("Id") or "").strip(),
+        "InspectName": str(payload.get("Name") or "").strip().lstrip("/"),
+        "State": str(state.get("Status") or "").strip(),
+        "Health": str(health.get("Status") or "").strip(),
+        "RestartCount": to_int(payload.get("RestartCount"), 0) or 0,
+        "RestartPolicy": str(restart_policy.get("Name") or "").strip(),
+        "StartedAt": str(state.get("StartedAt") or "").strip(),
+        "FinishedAt": str(state.get("FinishedAt") or "").strip(),
     }
 
 
@@ -309,7 +311,7 @@ def gather_docker_rows(meta, exec_fn, previous_counts):
         for container in containers:
             inspect_cmd = (
                 "docker inspect --format "
-                "'{{.Id}}\t{{.Name}}\t{{.State.Status}}\t{{if .State.Health}}{{.State.Health.Status}}{{end}}\t{{.RestartCount}}\t{{.HostConfig.RestartPolicy.Name}}\t{{.State.StartedAt}}\t{{.State.FinishedAt}}' "
+                "'{{json .}}' "
                 + shlex.quote(container["ContainerID"])
             )
             inspect_text = exec_fn(inspect_cmd).strip()
@@ -482,6 +484,7 @@ def jump_exec_text(jump_client, host, target_user, cmd, *, target_sudo=False, ju
     ssh_parts = [
         "ssh",
         "-o", "BatchMode=yes",
+        "-o", "LogLevel=ERROR",
         "-o", "StrictHostKeyChecking=no",
         "-o", "UserKnownHostsFile=/dev/null",
         "-o", f"ConnectTimeout={timeout}",
@@ -499,6 +502,7 @@ def main_db_exec_text_via_jump(jump_client, main_db_host, main_db_user, cmd, *, 
     ssh_parts = [
         "ssh",
         "-o", "BatchMode=yes",
+        "-o", "LogLevel=ERROR",
         "-o", "StrictHostKeyChecking=no",
         "-o", "UserKnownHostsFile=/dev/null",
         "-o", f"ConnectTimeout={timeout}",
@@ -516,6 +520,7 @@ def target_exec_text_via_main_db(jump_client, main_db_host, main_db_user, target
     target_ssh_parts = [
         "ssh",
         "-o", "BatchMode=yes",
+        "-o", "LogLevel=ERROR",
         "-o", "StrictHostKeyChecking=no",
         "-o", "UserKnownHostsFile=/dev/null",
         "-o", f"ConnectTimeout={timeout}",
