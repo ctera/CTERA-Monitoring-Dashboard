@@ -7708,6 +7708,16 @@ def _safe_float(value):
         return None
 
 
+def _safe_int(value, default=0):
+    number = _safe_float(value)
+    if number is None:
+        return default
+    try:
+        return int(number)
+    except Exception:
+        return default
+
+
 def _top_counts(rows, columns, limit=6, empty_label="Unknown"):
     counts = {}
     for row in rows:
@@ -7921,7 +7931,7 @@ def _docker_row_severity(row):
     state = str(row.get("State") or "").strip().lower()
     health = str(row.get("Health") or "").strip().lower()
     status_text = str(row.get("StatusText") or "").strip().lower()
-    restart_delta = to_int(row.get("RestartDelta"), 0) or 0
+    restart_delta = _safe_int(row.get("RestartDelta"), 0) or 0
     if state in {"restarting", "dead", "removing", "exited"}:
         return "bad"
     if "restarting" in status_text:
@@ -7967,7 +7977,7 @@ def _docker_summary(rows):
     for row in rows:
         state = str(row.get("State") or "").strip().lower()
         health = str(row.get("Health") or "").strip().lower()
-        restart_delta = to_int(row.get("RestartDelta"), 0) or 0
+        restart_delta = _safe_int(row.get("RestartDelta"), 0) or 0
         recently_booted = str(row.get("RecentlyBooted") or "").strip().lower() in {"true", "1", "yes", "y", "on"}
         if state:
             status_counts[state] += 1
