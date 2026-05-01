@@ -8390,7 +8390,7 @@ def index():
     hosts_rows, hosts_headers = read_csv_rows(metrics_csv)
     warn_hosts = make_servers_health_warn_fn(ext)
     style_hosts = make_servers_health_style_fn(ext)
-    hosts_counts = _count_row_severity(hosts_rows, hosts_headers, warn_hosts)
+    hosts_base_counts = _count_row_severity(hosts_rows, hosts_headers, warn_hosts)
     host_gauges = [
         _gauge("Memory", hosts_rows, ["MemUsedPct"]),
         _gauge("Root Disk", hosts_rows, ["RootDiskUsedPct"]),
@@ -8421,6 +8421,10 @@ def index():
     nomad_status_chart = _cluster_status_chart(nomad_rows, "Status")
     consul_status_chart = _cluster_status_chart(consul_rows, "Status")
     docker_summary = _docker_summary(docker_rows)
+    hosts_counts = {
+        "bad": hosts_base_counts["bad"] + docker_summary["bad"],
+        "warn": hosts_base_counts["warn"] + docker_summary["warn"],
+    }
 
     # portal CSV sources (for "File: ...")
     portal_cfg = cfg.get("portal") or {}

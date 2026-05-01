@@ -251,6 +251,10 @@ else
 Name,Host,Status,UID,Connected,MainDB,RunningVersion,PublicIP,UptimeSeconds,Load1,Load5,Load15,MemTotalGB,MemUsedGB,MemUsedPct,RootDiskSizeGB,RootDiskUsedGB,RootDiskUsedPct,DataPoolSizeGB,DataPoolUsedGB,DataPoolUsedPct,DBArchivePoolSizeGB,DBArchivePoolUsedGB,DBArchivePoolUsedPct,CPUUserPct,CPUSystemPct,CPUIOWaitPct,CPUIDLEPct
 SSH key missing,,ROOT_KEY is not set or not readable: ${ROOT_KEY:-unset},,,,,,,,,,,,,,,,,,,,,,,,,
 EOF
+  cat > "${FEATHERDASH_DATA_DIR}/docker_containers.csv" <<EOF
+SourceName,SourceHost,SourceUID,HostUptimeSeconds,RecentlyBooted,GraceState,ContainerID,ContainerName,Image,State,Health,RestartCount,RestartDelta,RestartPolicy,StartedAt,FinishedAt,StatusText,CollectionError
+SSH key missing,,,,,,,,"",ERROR,,,,,,,ROOT_KEY is not set or not readable: ${ROOT_KEY:-unset}
+EOF
 fi
 
 rm -f "${FEATHERDASH_DATA_DIR}/tenants.csv"
