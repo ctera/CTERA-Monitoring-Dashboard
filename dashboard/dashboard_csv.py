@@ -3278,6 +3278,14 @@ HTML = """
       background: #ffffff;  /* white */
     }
 
+    #dockerTable tbody tr.docker-group-even td:not(.sev-critical):not(.sev-warning):not(.sev-ok):not(.sev-muted){
+      background: #f7fafc;
+    }
+
+    #dockerTable tbody tr.docker-group-odd td:not(.sev-critical):not(.sev-warning):not(.sev-ok):not(.sev-muted){
+      background: #ffffff;
+    }
+
 
     /* boolean pills */
     .pill { display:inline-block; padding:2px 8px; border-radius:999px; font-weight:700; font-size:12px; border:1px solid var(--border); }
@@ -6988,13 +6996,19 @@ async function runAISummary(){
         <table id="dockerTable">
           <thead><tr>{% for h in docker_headers %}<th>{{ display_header(h) }}</th>{% endfor %}</tr></thead>
           <tbody>
+            {% set docker_ns = namespace(current_source='', group_index=0) %}
             {% for r in docker_rows %}
-            <tr>
-              {% for h in docker_headers %}
-                {% set cls = docker_row_class(r, h) %}
-                <td class="{{ cls }}">{{ display_cell(h, r.get(h, '')) }}</td>
-              {% endfor %}
-            </tr>
+              {% set source_key = (r.get('SourceName') or r.get('SourceHost') or '') %}
+              {% if source_key != docker_ns.current_source %}
+                {% set docker_ns.current_source = source_key %}
+                {% set docker_ns.group_index = docker_ns.group_index + 1 %}
+              {% endif %}
+              <tr class="{{ 'docker-group-even' if (docker_ns.group_index % 2 == 0) else 'docker-group-odd' }}">
+                {% for h in docker_headers %}
+                  {% set cls = docker_row_class(r, h) %}
+                  <td class="{{ cls }}">{{ display_cell(h, r.get(h, '')) }}</td>
+                {% endfor %}
+              </tr>
             {% endfor %}
           </tbody>
         </table>
