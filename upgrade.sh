@@ -195,8 +195,30 @@ ensure_scheduler_packages() {
   esac
 }
 
+ensure_sudoers_include() {
+  local include_pattern='^[[:space:]]*[#@]includedir[[:space:]]+/etc/sudoers\.d([[:space:]]|$)'
+  if grep -Eq "${include_pattern}" /etc/sudoers 2>/dev/null; then
+    return 0
+  fi
+  if ! command -v visudo >/dev/null 2>&1; then
+    echo "Warning: visudo not found; cannot automatically enable /etc/sudoers.d include." >&2
+    return 1
+  fi
+  section "Enabling /etc/sudoers.d include"
+  cp /etc/sudoers "/etc/sudoers.ctera-monitoring-dashboard.bak"
+  printf '\n#includedir /etc/sudoers.d\n' >> /etc/sudoers
+  if ! visudo -c >/dev/null 2>&1; then
+    mv -f "/etc/sudoers.ctera-monitoring-dashboard.bak" /etc/sudoers
+    echo "Failed to validate /etc/sudoers after enabling sudoers.d include." >&2
+    return 1
+  fi
+  rm -f "/etc/sudoers.ctera-monitoring-dashboard.bak"
+  return 0
+}
+
 install_upgrade_helper() {
   section "Installing UI upgrade helper"
+  ensure_sudoers_include || true
   cat > "${UPGRADE_HELPER}" <<EOF
 #!/usr/bin/env bash
 set -euo pipefail
@@ -212,6 +234,10 @@ STATE_FILE="\${STATE_DIR}/upgrade.state"
 LOG_FILE="\${LOG_DIR}/upgrade.log"
 ARCHIVE_URL='https://github.com/ctera/CTERA-Monitoring-Dashboard/archive/refs/heads/main.tar.gz'
 THRESHOLD_STRATEGY="\${1:-merge}"
+
+if [[ "\${THRESHOLD_STRATEGY}" == "--validate-access" ]]; then
+  exit 0
+fi
 
 case "\${THRESHOLD_STRATEGY}" in
   merge|replace) ;;

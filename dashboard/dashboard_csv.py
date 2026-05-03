@@ -647,6 +647,17 @@ def _launch_upgrade(threshold_strategy="merge"):
         return current, False
     if not os.path.exists(DEFAULT_UPGRADE_HELPER):
         raise ValueError(f"Upgrade helper not found at {DEFAULT_UPGRADE_HELPER}")
+    access_check = subprocess.run(
+        ["/usr/bin/env", "bash", "-lc", f"sudo -n {shlex.quote(DEFAULT_UPGRADE_HELPER)} --validate-access"],
+        cwd=PROJECT_DIR,
+        capture_output=True,
+        text=True,
+    )
+    if access_check.returncode != 0:
+        error_text = (access_check.stderr or access_check.stdout or "").strip()
+        if not error_text:
+            error_text = "Upgrade helper is not permitted for the dashboard service user."
+        raise ValueError(error_text)
     proc = subprocess.Popen(
         ["/usr/bin/env", "bash", "-lc", f"sudo {shlex.quote(DEFAULT_UPGRADE_HELPER)} {shlex.quote(strategy)}"],
         cwd=PROJECT_DIR,
