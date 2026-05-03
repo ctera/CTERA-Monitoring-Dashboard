@@ -120,6 +120,24 @@ def _max_version(*values):
     return best
 
 
+def _extract_remote_version_with_curl(url):
+    proc = subprocess.run(
+        [
+            "/usr/bin/env",
+            "curl",
+            "-fsSL",
+            "-H", "Cache-Control: no-cache",
+            "-H", "Pragma: no-cache",
+            f"{url}?_={int(datetime.utcnow().timestamp())}",
+        ],
+        capture_output=True,
+        text=True,
+        timeout=10,
+        check=True,
+    )
+    return (proc.stdout or "").strip()
+
+
 def _extract_remote_version_raw():
     response = requests.get(
         GITHUB_VERSION_URL,
@@ -170,14 +188,22 @@ def _check_github_version():
         api_error = None
 
         try:
-            raw_remote_version = _extract_remote_version_raw()
+            raw_remote_version = _extract_remote_version_with_curl(GITHUB_VERSION_URL)
         except Exception as exc:
             raw_error = exc
+            try:
+                raw_remote_version = _extract_remote_version_raw()
+            except Exception as fallback_exc:
+                raw_error = fallback_exc
 
         try:
-            api_remote_version = _extract_remote_version_api()
+            api_remote_version = _extract_remote_version_with_curl(GITHUB_VERSION_URL)
         except Exception as exc:
             api_error = exc
+            try:
+                api_remote_version = _extract_remote_version_api()
+            except Exception as fallback_exc:
+                api_error = fallback_exc
 
         remote_version = _max_version(raw_remote_version, api_remote_version)
         if not remote_version:
