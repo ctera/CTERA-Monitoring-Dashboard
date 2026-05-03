@@ -23,6 +23,7 @@ API_KEY_FILE = os.path.join(APP_DIR, "openai_key.txt")
 VERSION_FILE = os.path.join(PROJECT_DIR, "VERSION")
 PRODUCT_NAME = "CTERA Monitoring Dashboard"
 GITHUB_VERSION_URL = "https://raw.githubusercontent.com/ctera/CTERA-Monitoring-Dashboard/main/VERSION"
+GITHUB_VERSION_API_URL = "https://api.github.com/repos/ctera/CTERA-Monitoring-Dashboard/contents/VERSION?ref=main"
 DEFAULT_DATA_DIR = os.environ.get("FEATHERDASH_DATA_DIR", os.path.join(PROJECT_DIR, "data"))
 DEFAULT_DB_DIR = os.environ.get("FEATHERDASH_DB_DIR", os.path.join(DEFAULT_DATA_DIR, "db"))
 DEFAULT_LOG_DIR = os.environ.get("FEATHERDASH_LOG_DIR", "/var/log/ctera-monitoring-dashboard")
@@ -108,12 +109,55 @@ def _compare_versions(local_version, remote_version):
     return 0
 
 
+def _extract_remote_version_raw():
+    response = requests.get(
+        GITHUB_VERSION_URL,
+        params={"_": int(datetime.utcnow().timestamp())},
+        timeout=8,
+        headers={"Cache-Control": "no-cache", "Pragma": "no-cache"},
+    )
+    response.raise_for_status()
+    return (response.text or "").strip()
+
+
+def _extract_remote_version_api():
+    response = requests.get(
+        GITHUB_VERSION_API_URL,
+        timeout=8,
+        headers={
+            "Accept": "application/vnd.github.raw+json",
+            "Cache-Control": "no-cache",
+            "Pragma": "no-cache",
+        },
+    )
+    response.raise_for_status()
+    payload = response.json() or {}
+    content = payload.get("content")
+    if content:
+        decoded = base64.b64decode(content).decode("utf-8", errors="ignore").strip()
+        if decoded:
+            return decoded
+    download_url = str(payload.get("download_url") or "").strip()
+    if download_url:
+        download_response = requests.get(
+            download_url,
+            params={"_": int(datetime.utcnow().timestamp())},
+            timeout=8,
+            headers={"Cache-Control": "no-cache", "Pragma": "no-cache"},
+        )
+        download_response.raise_for_status()
+        return (download_response.text or "").strip()
+    return ""
+
+
 def _check_github_version():
     local_version = APP_VERSION
     try:
-        response = requests.get(GITHUB_VERSION_URL, timeout=8)
-        response.raise_for_status()
-        remote_version = (response.text or "").strip()
+        remote_version = _extract_remote_version_raw()
+        if remote_version and _compare_versions(local_version, remote_version) > 0:
+            api_remote_version = _extract_remote_version_api()
+            if api_remote_version:
+                remote_version = api_remote_version
         if not remote_version:
             return {
                 "ok": False,
@@ -121,7 +165,7 @@ def _check_github_version():
                 "remote_version": "",
                 "status": "error",
                 "message": "GitHub returned an empty version.",
-                "source_url": GITHUB_VERSION_URL,
+                "source_url": GITHUB_VERSION_API_URL,
             }
         comparison = _compare_versions(local_version, remote_version)
         if comparison < 0:
@@ -139,7 +183,7 @@ def _check_github_version():
             "remote_version": remote_version,
             "status": status,
             "message": message,
-            "source_url": GITHUB_VERSION_URL,
+            "source_url": GITHUB_VERSION_API_URL,
         }
     except Exception as exc:
         return {
@@ -148,7 +192,7 @@ def _check_github_version():
             "remote_version": "",
             "status": "error",
             "message": f"Could not reach GitHub: {exc}",
-            "source_url": GITHUB_VERSION_URL,
+            "source_url": GITHUB_VERSION_API_URL,
         }
 
 
