@@ -109,6 +109,17 @@ def _compare_versions(local_version, remote_version):
     return 0
 
 
+def _max_version(*values):
+    cleaned = [str(v or "").strip() for v in values if str(v or "").strip()]
+    if not cleaned:
+        return ""
+    best = cleaned[0]
+    for candidate in cleaned[1:]:
+        if _compare_versions(best, candidate) < 0:
+            best = candidate
+    return best
+
+
 def _extract_remote_version_raw():
     response = requests.get(
         GITHUB_VERSION_URL,
@@ -151,20 +162,31 @@ def _extract_remote_version_api():
 
 
 def _check_github_version():
-    local_version = APP_VERSION
+    local_version = _load_app_version()
     try:
-        remote_version = _extract_remote_version_raw()
-        if remote_version and _compare_versions(local_version, remote_version) > 0:
+        raw_remote_version = ""
+        api_remote_version = ""
+        raw_error = None
+        api_error = None
+
+        try:
+            raw_remote_version = _extract_remote_version_raw()
+        except Exception as exc:
+            raw_error = exc
+
+        try:
             api_remote_version = _extract_remote_version_api()
-            if api_remote_version:
-                remote_version = api_remote_version
+        except Exception as exc:
+            api_error = exc
+
+        remote_version = _max_version(raw_remote_version, api_remote_version)
         if not remote_version:
             return {
                 "ok": False,
                 "local_version": local_version,
                 "remote_version": "",
                 "status": "error",
-                "message": "GitHub returned an empty version.",
+                "message": f"Could not read GitHub version. raw={raw_error!r}; api={api_error!r}",
                 "source_url": GITHUB_VERSION_API_URL,
             }
         comparison = _compare_versions(local_version, remote_version)
