@@ -9,6 +9,8 @@ CONFIG_FILE="/etc/ctera-monitoring-dashboard.env"
 DATA_DIR="/var/lib/ctera-monitoring-dashboard/data"
 LOG_DIR="/var/log/ctera-monitoring-dashboard"
 SERVICE_USER="ctera-monitoring"
+UPGRADE_HELPER="/usr/local/sbin/ctera-monitoring-dashboard-upgrade"
+UPGRADE_SUDOERS="/etc/sudoers.d/ctera-monitoring-dashboard-upgrade"
 ARCHIVE=""
 NONINTERACTIVE=0
 SKIP_CONFIRM=0
@@ -165,6 +167,94 @@ configure_local_firewall() {
 
   echo "  No active supported firewall manager detected. Skipping automatic firewall rule."
   return 0
+}
+
+install_upgrade_helper() {
+  section "Installing UI upgrade helper"
+  cat > "${UPGRADE_HELPER}" <<EOF
+#!/usr/bin/env bash
+set -euo pipefail
+
+INSTALL_DIR='${INSTALL_DIR}'
+CONFIG_FILE='${CONFIG_FILE}'
+DATA_DIR='${DATA_DIR}'
+LOG_DIR='${LOG_DIR}'
+SERVICE_USER='${SERVICE_USER}'
+BACKUP_ROOT='/opt/monitoring-backup'
+STATE_DIR='${INSTALL_DIR}/state'
+STATE_FILE="\${STATE_DIR}/upgrade.state"
+LOG_FILE="\${LOG_DIR}/upgrade.log"
+ARCHIVE_URL='https://github.com/ctera/CTERA-Monitoring-Dashboard/archive/refs/heads/main.tar.gz'
+THRESHOLD_STRATEGY="\${1:-merge}"
+
+case "\${THRESHOLD_STRATEGY}" in
+  merge|replace) ;;
+  *)
+    echo "Unsupported threshold strategy: \${THRESHOLD_STRATEGY}" >&2
+    exit 2
+    ;;
+esac
+
+mkdir -p "\${STATE_DIR}" "\${LOG_DIR}" "\${BACKUP_ROOT}"
+STARTED_AT="\$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+TMP_DIR="\$(mktemp -d /tmp/ctera-monitoring-dashboard-upgrade-XXXXXX)"
+
+write_state() {
+  local status="\$1"
+  local finished_at="\$2"
+  local last_exit="\$3"
+  local pid_value="\${4:-}"
+  local tmp="\${STATE_FILE}.tmp"
+  cat > "\${tmp}" <<STATEEOF
+status=\${status}
+started_at=\${STARTED_AT}
+finished_at=\${finished_at}
+last_exit=\${last_exit}
+pid=\${pid_value}
+STATEEOF
+  mv "\${tmp}" "\${STATE_FILE}"
+}
+
+finish_upgrade() {
+  local rc=\$?
+  local final_status="finished"
+  if [[ "\${rc}" -ne 0 ]]; then
+    final_status="failed"
+  fi
+  write_state "\${final_status}" "\$(date -u +%Y-%m-%dT%H:%M:%SZ)" "\${rc}" ""
+  rm -rf "\${TMP_DIR}" >/dev/null 2>&1 || true
+  exit "\${rc}"
+}
+
+write_state "running" "" "" "\$\$"
+trap finish_upgrade EXIT
+
+{
+  echo "\$(date '+%Y-%m-%d %H:%M:%S') Starting UI-triggered upgrade (\${THRESHOLD_STRATEGY})"
+  curl -fsSL "\${ARCHIVE_URL}" -o "\${TMP_DIR}/package.tgz"
+  mkdir -p "\${TMP_DIR}/package"
+  tar -xzf "\${TMP_DIR}/package.tgz" -C "\${TMP_DIR}/package" --strip-components=1
+  cd "\${TMP_DIR}/package"
+  bash ./upgrade.sh \\
+    --install-dir "\${INSTALL_DIR}" \\
+    --config-file "\${CONFIG_FILE}" \\
+    --data-dir "\${DATA_DIR}" \\
+    --log-dir "\${LOG_DIR}" \\
+    --user "\${SERVICE_USER}" \\
+    --backup-root "\${BACKUP_ROOT}" \\
+    --threshold-strategy "\${THRESHOLD_STRATEGY}" \\
+    --non-interactive
+  echo "\$(date '+%Y-%m-%d %H:%M:%S') Upgrade helper completed"
+} >> "\${LOG_FILE}" 2>&1
+EOF
+  chmod 755 "${UPGRADE_HELPER}"
+  chown root:root "${UPGRADE_HELPER}"
+
+  cat > "${UPGRADE_SUDOERS}" <<EOF
+${SERVICE_USER} ALL=(root) NOPASSWD: ${UPGRADE_HELPER}
+EOF
+  chmod 440 "${UPGRADE_SUDOERS}"
+  chown root:root "${UPGRADE_SUDOERS}"
 }
 
 if [[ "${EUID}" -ne 0 ]]; then
@@ -608,6 +698,8 @@ cp "${SERVICE_TMP}" "/etc/systemd/system/${PRODUCT_SLUG}.service"
 rm -f "${SERVICE_TMP}"
 systemctl daemon-reload
 systemctl enable --now "${PRODUCT_SLUG}"
+
+install_upgrade_helper
 
 section "Collector schedule"
 SCHEDULER_CRON="*/5 * * * *"

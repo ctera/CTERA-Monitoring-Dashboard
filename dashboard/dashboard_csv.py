@@ -29,6 +29,7 @@ DEFAULT_DB_DIR = os.environ.get("FEATHERDASH_DB_DIR", os.path.join(DEFAULT_DATA_
 DEFAULT_LOG_DIR = os.environ.get("FEATHERDASH_LOG_DIR", "/var/log/ctera-monitoring-dashboard")
 DEFAULT_STATE_DIR = os.environ.get("FEATHERDASH_STATE_DIR", os.path.join(PROJECT_DIR, "state"))
 DEFAULT_CONFIG_FILE = os.environ.get("FEATHERDASH_CONFIG_FILE", "/etc/ctera-monitoring-dashboard.env")
+DEFAULT_UPGRADE_HELPER = os.environ.get("FEATHERDASH_UPGRADE_HELPER", "/usr/local/sbin/ctera-monitoring-dashboard-upgrade")
 DEFAULT_HIDDEN_TASK_NAMES = {"csrequestsprocessor", "csrrequestsprocessor"}
 JOB_NAMES = ("portal", "filer")
 
@@ -520,6 +521,14 @@ def _tail_text(path, max_lines=12):
         return ""
 
 
+def _upgrade_state_path():
+    return os.path.join(_state_dir(), "upgrade.state")
+
+
+def _upgrade_log_path():
+    return os.path.join(DEFAULT_LOG_DIR, "upgrade.log")
+
+
 def _job_status(job_name):
     state = _read_state(job_name)
     log_path = _log_path(job_name)
@@ -543,6 +552,41 @@ def _job_status(job_name):
         "tail_command": f"tail -F {log_path}",
         "last_log_update": _file_mtime_utc(log_path),
         "tail": _tail_text(log_path),
+    }
+
+
+def _upgrade_status():
+    path = _upgrade_state_path()
+    out = {}
+    try:
+        with open(path, "r", encoding="utf-8", errors="ignore") as f:
+            for line in f:
+                if "=" in line:
+                    key, value = line.rstrip("\n").split("=", 1)
+                    out[key] = value
+    except Exception:
+        pass
+    log_path = _upgrade_log_path()
+    status = out.get("status", "idle")
+    pid = out.get("pid", "")
+    if status == "running" and pid:
+        try:
+            os.kill(int(pid), 0)
+        except Exception:
+            status = "unknown"
+            out["status"] = status
+    return {
+        "job": "upgrade",
+        "status": status,
+        "started_at": out.get("started_at", ""),
+        "finished_at": out.get("finished_at", ""),
+        "last_exit": out.get("last_exit", ""),
+        "pid": pid,
+        "log_path": log_path,
+        "tail_command": f"tail -F {log_path}",
+        "last_log_update": _file_mtime_utc(log_path),
+        "tail": _tail_text(log_path),
+        "helper_path": DEFAULT_UPGRADE_HELPER,
     }
 
 
@@ -592,6 +636,26 @@ def _launch_job(job_name, environment_id=None):
         "pid": str(proc.pid),
     })
     return _job_status(job_name), True
+
+
+def _launch_upgrade(threshold_strategy="merge"):
+    strategy = str(threshold_strategy or "merge").strip().lower() or "merge"
+    if strategy not in {"merge", "replace"}:
+        raise ValueError("Unsupported threshold strategy.")
+    current = _upgrade_status()
+    if current["status"] == "running":
+        return current, False
+    if not os.path.exists(DEFAULT_UPGRADE_HELPER):
+        raise ValueError(f"Upgrade helper not found at {DEFAULT_UPGRADE_HELPER}")
+    proc = subprocess.Popen(
+        ["/usr/bin/env", "bash", "-lc", f"sudo {shlex.quote(DEFAULT_UPGRADE_HELPER)} {shlex.quote(strategy)}"],
+        cwd=PROJECT_DIR,
+        start_new_session=True,
+    )
+    return {
+        **_upgrade_status(),
+        "pid": str(proc.pid),
+    }, True
 
 
 def resolve_brand(cfg):
@@ -3928,6 +3992,7 @@ async function runAISummary(){
 
     let jobStatusSnapshot = { portal: null, filer: null };
     let autoRefreshTimer = null;
+    let upgradeStatusSnapshot = null;
 
     function refreshCurrentView(forceMessage){
       const btn = document.getElementById('globalRefreshBtn');
@@ -3972,6 +4037,66 @@ async function runAISummary(){
         }
       } finally {
         if (btn) btn.disabled = false;
+      }
+    }
+
+    async function refreshUpgradeStatus(){
+      try{
+        const resp = await fetch('/upgrade_status');
+        const data = await resp.json();
+        const previousStatus = upgradeStatusSnapshot;
+        const currentStatus = data.status || 'idle';
+        const badge = document.getElementById('upgradeBadge');
+        const started = document.getElementById('upgradeStarted');
+        const finished = document.getElementById('upgradeFinished');
+        const exitCode = document.getElementById('upgradeExit');
+        const tailCmd = document.getElementById('upgradeTailCmd');
+        const tail = document.getElementById('upgradeTail');
+        const btn = document.getElementById('runUpgradeBtn');
+        if (badge){
+          badge.className = 'ops-badge ' + currentStatus;
+          badge.textContent = currentStatus.charAt(0).toUpperCase() + currentStatus.slice(1);
+        }
+        if (started) started.textContent = formatLocalTimestamp(data.started_at || '');
+        if (finished) finished.textContent = formatLocalTimestamp(data.finished_at || '');
+        if (exitCode) exitCode.textContent = data.last_exit || '—';
+        if (tailCmd) tailCmd.textContent = data.tail_command || '';
+        if (tail) tail.textContent = data.tail || 'No recent log lines.';
+        if (btn) btn.disabled = (currentStatus === 'running');
+        if (previousStatus === 'running' && currentStatus !== 'running') {
+          const flash = document.getElementById('upgradeFlash');
+          if (flash) flash.textContent = currentStatus === 'finished' ? 'Upgrade finished. Refreshing soon...' : 'Upgrade stopped. Refreshing soon...';
+          window.setTimeout(() => window.location.reload(), 2500);
+        }
+        upgradeStatusSnapshot = currentStatus;
+      } catch (e) {
+        console.error('upgrade status failed', e);
+      }
+    }
+
+    async function runUpgrade(){
+      const strategyEl = document.getElementById('upgradeStrategy');
+      const strategy = strategyEl ? strategyEl.value : 'merge';
+      const flash = document.getElementById('upgradeFlash');
+      if (!window.confirm('This will download the latest package and restart the dashboard service. The page may disconnect briefly. Continue?')) {
+        return;
+      }
+      if (flash) flash.textContent = 'Starting upgrade...';
+      try{
+        const resp = await fetch('/run_upgrade', {
+          method:'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ threshold_strategy: strategy })
+        });
+        const data = await resp.json();
+        if (!resp.ok || !data.ok) {
+          throw new Error(data.error || 'Upgrade launch failed');
+        }
+        if (flash) flash.textContent = 'Upgrade started. The dashboard service will restart during this process.';
+        refreshUpgradeStatus();
+      } catch (e) {
+        console.error('upgrade launch failed', e);
+        if (flash) flash.textContent = 'Could not start upgrade: ' + e.message;
       }
     }
 
@@ -5548,7 +5673,9 @@ async function runAISummary(){
       loadNotificationsConfig();
       loadAuthConfig();
       refreshJobStatus();
+      refreshUpgradeStatus();
       window.setInterval(refreshJobStatus, 5000);
+      window.setInterval(refreshUpgradeStatus, 5000);
     }
     window.addEventListener('DOMContentLoaded', init);
 
@@ -6458,9 +6585,20 @@ async function runAISummary(){
 
         <section class="threshold-card">
           <h3>Upgrade</h3>
-          <div class="notify-helper">Use the packaged upgrade script to refresh the app code without manually ripping out the existing install.</div>
-          <pre class="ops-logtail" style="margin-top:10px;">sudo bash ./upgrade.sh</pre>
-          <div class="notify-helper">The upgrade keeps the current config, state, and environment data in place, then restarts the service.</div>
+          <div class="notify-helper">Download the latest package and run the normal upgrade flow from the UI. This keeps config and data in place, then restarts the dashboard service.</div>
+          <div class="threshold-field" style="margin-top:12px;">
+            <label for="upgradeStrategy">Threshold handling during upgrade</label>
+            <select id="upgradeStrategy" class="threshold-select">
+              <option value="merge">Keep existing thresholds and merge new defaults</option>
+              <option value="replace">Replace thresholds with latest shipped defaults</option>
+            </select>
+            <div class="notify-helper">The dashboard will restart during the upgrade, so this page may disconnect briefly.</div>
+          </div>
+          <div class="notify-actions" style="margin-top:12px;">
+            <button id="runUpgradeBtn" class="ops-btn primary" onclick="runUpgrade()">Upgrade and Restart</button>
+          </div>
+          <div class="action-status" id="upgradeFlash"></div>
+          <div class="threshold-summary" style="margin-top:10px;">Helper: <code>{{ upgrade_helper_path }}</code></div>
         </section>
       </aside>
 
@@ -6491,6 +6629,23 @@ async function runAISummary(){
           <button class="ops-btn" onclick="showTab('auth_settings')">Open Access Control</button>
           <button class="ops-btn" onclick="showTab('admin_env')">Open Portals</button>
         </div>
+      </section>
+
+      <section class="threshold-card">
+        <div class="ops-status-head">
+          <div>
+            <h3>Upgrade Status</h3>
+            <div class="hero-sub">Track the background upgrade and watch the log while the service restarts.</div>
+          </div>
+          <span id="upgradeBadge" class="ops-badge idle">Idle</span>
+        </div>
+        <div class="ops-statline">
+          <span>Started <strong id="upgradeStarted">&mdash;</strong></span>
+          <span>Finished <strong id="upgradeFinished">&mdash;</strong></span>
+          <span>Exit <strong id="upgradeExit">&mdash;</strong></span>
+        </div>
+        <pre id="upgradeTail" class="ops-logtail">No recent log lines.</pre>
+        <div class="ops-loghint">Tail command: <code id="upgradeTailCmd">tail -F /var/log/ctera-monitoring-dashboard/upgrade.log</code></div>
       </section>
     </div>
   </div>
@@ -7624,6 +7779,21 @@ def check_updates():
     result = _check_github_version()
     status_code = 200 if result.get("ok") else 503
     return jsonify(result), status_code
+
+
+@app.get("/upgrade_status")
+def upgrade_status():
+    return jsonify(_upgrade_status())
+
+
+@app.post("/run_upgrade")
+def run_upgrade():
+    payload = request.get_json(silent=True) or {}
+    try:
+        status, started = _launch_upgrade(payload.get("threshold_strategy", "merge"))
+    except Exception as exc:
+        return jsonify({"ok": False, "error": str(exc), "status_info": _upgrade_status()}), 400
+    return jsonify({"ok": True, "started": started, "status_info": status}), (202 if started else 200)
 
 
 @app.get("/login")
@@ -8776,6 +8946,7 @@ def index():
         default_db_dir=DEFAULT_DB_DIR,
         default_log_dir=DEFAULT_LOG_DIR,
         default_state_dir=DEFAULT_STATE_DIR,
+        upgrade_helper_path=DEFAULT_UPGRADE_HELPER,
         dashboard_port=os.environ.get("PORT", "8080"),
         auth_mode=_auth_mode(),
         current_username=session.get("local_username", ""),

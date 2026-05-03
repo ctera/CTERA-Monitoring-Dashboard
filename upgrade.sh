@@ -11,6 +11,8 @@ DEFAULT_SERVICE_USER="ctera-monitoring"
 DEFAULT_BACKUP_ROOT="/opt/monitoring-backup"
 DEFAULT_SERVICE_FILE="/etc/systemd/system/ctera-monitoring-dashboard.service"
 DEFAULT_CRON_FILE="/etc/cron.d/ctera-monitoring-dashboard"
+DEFAULT_UPGRADE_HELPER="/usr/local/sbin/ctera-monitoring-dashboard-upgrade"
+DEFAULT_UPGRADE_SUDOERS="/etc/sudoers.d/ctera-monitoring-dashboard-upgrade"
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 INSTALL_DIR="${DEFAULT_INSTALL_DIR}"
@@ -21,6 +23,8 @@ SERVICE_USER="${DEFAULT_SERVICE_USER}"
 BACKUP_ROOT="${DEFAULT_BACKUP_ROOT}"
 SERVICE_FILE="${DEFAULT_SERVICE_FILE}"
 CRON_FILE="${DEFAULT_CRON_FILE}"
+UPGRADE_HELPER="${DEFAULT_UPGRADE_HELPER}"
+UPGRADE_SUDOERS="${DEFAULT_UPGRADE_SUDOERS}"
 NONINTERACTIVE=0
 THRESHOLD_STRATEGY="merge"
 PKG_MGR=""
@@ -189,6 +193,94 @@ ensure_scheduler_packages() {
       echo "Warning: could not determine package manager to install sqlite3 automatically." >&2
       ;;
   esac
+}
+
+install_upgrade_helper() {
+  section "Installing UI upgrade helper"
+  cat > "${UPGRADE_HELPER}" <<EOF
+#!/usr/bin/env bash
+set -euo pipefail
+
+INSTALL_DIR='${INSTALL_DIR}'
+CONFIG_FILE='${CONFIG_FILE}'
+DATA_DIR='${DATA_DIR}'
+LOG_DIR='${LOG_DIR}'
+SERVICE_USER='${SERVICE_USER}'
+BACKUP_ROOT='${BACKUP_ROOT}'
+STATE_DIR='${INSTALL_DIR}/state'
+STATE_FILE="\${STATE_DIR}/upgrade.state"
+LOG_FILE="\${LOG_DIR}/upgrade.log"
+ARCHIVE_URL='https://github.com/ctera/CTERA-Monitoring-Dashboard/archive/refs/heads/main.tar.gz'
+THRESHOLD_STRATEGY="\${1:-merge}"
+
+case "\${THRESHOLD_STRATEGY}" in
+  merge|replace) ;;
+  *)
+    echo "Unsupported threshold strategy: \${THRESHOLD_STRATEGY}" >&2
+    exit 2
+    ;;
+esac
+
+mkdir -p "\${STATE_DIR}" "\${LOG_DIR}" "\${BACKUP_ROOT}"
+STARTED_AT="\$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+TMP_DIR="\$(mktemp -d /tmp/ctera-monitoring-dashboard-upgrade-XXXXXX)"
+
+write_state() {
+  local status="\$1"
+  local finished_at="\$2"
+  local last_exit="\$3"
+  local pid_value="\${4:-}"
+  local tmp="\${STATE_FILE}.tmp"
+  cat > "\${tmp}" <<STATEEOF
+status=\${status}
+started_at=\${STARTED_AT}
+finished_at=\${finished_at}
+last_exit=\${last_exit}
+pid=\${pid_value}
+STATEEOF
+  mv "\${tmp}" "\${STATE_FILE}"
+}
+
+finish_upgrade() {
+  local rc=\$?
+  local final_status="finished"
+  if [[ "\${rc}" -ne 0 ]]; then
+    final_status="failed"
+  fi
+  write_state "\${final_status}" "\$(date -u +%Y-%m-%dT%H:%M:%SZ)" "\${rc}" ""
+  rm -rf "\${TMP_DIR}" >/dev/null 2>&1 || true
+  exit "\${rc}"
+}
+
+write_state "running" "" "" "\$\$"
+trap finish_upgrade EXIT
+
+{
+  echo "\$(date '+%Y-%m-%d %H:%M:%S') Starting UI-triggered upgrade (\${THRESHOLD_STRATEGY})"
+  curl -fsSL "\${ARCHIVE_URL}" -o "\${TMP_DIR}/package.tgz"
+  mkdir -p "\${TMP_DIR}/package"
+  tar -xzf "\${TMP_DIR}/package.tgz" -C "\${TMP_DIR}/package" --strip-components=1
+  cd "\${TMP_DIR}/package"
+  bash ./upgrade.sh \\
+    --install-dir "\${INSTALL_DIR}" \\
+    --config-file "\${CONFIG_FILE}" \\
+    --data-dir "\${DATA_DIR}" \\
+    --log-dir "\${LOG_DIR}" \\
+    --user "\${SERVICE_USER}" \\
+    --backup-root "\${BACKUP_ROOT}" \\
+    --threshold-strategy "\${THRESHOLD_STRATEGY}" \\
+    --non-interactive
+  echo "\$(date '+%Y-%m-%d %H:%M:%S') Upgrade helper completed"
+} >> "\${LOG_FILE}" 2>&1
+EOF
+  chmod 755 "${UPGRADE_HELPER}"
+  chown root:root "${UPGRADE_HELPER}"
+
+  cat > "${UPGRADE_SUDOERS}" <<EOF
+${SERVICE_USER} ALL=(root) NOPASSWD: ${UPGRADE_HELPER}
+EOF
+  chmod 440 "${UPGRADE_SUDOERS}"
+  chown root:root "${UPGRADE_SUDOERS}"
 }
 
 read_version_file() {
@@ -447,6 +539,7 @@ section "Installing Python requirements"
 "${INSTALL_DIR}/venv/bin/pip" install -r "${INSTALL_DIR}/requirements.txt"
 
 ensure_scheduler_packages
+install_upgrade_helper
 
 if [[ "${THRESHOLD_STRATEGY}" == "merge" ]]; then
   section "Merging threshold defaults"
