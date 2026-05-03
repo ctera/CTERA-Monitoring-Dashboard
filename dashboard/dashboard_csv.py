@@ -4089,11 +4089,22 @@ async function runAISummary(){
       const strategyEl = document.getElementById('upgradeStrategy');
       const strategy = strategyEl ? strategyEl.value : 'merge';
       const flash = document.getElementById('upgradeFlash');
-      if (!window.confirm('This will download the latest package and restart the dashboard service. The page may disconnect briefly. Continue?')) {
-        return;
-      }
-      if (flash) flash.textContent = 'Starting upgrade...';
       try{
+        if (flash) flash.textContent = 'Checking GitHub before upgrade...';
+        const checkResp = await fetch('/check_updates');
+        const checkData = await checkResp.json();
+        if (!checkResp.ok || !checkData || !checkData.ok) {
+          throw new Error((checkData && checkData.message) || 'Could not verify the latest version');
+        }
+        if (checkData.status !== 'update_available') {
+          if (flash) flash.textContent = checkData.message || 'Already up to date.';
+          return;
+        }
+        if (!window.confirm(`Upgrade available: ${checkData.local_version} -> ${checkData.remote_version}. This will restart the dashboard service and the page may disconnect briefly. Continue?`)) {
+          if (flash) flash.textContent = 'Upgrade canceled.';
+          return;
+        }
+        if (flash) flash.textContent = 'Starting upgrade...';
         const resp = await fetch('/run_upgrade', {
           method:'POST',
           headers: { 'Content-Type': 'application/json' },
@@ -7801,6 +7812,21 @@ def upgrade_status():
 def run_upgrade():
     payload = request.get_json(silent=True) or {}
     try:
+        version_state = _check_github_version()
+        if not version_state.get("ok"):
+            return jsonify({
+                "ok": False,
+                "error": version_state.get("message") or "Could not verify the latest GitHub version.",
+                "version_info": version_state,
+                "status_info": _upgrade_status(),
+            }), 503
+        if version_state.get("status") != "update_available":
+            return jsonify({
+                "ok": False,
+                "error": version_state.get("message") or "Already up to date.",
+                "version_info": version_state,
+                "status_info": _upgrade_status(),
+            }), 409
         status, started = _launch_upgrade(payload.get("threshold_strategy", "merge"))
     except Exception as exc:
         return jsonify({"ok": False, "error": str(exc), "status_info": _upgrade_status()}), 400
