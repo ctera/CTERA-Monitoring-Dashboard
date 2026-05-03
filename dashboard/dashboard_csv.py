@@ -21,6 +21,7 @@ CONF_PATH = os.path.join(APP_DIR, "config.yaml")
 API_KEY_FILE = os.path.join(APP_DIR, "openai_key.txt")
 VERSION_FILE = os.path.join(PROJECT_DIR, "VERSION")
 PRODUCT_NAME = "CTERA Monitoring Dashboard"
+GITHUB_VERSION_URL = "https://raw.githubusercontent.com/ctera/CTERA-Monitoring-Dashboard/main/VERSION"
 DEFAULT_DATA_DIR = os.environ.get("FEATHERDASH_DATA_DIR", os.path.join(PROJECT_DIR, "data"))
 DEFAULT_DB_DIR = os.environ.get("FEATHERDASH_DB_DIR", os.path.join(DEFAULT_DATA_DIR, "db"))
 DEFAULT_LOG_DIR = os.environ.get("FEATHERDASH_LOG_DIR", "/var/log/ctera-monitoring-dashboard")
@@ -84,6 +85,70 @@ def _load_app_version():
 
 
 APP_VERSION = _load_app_version()
+
+
+def _parse_version_parts(value):
+    text = str(value or "").strip().lower()
+    if not text:
+        return (0, "")
+    match = re.match(r"^(\d+)(.*)$", text)
+    if match:
+        return (int(match.group(1)), match.group(2))
+    return (0, text)
+
+
+def _compare_versions(local_version, remote_version):
+    local_parts = _parse_version_parts(local_version)
+    remote_parts = _parse_version_parts(remote_version)
+    if local_parts < remote_parts:
+        return -1
+    if local_parts > remote_parts:
+        return 1
+    return 0
+
+
+def _check_github_version():
+    local_version = APP_VERSION
+    try:
+        response = requests.get(GITHUB_VERSION_URL, timeout=8)
+        response.raise_for_status()
+        remote_version = (response.text or "").strip()
+        if not remote_version:
+            return {
+                "ok": False,
+                "local_version": local_version,
+                "remote_version": "",
+                "status": "error",
+                "message": "GitHub returned an empty version.",
+                "source_url": GITHUB_VERSION_URL,
+            }
+        comparison = _compare_versions(local_version, remote_version)
+        if comparison < 0:
+            status = "update_available"
+            message = f"Update available: {local_version} -> {remote_version}"
+        elif comparison > 0:
+            status = "ahead"
+            message = f"Installed version {local_version} is newer than GitHub main ({remote_version})."
+        else:
+            status = "up_to_date"
+            message = f"Up to date: {local_version}"
+        return {
+            "ok": True,
+            "local_version": local_version,
+            "remote_version": remote_version,
+            "status": status,
+            "message": message,
+            "source_url": GITHUB_VERSION_URL,
+        }
+    except Exception as exc:
+        return {
+            "ok": False,
+            "local_version": local_version,
+            "remote_version": "",
+            "status": "error",
+            "message": f"Could not reach GitHub: {exc}",
+            "source_url": GITHUB_VERSION_URL,
+        }
 
 
 def load_openai_api_key():
@@ -3087,6 +3152,10 @@ HTML = """
     .top-user-name { display:inline-flex; align-items:center; gap:8px; padding:8px 12px; border-radius:999px; background:#f8fafc; color:rgb(44, 68, 83); font-size:12px; font-weight:700; border:1px solid #dbe4f0; }
     .top-user-name strong { font-weight:800; color:#1f2937; }
     .refresh-note { color:var(--muted); font-size:12px; font-weight:700; }
+    .update-note { color:var(--muted); font-size:12px; font-weight:700; max-width:320px; text-align:right; }
+    .update-note.ok { color:#0f766e; }
+    .update-note.warn { color:#b45309; }
+    .update-note.error { color:#b91c1c; }
     .top-logout { display:inline-flex; align-items:center; justify-content:center; min-height:36px; padding:8px 12px; border-radius:999px; border:1px solid #dbe4f0; background:#ffffff; color:rgb(44, 68, 83); font-size:12px; font-weight:800; text-decoration:none; }
     .top-logout:hover { border-color:#c7d2fe; background:#f8fafc; color:#312e81; }
     .content-shell { padding:20px 24px 28px; min-width:0; }
@@ -3768,6 +3837,35 @@ async function runAISummary(){
       const note = document.getElementById('refreshNote');
       if (note) note.textContent = message || 'Collector finished. Refreshing data...';
       autoRefreshTimer = window.setTimeout(() => refreshCurrentView(message || 'Refreshing data...'), 900);
+    }
+
+    async function checkForUpdates(){
+      const btn = document.getElementById('checkUpdatesBtn');
+      const note = document.getElementById('updateNote');
+      if (btn) btn.disabled = true;
+      if (note) {
+        note.className = 'update-note';
+        note.textContent = 'Checking GitHub...';
+      }
+      try{
+        const resp = await fetch('/check_updates');
+        const data = await resp.json();
+        if (!resp.ok || !data) {
+          throw new Error((data && data.message) || 'Update check failed');
+        }
+        if (note) {
+          note.textContent = data.message || 'Update check finished.';
+          note.className = 'update-note ' + (data.status === 'up_to_date' || data.status === 'ahead' ? 'ok' : (data.status === 'update_available' ? 'warn' : 'error'));
+        }
+      } catch (e) {
+        console.error('update check failed', e);
+        if (note) {
+          note.textContent = 'Could not reach GitHub.';
+          note.className = 'update-note error';
+        }
+      } finally {
+        if (btn) btn.disabled = false;
+      }
     }
 
     async function refreshJobStatus(){
@@ -5531,7 +5629,9 @@ async function runAISummary(){
         <div class="topbar-meta">
           <div class="topbar-actions">
             <button id="globalRefreshBtn" class="ops-btn" type="button" onclick="refreshCurrentView('Refreshing data...')">Refresh</button>
+            <button id="checkUpdatesBtn" class="ops-btn" type="button" onclick="checkForUpdates()">Check for Updates</button>
             <span id="refreshNote" class="refresh-note"></span>
+            <span id="updateNote" class="update-note"></span>
           </div>
           <div class="top-context">
             <label for="environmentContextSelect">Context</label>
@@ -7410,6 +7510,13 @@ def _enforce_local_auth():
 @app.get("/healthz")
 def healthz():
     return jsonify(status="ok")
+
+
+@app.get("/check_updates")
+def check_updates():
+    result = _check_github_version()
+    status_code = 200 if result.get("ok") else 503
+    return jsonify(result), status_code
 
 
 @app.get("/login")
