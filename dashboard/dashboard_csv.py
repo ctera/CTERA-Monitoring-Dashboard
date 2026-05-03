@@ -138,6 +138,20 @@ def _extract_remote_version_with_curl(url):
     return (proc.stdout or "").strip()
 
 
+def _extract_remote_version_api_with_curl():
+    payload_text = _extract_remote_version_with_curl(GITHUB_VERSION_API_URL)
+    payload = json.loads(payload_text or "{}")
+    content = payload.get("content")
+    if content:
+        decoded = base64.b64decode(content).decode("utf-8", errors="ignore").strip()
+        if decoded:
+            return decoded
+    download_url = str(payload.get("download_url") or "").strip()
+    if download_url:
+        return _extract_remote_version_with_curl(download_url)
+    return ""
+
+
 def _extract_remote_version_raw():
     response = requests.get(
         GITHUB_VERSION_URL,
@@ -197,7 +211,7 @@ def _check_github_version():
                 raw_error = fallback_exc
 
         try:
-            api_remote_version = _extract_remote_version_with_curl(GITHUB_VERSION_URL)
+            api_remote_version = _extract_remote_version_api_with_curl()
         except Exception as exc:
             api_error = exc
             try:
@@ -220,8 +234,8 @@ def _check_github_version():
             status = "update_available"
             message = f"Update available: {local_version} -> {remote_version}"
         elif comparison > 0:
-            status = "ahead"
-            message = f"Installed version {local_version} is newer than GitHub main ({remote_version})."
+            status = "stale_remote"
+            message = f"GitHub returned an older version ({remote_version}). The response may be cached; please try again."
         else:
             status = "up_to_date"
             message = f"Up to date: {local_version}"
