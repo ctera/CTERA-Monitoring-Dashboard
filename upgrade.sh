@@ -23,6 +23,7 @@ SERVICE_FILE="${DEFAULT_SERVICE_FILE}"
 CRON_FILE="${DEFAULT_CRON_FILE}"
 NONINTERACTIVE=0
 THRESHOLD_STRATEGY="merge"
+PKG_MGR=""
 
 usage() {
   cat <<'EOF'
@@ -136,6 +137,58 @@ prompt_threshold_strategy() {
 section() {
   echo
   echo "==> $1"
+}
+
+detect_platform_tools() {
+  if command -v apt >/dev/null 2>&1; then
+    PKG_MGR="apt"
+  elif command -v dnf >/dev/null 2>&1; then
+    PKG_MGR="dnf"
+  elif command -v yum >/dev/null 2>&1; then
+    PKG_MGR="yum"
+  else
+    PKG_MGR=""
+  fi
+}
+
+install_os_packages() {
+  case "${PKG_MGR}" in
+    apt)
+      apt update
+      apt install -y "$@"
+      ;;
+    dnf)
+      dnf install -y "$@"
+      ;;
+    yum)
+      yum install -y "$@"
+      ;;
+    *)
+      return 1
+      ;;
+  esac
+}
+
+ensure_scheduler_packages() {
+  local missing=0
+  command -v sqlite3 >/dev/null 2>&1 || missing=1
+  if [[ "${missing}" -eq 0 ]]; then
+    return 0
+  fi
+
+  detect_platform_tools
+  section "Installing scheduler dependencies"
+  case "${PKG_MGR}" in
+    apt)
+      install_os_packages sqlite3
+      ;;
+    dnf|yum)
+      install_os_packages sqlite
+      ;;
+    *)
+      echo "Warning: could not determine package manager to install sqlite3 automatically." >&2
+      ;;
+  esac
 }
 
 read_version_file() {
@@ -392,6 +445,8 @@ fi
 
 section "Installing Python requirements"
 "${INSTALL_DIR}/venv/bin/pip" install -r "${INSTALL_DIR}/requirements.txt"
+
+ensure_scheduler_packages
 
 if [[ "${THRESHOLD_STRATEGY}" == "merge" ]]; then
   section "Merging threshold defaults"

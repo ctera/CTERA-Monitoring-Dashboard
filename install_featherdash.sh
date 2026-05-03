@@ -122,10 +122,10 @@ install_os_packages() {
 install_base_packages() {
   case "${PKG_MGR}" in
     apt)
-      install_os_packages python3 python3-venv python3-pip cron curl jq net-tools openssh-client
+      install_os_packages python3 python3-venv python3-pip cron curl jq net-tools openssh-client sqlite3
       ;;
     dnf|yum)
-      install_os_packages python3 python3-pip cronie curl jq net-tools openssh-clients sshpass
+      install_os_packages python3 python3-pip cronie curl jq net-tools openssh-clients sshpass sqlite
       ;;
   esac
 }
