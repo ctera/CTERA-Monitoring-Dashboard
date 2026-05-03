@@ -4187,16 +4187,15 @@ async function runAISummary(){
         if (httpEl) httpEl.value = data.http_proxy || '';
         if (httpsEl) httpsEl.value = data.https_proxy || '';
         if (insecureEl) insecureEl.checked = !!data.insecure;
-        if (status) status.textContent = data.path ? ('Settings file: ' + data.path) : '';
+        setActionStatus('upgradeSettingsStatus', data.path ? ('Settings file: ' + data.path) : '', '');
       } catch (e) {
         console.error('upgrade network config load failed', e);
-        if (status) status.textContent = 'Could not load GitHub network settings.';
+        setActionStatus('upgradeSettingsStatus', 'Could not load GitHub network settings.', 'error');
       }
     }
 
     async function saveUpgradeNetworkConfig(){
-      const status = document.getElementById('upgradeSettingsStatus');
-      if (status) status.textContent = 'Saving GitHub network settings...';
+      setActionStatus('upgradeSettingsStatus', 'Saving GitHub network settings...', 'working');
       try{
         const resp = await fetch('/upgrade_network_config', {
           method:'POST',
@@ -4211,11 +4210,11 @@ async function runAISummary(){
         if (!resp.ok || !data.ok) {
           throw new Error((data && data.error) || 'Could not save GitHub network settings');
         }
-        if (status) status.textContent = 'Saved GitHub network settings.';
+        setActionStatus('upgradeSettingsStatus', 'Saved GitHub network settings.', 'success');
         await checkForUpdates({ silent:true });
       } catch (e) {
         console.error('upgrade network config save failed', e);
-        if (status) status.textContent = 'Could not save GitHub network settings: ' + e.message;
+        setActionStatus('upgradeSettingsStatus', 'Could not save GitHub network settings: ' + e.message, 'error');
       }
     }
 
