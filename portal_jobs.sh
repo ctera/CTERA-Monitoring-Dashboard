@@ -13,6 +13,9 @@ timestamp_log() {
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 FEATHERDASH_CONFIG="${FEATHERDASH_CONFIG:-/etc/ctera-monitoring-dashboard.env}"
+FEATHERDASH_STATE_DIR="${FEATHERDASH_STATE_DIR:-${SCRIPT_DIR}/state}"
+JOB_STATE_PATH="${FEATHERDASH_STATE_DIR}/portal.state"
+JOB_STARTED_AT="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 
 cd "${SCRIPT_DIR}"
 
@@ -23,6 +26,37 @@ set +a
 FEATHERDASH_ENV_LABEL="${FEATHERDASH_ENV_NAME:-${CTERA_HOST:-portal}}"
 
 exec > >(timestamp_log) 2>&1
+
+mkdir -p "${FEATHERDASH_STATE_DIR}"
+
+write_job_state() {
+  local status="$1"
+  local finished_at="$2"
+  local last_exit="$3"
+  local pid_value="${4:-}"
+  local tmp="${JOB_STATE_PATH}.tmp"
+  cat > "${tmp}" <<EOF
+status=${status}
+started_at=${JOB_STARTED_AT}
+finished_at=${finished_at}
+last_exit=${last_exit}
+pid=${pid_value}
+EOF
+  mv "${tmp}" "${JOB_STATE_PATH}"
+}
+
+finish_job_state() {
+  local rc=$?
+  local final_status="finished"
+  if [[ "${rc}" -ne 0 ]]; then
+    final_status="failed"
+  fi
+  write_job_state "${final_status}" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "${rc}" ""
+  return "${rc}"
+}
+
+write_job_state "running" "" "" "$$"
+trap finish_job_state EXIT
 
 echo "Starting portal_jobs.sh"
 
