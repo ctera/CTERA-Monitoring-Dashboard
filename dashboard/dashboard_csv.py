@@ -3793,6 +3793,7 @@ HTML = """
       if (id === 'edge') {
         syncEdgeScrollerSetup();
       }
+      scheduleAboutUpdateChecks(id);
     }
 
     // Postgres sub-tabs
@@ -4005,6 +4006,7 @@ async function runAISummary(){
     let autoRefreshTimer = null;
     let upgradeStatusSnapshot = null;
     let upgradeVersionState = null;
+    let updateCheckTimer = null;
 
     function refreshCurrentView(forceMessage){
       const btn = document.getElementById('globalRefreshBtn');
@@ -4021,6 +4023,22 @@ async function runAISummary(){
       const note = document.getElementById('refreshNote');
       if (note) note.textContent = message || 'Collector finished. Refreshing data...';
       autoRefreshTimer = window.setTimeout(() => refreshCurrentView(message || 'Refreshing data...'), 900);
+    }
+
+    function scheduleAboutUpdateChecks(activeTab){
+      if (updateCheckTimer) {
+        window.clearInterval(updateCheckTimer);
+        updateCheckTimer = null;
+      }
+      if (activeTab !== 'about') {
+        return;
+      }
+      checkForUpdates({ silent:true });
+      updateCheckTimer = window.setInterval(() => {
+        if (document.visibilityState === 'visible') {
+          checkForUpdates({ silent:true });
+        }
+      }, 15 * 60 * 1000);
     }
 
     function applyUpgradeVersionState(data, options){
@@ -5755,7 +5773,7 @@ async function runAISummary(){
       loadAuthConfig();
       refreshJobStatus();
       refreshUpgradeStatus();
-      checkForUpdates({ silent:true });
+      scheduleAboutUpdateChecks(currentTab());
       window.setInterval(refreshJobStatus, 5000);
       window.setInterval(refreshUpgradeStatus, 5000);
     }
