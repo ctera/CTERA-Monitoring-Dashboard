@@ -205,6 +205,7 @@ SERVICE_USER='${SERVICE_USER}'
 BACKUP_ROOT='/opt/monitoring-backup'
 STATE_DIR='${INSTALL_DIR}/state'
 STATE_FILE="\${STATE_DIR}/upgrade.state"
+SETTINGS_FILE="\${STATE_DIR}/upgrade_network.env"
 LOG_FILE="\${LOG_DIR}/upgrade.log"
 ARCHIVE_URL='https://github.com/ctera/CTERA-Monitoring-Dashboard/archive/refs/heads/main.tar.gz'
 THRESHOLD_STRATEGY="\${1:-merge}"
@@ -224,6 +225,22 @@ esac
 mkdir -p "\${STATE_DIR}" "\${LOG_DIR}" "\${BACKUP_ROOT}"
 STARTED_AT="\$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 TMP_DIR="\$(mktemp -d /tmp/ctera-monitoring-dashboard-upgrade-XXXXXX)"
+if [[ -f "\${SETTINGS_FILE}" ]]; then
+  set -a
+  # shellcheck disable=SC1090
+  source "\${SETTINGS_FILE}"
+  set +a
+fi
+if [[ -n "\${FEATHERDASH_GITHUB_HTTP_PROXY:-}" ]]; then
+  export http_proxy="\${FEATHERDASH_GITHUB_HTTP_PROXY}" HTTP_PROXY="\${FEATHERDASH_GITHUB_HTTP_PROXY}"
+fi
+if [[ -n "\${FEATHERDASH_GITHUB_HTTPS_PROXY:-}" ]]; then
+  export https_proxy="\${FEATHERDASH_GITHUB_HTTPS_PROXY}" HTTPS_PROXY="\${FEATHERDASH_GITHUB_HTTPS_PROXY}"
+fi
+CURL_ARGS=(-fsSL)
+if [[ "\${FEATHERDASH_GITHUB_INSECURE:-false}" == "true" ]]; then
+  CURL_ARGS+=(-k)
+fi
 
 write_state() {
   local status="\$1"
@@ -257,7 +274,7 @@ trap finish_upgrade EXIT
 
 {
   echo "\$(date '+%Y-%m-%d %H:%M:%S') Starting UI-triggered upgrade (\${THRESHOLD_STRATEGY})"
-  curl -fsSL "\${ARCHIVE_URL}" -o "\${TMP_DIR}/package.tgz"
+  curl "\${CURL_ARGS[@]}" "\${ARCHIVE_URL}" -o "\${TMP_DIR}/package.tgz"
   mkdir -p "\${TMP_DIR}/package"
   tar -xzf "\${TMP_DIR}/package.tgz" -C "\${TMP_DIR}/package" --strip-components=1
   cd "\${TMP_DIR}/package"

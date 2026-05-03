@@ -30,6 +30,7 @@ DEFAULT_LOG_DIR = os.environ.get("FEATHERDASH_LOG_DIR", "/var/log/ctera-monitori
 DEFAULT_STATE_DIR = os.environ.get("FEATHERDASH_STATE_DIR", os.path.join(PROJECT_DIR, "state"))
 DEFAULT_CONFIG_FILE = os.environ.get("FEATHERDASH_CONFIG_FILE", "/etc/ctera-monitoring-dashboard.env")
 DEFAULT_UPGRADE_HELPER = os.environ.get("FEATHERDASH_UPGRADE_HELPER", "/usr/local/sbin/ctera-monitoring-dashboard-upgrade")
+UPGRADE_NETWORK_SETTINGS_FILE = os.environ.get("FEATHERDASH_UPGRADE_NETWORK_SETTINGS_FILE", os.path.join(DEFAULT_STATE_DIR, "upgrade_network.env"))
 DEFAULT_HIDDEN_TASK_NAMES = {"csrequestsprocessor", "csrrequestsprocessor"}
 JOB_NAMES = ("portal", "filer")
 
@@ -121,20 +122,95 @@ def _max_version(*values):
     return best
 
 
+def _is_truthy(value):
+    return str(value or "").strip().lower() in {"1", "true", "yes", "y", "on"}
+
+
+def _parse_env_settings_file(path):
+    values = {}
+    try:
+        with open(path, "r", encoding="utf-8", errors="ignore") as handle:
+            for raw_line in handle:
+                line = raw_line.strip()
+                if not line or line.startswith("#") or "=" not in line:
+                    continue
+                key, raw_value = line.split("=", 1)
+                key = key.strip()
+                raw_value = raw_value.strip()
+                try:
+                    parsed = shlex.split(raw_value, posix=True)
+                    value = parsed[0] if parsed else ""
+                except Exception:
+                    value = raw_value.strip("\"'")
+                values[key] = value
+    except Exception:
+        pass
+    return values
+
+
+def _load_upgrade_network_settings():
+    values = _parse_env_settings_file(UPGRADE_NETWORK_SETTINGS_FILE)
+    return {
+        "http_proxy": str(values.get("FEATHERDASH_GITHUB_HTTP_PROXY") or "").strip(),
+        "https_proxy": str(values.get("FEATHERDASH_GITHUB_HTTPS_PROXY") or "").strip(),
+        "insecure": _is_truthy(values.get("FEATHERDASH_GITHUB_INSECURE")),
+        "path": UPGRADE_NETWORK_SETTINGS_FILE,
+    }
+
+
+def _save_upgrade_network_settings(payload):
+    settings = {
+        "FEATHERDASH_GITHUB_HTTP_PROXY": str(payload.get("http_proxy") or "").strip(),
+        "FEATHERDASH_GITHUB_HTTPS_PROXY": str(payload.get("https_proxy") or "").strip(),
+        "FEATHERDASH_GITHUB_INSECURE": "true" if _is_truthy(payload.get("insecure")) else "false",
+    }
+    path = UPGRADE_NETWORK_SETTINGS_FILE
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, "w", encoding="utf-8", newline="\n") as handle:
+        handle.write(f"FEATHERDASH_GITHUB_HTTP_PROXY={_env_quote_line(settings['FEATHERDASH_GITHUB_HTTP_PROXY'])}\n")
+        handle.write(f"FEATHERDASH_GITHUB_HTTPS_PROXY={_env_quote_line(settings['FEATHERDASH_GITHUB_HTTPS_PROXY'])}\n")
+        handle.write(f"FEATHERDASH_GITHUB_INSECURE={_env_quote_line(settings['FEATHERDASH_GITHUB_INSECURE'])}\n")
+    return _load_upgrade_network_settings()
+
+
+def _github_network_settings():
+    settings = _load_upgrade_network_settings()
+    proxies = {}
+    if settings["http_proxy"]:
+        proxies["http"] = settings["http_proxy"]
+    if settings["https_proxy"]:
+        proxies["https"] = settings["https_proxy"]
+    return settings, proxies, (not settings["insecure"])
+
+
 def _extract_remote_version_with_curl(url):
+    settings, _, _ = _github_network_settings()
+    env = os.environ.copy()
+    if settings["http_proxy"]:
+        env["http_proxy"] = settings["http_proxy"]
+        env["HTTP_PROXY"] = settings["http_proxy"]
+    if settings["https_proxy"]:
+        env["https_proxy"] = settings["https_proxy"]
+        env["HTTPS_PROXY"] = settings["https_proxy"]
+    command = [
+        "/usr/bin/env",
+        "curl",
+        "-fsSL",
+    ]
+    if settings["insecure"]:
+        command.append("-k")
+    command.extend([
+        "-H", "Cache-Control: no-cache",
+        "-H", "Pragma: no-cache",
+        f"{url}?_={int(datetime.utcnow().timestamp())}",
+    ])
     proc = subprocess.run(
-        [
-            "/usr/bin/env",
-            "curl",
-            "-fsSL",
-            "-H", "Cache-Control: no-cache",
-            "-H", "Pragma: no-cache",
-            f"{url}?_={int(datetime.utcnow().timestamp())}",
-        ],
+        command,
         capture_output=True,
         text=True,
         timeout=10,
         check=True,
+        env=env,
     )
     return (proc.stdout or "").strip()
 
@@ -154,17 +230,21 @@ def _extract_remote_version_api_with_curl():
 
 
 def _extract_remote_version_raw():
+    _, proxies, verify = _github_network_settings()
     response = requests.get(
         GITHUB_VERSION_URL,
         params={"_": int(datetime.utcnow().timestamp())},
         timeout=8,
         headers={"Cache-Control": "no-cache", "Pragma": "no-cache"},
+        proxies=proxies or None,
+        verify=verify,
     )
     response.raise_for_status()
     return (response.text or "").strip()
 
 
 def _extract_remote_version_api():
+    _, proxies, verify = _github_network_settings()
     response = requests.get(
         GITHUB_VERSION_API_URL,
         timeout=8,
@@ -173,6 +253,8 @@ def _extract_remote_version_api():
             "Cache-Control": "no-cache",
             "Pragma": "no-cache",
         },
+        proxies=proxies or None,
+        verify=verify,
     )
     response.raise_for_status()
     payload = response.json() or {}
@@ -188,6 +270,8 @@ def _extract_remote_version_api():
             params={"_": int(datetime.utcnow().timestamp())},
             timeout=8,
             headers={"Cache-Control": "no-cache", "Pragma": "no-cache"},
+            proxies=proxies or None,
+            verify=verify,
         )
         download_response.raise_for_status()
         return (download_response.text or "").strip()
@@ -527,6 +611,10 @@ def _upgrade_state_path():
 
 def _upgrade_log_path():
     return os.path.join(DEFAULT_LOG_DIR, "upgrade.log")
+
+
+def _upgrade_network_settings_path():
+    return UPGRADE_NETWORK_SETTINGS_FILE
 
 
 def _job_status(job_name):
@@ -4085,6 +4173,52 @@ async function runAISummary(){
       }
     }
 
+    async function loadUpgradeNetworkConfig(){
+      const status = document.getElementById('upgradeSettingsStatus');
+      try{
+        const resp = await fetch('/upgrade_network_config');
+        const data = await resp.json();
+        if (!resp.ok || !data) {
+          throw new Error((data && data.error) || 'Could not load GitHub network settings');
+        }
+        const httpEl = document.getElementById('upgradeHttpProxy');
+        const httpsEl = document.getElementById('upgradeHttpsProxy');
+        const insecureEl = document.getElementById('upgradeInsecure');
+        if (httpEl) httpEl.value = data.http_proxy || '';
+        if (httpsEl) httpsEl.value = data.https_proxy || '';
+        if (insecureEl) insecureEl.checked = !!data.insecure;
+        if (status) status.textContent = data.path ? ('Settings file: ' + data.path) : '';
+      } catch (e) {
+        console.error('upgrade network config load failed', e);
+        if (status) status.textContent = 'Could not load GitHub network settings.';
+      }
+    }
+
+    async function saveUpgradeNetworkConfig(){
+      const status = document.getElementById('upgradeSettingsStatus');
+      if (status) status.textContent = 'Saving GitHub network settings...';
+      try{
+        const resp = await fetch('/upgrade_network_config', {
+          method:'POST',
+          headers:{ 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            http_proxy: (document.getElementById('upgradeHttpProxy') || {}).value || '',
+            https_proxy: (document.getElementById('upgradeHttpsProxy') || {}).value || '',
+            insecure: !!((document.getElementById('upgradeInsecure') || {}).checked),
+          })
+        });
+        const data = await resp.json();
+        if (!resp.ok || !data.ok) {
+          throw new Error((data && data.error) || 'Could not save GitHub network settings');
+        }
+        if (status) status.textContent = 'Saved GitHub network settings.';
+        await checkForUpdates({ silent:true });
+      } catch (e) {
+        console.error('upgrade network config save failed', e);
+        if (status) status.textContent = 'Could not save GitHub network settings: ' + e.message;
+      }
+    }
+
     async function checkForUpdates(options){
       const opts = options || {};
       const btn = document.getElementById('checkUpdatesBtn');
@@ -5771,6 +5905,7 @@ async function runAISummary(){
       loadThresholdCatalog();
       loadNotificationsConfig();
       loadAuthConfig();
+      loadUpgradeNetworkConfig();
       refreshJobStatus();
       refreshUpgradeStatus();
       scheduleAboutUpdateChecks(currentTab());
@@ -6686,6 +6821,25 @@ async function runAISummary(){
         <section class="threshold-card">
           <h3>Upgrade</h3>
           <div class="notify-helper">Download the latest package and run the normal upgrade flow from the UI. This keeps config and data in place, then restarts the dashboard service.</div>
+          <div class="threshold-field" style="margin-top:12px;">
+            <label for="upgradeHttpProxy">GitHub HTTP Proxy</label>
+            <input id="upgradeHttpProxy" class="threshold-input" type="text" placeholder="http://proxy.example.com:8080">
+          </div>
+          <div class="threshold-field" style="margin-top:12px;">
+            <label for="upgradeHttpsProxy">GitHub HTTPS Proxy</label>
+            <input id="upgradeHttpsProxy" class="threshold-input" type="text" placeholder="http://proxy.example.com:8080">
+          </div>
+          <div class="threshold-field" style="margin-top:12px;">
+            <label class="notify-checkbox" for="upgradeInsecure">
+              <input id="upgradeInsecure" type="checkbox">
+              Disable GitHub certificate validation for update checks and UI-triggered upgrades
+            </label>
+            <div class="notify-helper">Use this only when an administrator has approved it, for example behind SSL inspection that you cannot trust properly on the host.</div>
+          </div>
+          <div class="notify-actions" style="margin-top:12px;">
+            <button class="ops-btn" type="button" onclick="saveUpgradeNetworkConfig()">Save GitHub Network Settings</button>
+          </div>
+          <div class="action-status" id="upgradeSettingsStatus"></div>
           <div class="threshold-field" style="margin-top:12px;">
             <label for="upgradeStrategy">Threshold handling during upgrade</label>
             <select id="upgradeStrategy" class="threshold-select">
@@ -7884,6 +8038,21 @@ def check_updates():
 @app.get("/upgrade_status")
 def upgrade_status():
     return jsonify(_upgrade_status())
+
+
+@app.get("/upgrade_network_config")
+def upgrade_network_config():
+    return jsonify(_load_upgrade_network_settings())
+
+
+@app.post("/upgrade_network_config")
+def save_upgrade_network_config():
+    payload = request.get_json(silent=True) or {}
+    try:
+        settings = _save_upgrade_network_settings(payload)
+    except Exception as exc:
+        return jsonify({"ok": False, "error": str(exc)}), 400
+    return jsonify({"ok": True, **settings})
 
 
 @app.post("/run_upgrade")
