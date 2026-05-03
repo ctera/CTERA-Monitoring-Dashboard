@@ -4004,6 +4004,7 @@ async function runAISummary(){
     let jobStatusSnapshot = { portal: null, filer: null };
     let autoRefreshTimer = null;
     let upgradeStatusSnapshot = null;
+    let upgradeVersionState = null;
 
     function refreshCurrentView(forceMessage){
       const btn = document.getElementById('globalRefreshBtn');
@@ -4022,11 +4023,57 @@ async function runAISummary(){
       autoRefreshTimer = window.setTimeout(() => refreshCurrentView(message || 'Refreshing data...'), 900);
     }
 
-    async function checkForUpdates(){
+    function applyUpgradeVersionState(data, options){
+      const opts = options || {};
+      const status = (data && data.status) || 'error';
+      const message = (data && data.message) || 'Could not verify the latest GitHub version.';
+      const note = document.getElementById('updateNote');
+      const flash = document.getElementById('upgradeFlash');
+      const btn = document.getElementById('runUpgradeBtn');
+      const badge = document.getElementById('upgradeBadge');
+      const tail = document.getElementById('upgradeTail');
+      upgradeVersionState = data || null;
+
+      if (opts.updateNote !== false && note) {
+        note.textContent = message;
+        note.className = 'update-note ' + (status === 'up_to_date' ? 'ok' : (status === 'update_available' ? 'warn' : 'error'));
+      }
+      if (btn) {
+        if (status === 'update_available') {
+          btn.disabled = false;
+          btn.textContent = 'Upgrade and Restart';
+          btn.title = message;
+        } else if (status === 'up_to_date') {
+          btn.disabled = true;
+          btn.textContent = 'Already Up to Date';
+          btn.title = message;
+        } else {
+          btn.disabled = true;
+          btn.textContent = 'Upgrade Unavailable';
+          btn.title = message;
+        }
+      }
+      if (opts.updateFlash !== false && flash && status !== 'update_available') {
+        flash.textContent = message;
+      }
+      if (status === 'up_to_date') {
+        if (badge && upgradeStatusSnapshot !== 'running') {
+          badge.className = 'ops-badge idle';
+          badge.textContent = 'No Upgrade Needed';
+        }
+        if (tail && upgradeStatusSnapshot !== 'running') {
+          tail.textContent = 'No upgrade run. Installed version already matches GitHub main.';
+        }
+      }
+    }
+
+    async function checkForUpdates(options){
+      const opts = options || {};
       const btn = document.getElementById('checkUpdatesBtn');
       const note = document.getElementById('updateNote');
-      if (btn) btn.disabled = true;
-      if (note) {
+      const silent = !!opts.silent;
+      if (btn && !silent) btn.disabled = true;
+      if (!silent && note) {
         note.className = 'update-note';
         note.textContent = 'Checking GitHub...';
       }
@@ -4036,18 +4083,15 @@ async function runAISummary(){
         if (!resp.ok || !data) {
           throw new Error((data && data.message) || 'Update check failed');
         }
-        if (note) {
-          note.textContent = data.message || 'Update check finished.';
-          note.className = 'update-note ' + (data.status === 'up_to_date' || data.status === 'ahead' ? 'ok' : (data.status === 'update_available' ? 'warn' : 'error'));
-        }
+        applyUpgradeVersionState(data, { updateNote: true, updateFlash: !silent });
+        return data;
       } catch (e) {
         console.error('update check failed', e);
-        if (note) {
-          note.textContent = 'Could not reach GitHub.';
-          note.className = 'update-note error';
-        }
+        const failure = { ok:false, status:'error', message:'Could not reach GitHub.' };
+        applyUpgradeVersionState(failure, { updateNote: true, updateFlash: !silent });
+        return failure;
       } finally {
-        if (btn) btn.disabled = false;
+        if (btn && !silent) btn.disabled = false;
       }
     }
 
@@ -4073,7 +4117,23 @@ async function runAISummary(){
         if (exitCode) exitCode.textContent = data.last_exit || '—';
         if (tailCmd) tailCmd.textContent = data.tail_command || '';
         if (tail) tail.textContent = data.tail || 'No recent log lines.';
-        if (btn) btn.disabled = (currentStatus === 'running');
+        if (btn) {
+          if (currentStatus === 'running') {
+            btn.disabled = true;
+            btn.textContent = 'Upgrade Running...';
+          } else if (upgradeVersionState) {
+            if (upgradeVersionState.status === 'update_available') {
+              btn.disabled = false;
+              btn.textContent = 'Upgrade and Restart';
+            } else if (upgradeVersionState.status === 'up_to_date') {
+              btn.disabled = true;
+              btn.textContent = 'Already Up to Date';
+            } else {
+              btn.disabled = true;
+              btn.textContent = 'Upgrade Unavailable';
+            }
+          }
+        }
         if (previousStatus === 'running' && currentStatus !== 'running') {
           const flash = document.getElementById('upgradeFlash');
           if (flash) flash.textContent = currentStatus === 'finished' ? 'Upgrade finished. Refreshing soon...' : 'Upgrade stopped. Refreshing soon...';
@@ -4091,13 +4151,12 @@ async function runAISummary(){
       const flash = document.getElementById('upgradeFlash');
       try{
         if (flash) flash.textContent = 'Checking GitHub before upgrade...';
-        const checkResp = await fetch('/check_updates');
-        const checkData = await checkResp.json();
-        if (!checkResp.ok || !checkData || !checkData.ok) {
+        const checkData = await checkForUpdates({ silent:true });
+        if (!checkData || !checkData.ok) {
           throw new Error((checkData && checkData.message) || 'Could not verify the latest version');
         }
         if (checkData.status !== 'update_available') {
-          if (flash) flash.textContent = checkData.message || 'Already up to date.';
+          applyUpgradeVersionState(checkData, { updateNote: true, updateFlash: true });
           return;
         }
         if (!window.confirm(`Upgrade available: ${checkData.local_version} -> ${checkData.remote_version}. This will restart the dashboard service and the page may disconnect briefly. Continue?`)) {
@@ -5696,6 +5755,7 @@ async function runAISummary(){
       loadAuthConfig();
       refreshJobStatus();
       refreshUpgradeStatus();
+      checkForUpdates({ silent:true });
       window.setInterval(refreshJobStatus, 5000);
       window.setInterval(refreshUpgradeStatus, 5000);
     }
