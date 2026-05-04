@@ -218,6 +218,7 @@ helper_installed_version() {
 
 load_or_prompt_helper_token() {
   local token=""
+  local prompt_tty=""
 
   if [[ -n "${CTERA_HELPER_GITHUB_TOKEN:-}" ]]; then
     printf '%s' "${CTERA_HELPER_GITHUB_TOKEN}"
@@ -234,13 +235,26 @@ load_or_prompt_helper_token() {
 
   if [[ "${NONINTERACTIVE}" -eq 1 ]]; then
     echo "Private helper token is required in non-interactive mode. Set CTERA_HELPER_GITHUB_TOKEN." >&2
+    echo "Get a fine-grained GitHub PAT for ${HELPER_REPO} read-only access from CTERA support." >&2
     return 1
+  fi
+
+  if [[ -r /dev/tty && -w /dev/tty ]]; then
+    prompt_tty="/dev/tty"
   fi
 
   echo
   echo "A private helper binary is required from ${HELPER_REPO}."
-  printf 'GitHub token for private helper download: ' >&2
-  read -rs token
+  echo "Get a fine-grained GitHub PAT with read-only access to ${HELPER_REPO} from CTERA support." >&2
+  if [[ -n "${prompt_tty}" ]]; then
+    printf 'GitHub token for private helper download: ' > "${prompt_tty}"
+    read -rs token < "${prompt_tty}"
+    printf '\n' > "${prompt_tty}"
+  else
+    echo "This upgrade session does not have an interactive TTY for secret entry." >&2
+    echo "Re-run interactively or export CTERA_HELPER_GITHUB_TOKEN before upgrade." >&2
+    return 1
+  fi
   echo >&2
   if [[ -z "${token}" ]]; then
     echo "GitHub token is required to download ${HELPER_NAME}." >&2
