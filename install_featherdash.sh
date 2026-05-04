@@ -17,6 +17,13 @@ SKIP_CONFIRM=0
 DASHBOARD_PORT="8080"
 PKG_MGR=""
 CRON_SERVICE_NAME="cron"
+HELPER_NAME="ctera-secret-helper"
+HELPER_INSTALL_PATH="/usr/local/bin/${HELPER_NAME}"
+HELPER_VERSION="0.1.0"
+HELPER_RELEASE_TAG="v${HELPER_VERSION}"
+HELPER_REPO="ctera/ctera-monitoring-helper"
+HELPER_ASSET_NAME_LINUX_AMD64="${HELPER_NAME}-linux-amd64"
+HELPER_TOKEN_FILE="/etc/ctera-monitoring-dashboard-helper.token"
 
 usage() {
   cat <<'EOF'
@@ -141,6 +148,129 @@ install_ssh_helper_packages() {
       install_os_packages sshpass openssh-clients
       ;;
   esac
+}
+
+helper_asset_name() {
+  local os_name arch_name
+  os_name="$(uname -s 2>/dev/null || echo "")"
+  arch_name="$(uname -m 2>/dev/null || echo "")"
+
+  if [[ "${os_name}" != "Linux" ]]; then
+    echo "Unsupported helper platform: ${os_name}" >&2
+    return 1
+  fi
+
+  case "${arch_name}" in
+    x86_64|amd64)
+      printf '%s' "${HELPER_ASSET_NAME_LINUX_AMD64}"
+      ;;
+    *)
+      echo "Unsupported helper architecture: ${arch_name}" >&2
+      return 1
+      ;;
+  esac
+}
+
+github_curl_args() {
+  local -a args=(-fsSL)
+  if [[ "${FEATHERDASH_GITHUB_INSECURE:-false}" == "true" ]]; then
+    args+=(-k)
+  fi
+  printf '%s\n' "${args[@]}"
+}
+
+helper_installed_version() {
+  if [[ ! -x "${HELPER_INSTALL_PATH}" ]]; then
+    return 1
+  fi
+  "${HELPER_INSTALL_PATH}" --version 2>/dev/null | head -n1
+}
+
+load_or_prompt_helper_token() {
+  local token=""
+
+  if [[ -n "${CTERA_HELPER_GITHUB_TOKEN:-}" ]]; then
+    printf '%s' "${CTERA_HELPER_GITHUB_TOKEN}"
+    return 0
+  fi
+
+  if [[ -f "${HELPER_TOKEN_FILE}" ]]; then
+    token="$(tr -d '\r\n' < "${HELPER_TOKEN_FILE}")"
+    if [[ -n "${token}" ]]; then
+      printf '%s' "${token}"
+      return 0
+    fi
+  fi
+
+  if [[ "${NONINTERACTIVE}" -eq 1 ]]; then
+    echo "Private helper token is required in non-interactive mode. Set CTERA_HELPER_GITHUB_TOKEN." >&2
+    return 1
+  fi
+
+  echo
+  echo "A private helper binary is required from ${HELPER_REPO}."
+  printf 'GitHub token for private helper download: ' >&2
+  read -rs token
+  echo >&2
+  if [[ -z "${token}" ]]; then
+    echo "GitHub token is required to download ${HELPER_NAME}." >&2
+    return 1
+  fi
+
+  if prompt_yes_no "Save helper GitHub token for future upgrades?" "y"; then
+    umask 077
+    printf '%s\n' "${token}" > "${HELPER_TOKEN_FILE}"
+    chmod 600 "${HELPER_TOKEN_FILE}"
+    chown root:root "${HELPER_TOKEN_FILE}"
+  fi
+
+  printf '%s' "${token}"
+}
+
+install_private_helper() {
+  local current_version=""
+  current_version="$(helper_installed_version || true)"
+  if [[ "${current_version}" == "${HELPER_VERSION}" ]]; then
+    return 0
+  fi
+
+  section "Installing private telnet helper"
+
+  local asset_name token api_url asset_url tmp_file release_json
+  asset_name="$(helper_asset_name)"
+  token="$(load_or_prompt_helper_token)"
+  api_url="https://api.github.com/repos/${HELPER_REPO}/releases/tags/${HELPER_RELEASE_TAG}"
+  tmp_file="$(mktemp)"
+
+  mapfile -t CURL_ARGS < <(github_curl_args)
+  release_json="$(curl "${CURL_ARGS[@]}" \
+    -H "Accept: application/vnd.github+json" \
+    -H "Authorization: Bearer ${token}" \
+    "${api_url}")"
+  asset_url="$(printf '%s' "${release_json}" | jq -r --arg name "${asset_name}" '.assets[] | select(.name == $name) | .url' | head -n1)"
+
+  if [[ -z "${asset_url}" || "${asset_url}" == "null" ]]; then
+    rm -f "${tmp_file}"
+    echo "Could not find helper asset ${asset_name} in ${HELPER_REPO} release ${HELPER_RELEASE_TAG}." >&2
+    return 1
+  fi
+
+  curl "${CURL_ARGS[@]}" \
+    -H "Accept: application/octet-stream" \
+    -H "Authorization: Bearer ${token}" \
+    "${asset_url}" -o "${tmp_file}"
+
+  install -d "$(dirname "${HELPER_INSTALL_PATH}")"
+  install -m 0755 "${tmp_file}" "${HELPER_INSTALL_PATH}"
+  rm -f "${tmp_file}"
+
+  current_version="$(helper_installed_version || true)"
+  if [[ "${current_version}" != "${HELPER_VERSION}" ]]; then
+    echo "Installed helper version '${current_version:-unknown}' does not match expected ${HELPER_VERSION}." >&2
+    return 1
+  fi
+
+  echo "  Installed ${HELPER_NAME} ${current_version} to ${HELPER_INSTALL_PATH}"
 }
 
 configure_local_firewall() {
@@ -648,6 +778,7 @@ section "Creating Python virtualenv"
 python3 -m venv "${INSTALL_DIR}/venv"
 "${INSTALL_DIR}/venv/bin/python" -m pip install --upgrade pip
 "${INSTALL_DIR}/venv/bin/pip" install -r "${INSTALL_DIR}/requirements.txt"
+install_private_helper
 
 CONFIGURE_ENV=1
 if [[ -f "${CONFIG_FILE}" ]]; then

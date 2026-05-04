@@ -13,10 +13,10 @@
 
 import argparse
 import csv
-import hashlib
 import logging
 import os
 import re
+import subprocess
 import sys
 
 from cterasdk.exceptions import CTERAException
@@ -37,6 +37,11 @@ def get_filer(self, device=None, tenant=None):
 
 # --- helpers (put once near the top of your file) ---
 from datetime import datetime, timezone
+
+TELNET_SECRET_HELPER = os.environ.get(
+    "CTERA_TELNET_SECRET_HELPER",
+    "/usr/local/bin/ctera-secret-helper",
+)
 
 def _g(obj, *names, default=""):
     """get first existing attribute from names"""
@@ -112,27 +117,84 @@ def _ensure_session_alive(sess):
 # --- end helpers ---
 
 
+def _derive_telnet_secret(mac_addr, firmware):
+    mac_addr = str(mac_addr or "").strip()
+    firmware = str(firmware or "").strip()
+    if not mac_addr or not firmware:
+        raise ValueError("mac address and firmware are required")
+
+    helper_path = os.environ.get("CTERA_TELNET_SECRET_HELPER", TELNET_SECRET_HELPER).strip() or TELNET_SECRET_HELPER
+    if not os.path.exists(helper_path):
+        raise FileNotFoundError(
+            f"Telnet secret helper not found at {helper_path}. "
+            "Re-run install/upgrade so the helper can be installed."
+        )
+
+    try:
+        result = subprocess.run(
+            [helper_path, "--mac", mac_addr, "--firmware", firmware],
+            capture_output=True,
+            text=True,
+            check=True,
+            timeout=10,
+        )
+    except subprocess.CalledProcessError as exc:
+        stderr = (exc.stderr or "").strip()
+        raise RuntimeError(
+            f"Telnet secret helper failed with exit code {exc.returncode}: {stderr or 'no stderr'}"
+        ) from exc
+    except subprocess.TimeoutExpired as exc:
+        raise TimeoutError("Telnet secret helper timed out after 10s") from exc
+
+    secret = (result.stdout or "").strip()
+    if not secret:
+        raise RuntimeError("Telnet secret helper returned an empty secret")
+    return secret
+
+
 
 def get_filers(self, all_tenants=False, tenant=None):
     try:
         connected_filers = []
         if all_tenants:
-            self.portals.browse_global_admin()
+            _with_reauth(self, lambda: self.portals.browse_global_admin(), retries=2, label="browse_global_admin")
             logging.info("Getting all Filers (all tenants)")
-            for t in self.portals.tenants():
-                self.portals.browse(t.name)
-                all_filers = self.devices.filers(include=[
-                    'deviceConnectionStatus.connected',
-                    'deviceReportedStatus.config.hostname'
-                ])
-                connected_filers.extend([f for f in all_filers if getattr(getattr(f, "deviceConnectionStatus", None), "connected", False)])
+            tenants = _with_reauth(self, lambda: list(self.portals.tenants()), retries=2, label="list_tenants")
+            for t in tenants:
+                tenant_name = getattr(t, "name", "")
+                try:
+                    _with_reauth(self, lambda: self.portals.browse(tenant_name), retries=2, label=f"browse_tenant:{tenant_name}")
+                    all_filers = _with_reauth(
+                        self,
+                        lambda: self.devices.filers(include=[
+                            'deviceConnectionStatus.connected',
+                            'deviceReportedStatus.config.hostname'
+                        ]),
+                        retries=2,
+                        label=f"list_filers:{tenant_name}"
+                    )
+                    tenant_connected = [
+                        f for f in (all_filers or [])
+                        if getattr(getattr(f, "deviceConnectionStatus", None), "connected", False)
+                    ]
+                    connected_filers.extend(tenant_connected)
+                    logging.info("Tenant %s: collected %s connected filers", tenant_name, len(tenant_connected))
+                except Exception as tenant_error:
+                    logging.warning("Skipping tenant %s during filer discovery: %s", tenant_name or "Unknown", tenant_error)
+                    _reauth(self)
+                    continue
         elif tenant is not None:
             logging.info("Getting Filers connected to %s", tenant)
-            self.portals.browse(tenant)
-            tenant_filers = self.devices.filers(include=[
-                'deviceConnectionStatus.connected',
-                'deviceReportedStatus.config.hostname'
-            ])
+            _with_reauth(self, lambda: self.portals.browse(tenant), retries=2, label=f"browse_tenant:{tenant}")
+            tenant_filers = _with_reauth(
+                self,
+                lambda: self.devices.filers(include=[
+                    'deviceConnectionStatus.connected',
+                    'deviceReportedStatus.config.hostname'
+                ]),
+                retries=2,
+                label=f"list_filers:{tenant}"
+            )
             connected_filers.extend([f for f in tenant_filers if getattr(getattr(f, "deviceConnectionStatus", None), "connected", False)])
         else:
             try:
@@ -140,16 +202,25 @@ def get_filers(self, all_tenants=False, tenant=None):
             except Exception:
                 current_tenant = None
             logging.info("Getting Filers connected%s", f" to {current_tenant}" if current_tenant else "")
-            tenant_filers = self.devices.filers(include=[
-                'deviceConnectionStatus.connected',
-                'deviceReportedStatus.config.hostname'
-            ])
+            tenant_filers = _with_reauth(
+                self,
+                lambda: self.devices.filers(include=[
+                    'deviceConnectionStatus.connected',
+                    'deviceReportedStatus.config.hostname'
+                ]),
+                retries=2,
+                label="list_filers_current_tenant"
+            )
             connected_filers.extend([f for f in tenant_filers if getattr(getattr(f, "deviceConnectionStatus", None), "connected", False)])
+        logging.info("Discovered %s connected filers total", len(connected_filers))
         return connected_filers
     except CTERAException as error:
         logging.debug(error)
         logging.error("Error getting Filers.")
         return None
+    except Exception as error:
+        logging.warning("Unexpected error getting Filers: %s", error)
+        return []
 
 def _ensure_session_alive(self):
     """Lightweight poke; if session is gone, re-browse GA to refresh it."""
@@ -244,7 +315,7 @@ def write_status(self, p_filename, all_tenants):
         )
 
     # ---------- your existing loop, now using the signal timeouts + per-filer budget ----------
-    for filer in get_filers(self, all_tenants):
+    for filer in (get_filers(self, all_tenants) or []):
         try:
             start = time.monotonic()
             _ensure_session_alive(self)
@@ -386,9 +457,7 @@ def write_status(self, p_filename, all_tenants):
                     firmware = first_scalar(safe_attr(info2, 'status.device.runningFirmware', default=''))
                     if not mac_addr or not firmware:
                         return 'N/A'
-                    secret = hashlib.sha1(
-                        (mac_addr + '-' + firmware).encode('utf-8')
-                    ).hexdigest()[:8]
+                    secret = _derive_telnet_secret(mac_addr, firmware)
 
                     telnet_enable_safe(self, filer, secret)
                     try:
