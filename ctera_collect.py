@@ -12,6 +12,7 @@
 # - Tasks are gathered per server via admin.servers.tasks.background(<server_name>).
 
 import argparse
+import ast
 import csv
 import logging
 import os
@@ -385,7 +386,7 @@ def write_status(self, p_filename, all_tenants):
                 ad_mapping = 'Not Applicable'
             License = info.config.license if hasattr(info.config, 'license') else 'Not Applicable'
             SN = safe_attr(info, 'status.device.SerialNumber')
-            MAC = safe_attr(info, 'status.device.MacAddress')
+            MAC = first_scalar(safe_attr(info, 'status.device.MacAddress'))
             try:
                 IP1 = info.status.network.ports[0].ip.address
                 DNS1 = info.status.network.ports[0].ip.DNSServer1
@@ -400,9 +401,16 @@ def write_status(self, p_filename, all_tenants):
             try:
                 curr_cpu = info.proc.perfMonitor.current.cpu
                 curr_mem = info.proc.perfMonitor.current.memUsage
+                logging.info(
+                    "SDK perf for %s: curr_cpu=%s curr_mem=%s",
+                    getattr(filer, 'name', '?'),
+                    curr_cpu,
+                    curr_mem,
+                )
             except (AttributeError, TypeError):
                 curr_cpu = 'N/A'
                 curr_mem = 'N/A'
+                logging.info("SDK perf missing for %s; shell fallback may be used.", getattr(filer, 'name', '?'))
             _total = safe_attr(info, 'proc.storage.summary.totalVolumeSpace')
             _used = safe_attr(info, 'proc.storage.summary.usedVolumeSpace')
             _free = safe_attr(info, 'proc.storage.summary.freeVolumeSpace')
@@ -470,19 +478,23 @@ def write_status(self, p_filename, all_tenants):
                     return _extract_first_number(out)
 
                 try:
+                    logging.info("Starting shell fallback for %s", getattr(filer, 'name', '?'))
                     telnet_enable_safe(self, filer, secret)
+                    logging.info("Telnet enabled for %s", getattr(filer, 'name', '?'))
                     try:
                         db_bytes = _run_numeric('for f in /var/volumes/*/.ctera/cloudSync/CloudSync.db; do [ -f "$f" ] && stat -c %s "$f" && break; done')
                         if not db_bytes:
                             db_bytes = _run_numeric("""for f in /var/volumes/*/.ctera/cloudSync/CloudSync.db; do [ -f "$f" ] && ls -ln "$f" 2>/dev/null | awk 'NR==1 {print $5; exit}' && break; done""")
                         if db_bytes:
                             metrics['db_size'] = round(int(float(db_bytes)) / (1 << 30), 2)
+                        logging.info("Shell fallback DB size for %s: raw=%s parsed=%s", getattr(filer, 'name', '?'), db_bytes or 'N/A', metrics.get('db_size', 'N/A'))
 
                         cpu_now = _run_numeric("""sar -u 1 1 2>/dev/null | awk 'BEGIN{col=0;found=0} /%idle/ {for(i=1;i<=NF;i++) if($i=="%idle") col=i} col && $1 ~ /^[0-9:]+$/ && $(col) ~ /^[0-9.]+$/ {last=100-$(col); found=1} END {if(found) printf "%.1f", last}'""")
                         if not cpu_now:
                             cpu_now = _run_numeric("""top -bn1 2>/dev/null | awk '/^%?Cpu/ {for(i=1;i<=NF;i++) if($i ~ /^id,?$/) {idle=$(i-1); gsub(/[% ,]/, "", idle); if(idle!="") printf "%.1f", 100-idle}}'""")
                         if cpu_now:
                             metrics['curr_cpu'] = _format_pct(cpu_now)
+                        logging.info("Shell fallback current CPU for %s: raw=%s parsed=%s", getattr(filer, 'name', '?'), cpu_now or 'N/A', metrics.get('curr_cpu', 'N/A'))
 
                         mem_now = _run_numeric("""sar -r 1 1 2>/dev/null | awk 'BEGIN{col=0;found=0} /%memused/ {for(i=1;i<=NF;i++) if($i=="%memused") col=i} col && $1 ~ /^[0-9:]+$/ && $(col) ~ /^[0-9.]+$/ {last=$(col); found=1} END {if(found) printf "%.1f", last}'""")
                         if not mem_now:
@@ -491,21 +503,25 @@ def write_status(self, p_filename, all_tenants):
                             mem_now = _run_numeric("""awk '/MemTotal:/ {t=$2} /MemAvailable:/ {a=$2} END {if (t > 0 && a >= 0) printf "%.1f", 100-((a/t)*100)}' /proc/meminfo 2>/dev/null""")
                         if mem_now:
                             metrics['curr_mem'] = _format_pct(mem_now)
+                        logging.info("Shell fallback current memory for %s: raw=%s parsed=%s", getattr(filer, 'name', '?'), mem_now or 'N/A', metrics.get('curr_mem', 'N/A'))
 
                         max_cpu = _run_numeric("""sar -u 2>/dev/null | awk 'BEGIN{col=0;found=0} /%idle/ {for(i=1;i<=NF;i++) if($i=="%idle") col=i} col && $1 ~ /^[0-9:]+$/ && $(col) ~ /^[0-9.]+$/ {v=100-$(col); if(!found || v>max) max=v; found=1} END {if(found) printf "%.1f", max}'""")
                         if not max_cpu:
                             max_cpu = cpu_now
                         if max_cpu:
                             metrics['max_cpu'] = _format_pct(max_cpu)
+                        logging.info("Shell fallback max CPU for %s: raw=%s parsed=%s", getattr(filer, 'name', '?'), max_cpu or 'N/A', metrics.get('max_cpu', 'N/A'))
 
                         max_mem = _run_numeric("""sar -r 2>/dev/null | awk 'BEGIN{col=0;found=0} /%memused/ {for(i=1;i<=NF;i++) if($i=="%memused") col=i} col && $1 ~ /^[0-9:]+$/ && $(col) ~ /^[0-9.]+$/ {v=$(col); if(!found || v>max) max=v; found=1} END {if(found) printf "%.1f", max}'""")
                         if not max_mem:
                             max_mem = mem_now
                         if max_mem:
                             metrics['max_mem'] = _format_pct(max_mem)
+                        logging.info("Shell fallback max memory for %s: raw=%s parsed=%s", getattr(filer, 'name', '?'), max_mem or 'N/A', metrics.get('max_mem', 'N/A'))
                     finally:
                         try:
                             telnet_disable_safe(self, filer)
+                            logging.info("Telnet disabled for %s", getattr(filer, 'name', '?'))
                         except Exception:
                             pass
                 except TimeoutError as te:
@@ -541,6 +557,14 @@ def write_status(self, p_filename, all_tenants):
             db_size_value = shell_metrics.get('db_size')
             if db_size_value in ("", None):
                 db_size_value = 'N/A'
+            logging.info(
+                "Final filer metrics for %s: current_perf='%s' max_cpu=%s max_mem=%s db_size=%s",
+                getattr(filer, 'name', '?'),
+                f"CPU: {_display_pct(curr_cpu)} Mem: {_display_pct(curr_mem)}",
+                max_cpu_value,
+                max_mem_value,
+                db_size_value,
+            )
 
             if not _budget_ok():
                 raise TimeoutError(f"Per-filer budget {BUDGET_PER_FILER}s exceeded")
@@ -977,7 +1001,15 @@ def first_scalar(value, default=''):
         return default
     if isinstance(value, (list, tuple)):
         return str(value[0]) if value else default
-    return str(value)
+    text = str(value).strip()
+    if text.startswith("[") and text.endswith("]"):
+        try:
+            parsed = ast.literal_eval(text)
+            if isinstance(parsed, (list, tuple)):
+                return str(parsed[0]) if parsed else default
+        except Exception:
+            pass
+    return text
 
 
 def main():
