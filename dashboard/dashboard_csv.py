@@ -3912,6 +3912,13 @@ HTML = """
       scheduleAboutUpdateChecks(id);
     }
 
+    function currentTab(){
+      const activeBtn = document.querySelector('.tabbtn.active[data-tab]');
+      if (activeBtn) return activeBtn.getAttribute('data-tab') || loadActive();
+      const visiblePane = Array.from(document.querySelectorAll('.tabpane')).find(p => p.style.display !== 'none');
+      return visiblePane ? visiblePane.id : loadActive();
+    }
+
     // Postgres sub-tabs
     function savePgActive(sub){
       try{ localStorage.setItem('fd.pgActive', sub); }catch(e){}
@@ -4127,6 +4134,7 @@ async function runAISummary(){
     function refreshCurrentView(forceMessage){
       const btn = document.getElementById('globalRefreshBtn');
       const note = document.getElementById('refreshNote');
+      try{ localStorage.setItem('fd.activeTab', currentTab()); }catch(e){}
       if (btn) btn.disabled = true;
       if (note) note.textContent = forceMessage || 'Refreshing data...';
       window.setTimeout(() => {
@@ -5335,15 +5343,9 @@ async function runAISummary(){
 
     function reconcileContextAndActiveTab(){
       const currentTab = loadActive();
+      if (document.getElementById(currentTab)) return;
       const inAdmin = isAdministrationContext();
-      if (inAdmin) {
-        if ((NAV_SECTION_MAP[currentTab] || '').startsWith('admin_')) return;
-        showTab('admin_env');
-      } else {
-        if ((NAV_SECTION_MAP[currentTab] || '').startsWith('admin_')) {
-          showTab('overview');
-        }
-      }
+      showTab(inAdmin ? 'admin_env' : 'overview');
     }
 
     function handleEnvironmentContextChange(){
@@ -5946,12 +5948,9 @@ async function runAISummary(){
     }
 
     function init(){
-      const inAdmin = loadEnvironmentContext() === 'admin';
       let initialTab = loadActive();
       if (initialTab === 'ai') initialTab = 'overview';
-      const initialSection = NAV_SECTION_MAP[initialTab] || '';
-      if (inAdmin && !initialSection.startsWith('admin_')) initialTab = 'admin_env';
-      if (!inAdmin && initialSection.startsWith('admin_')) initialTab = 'overview';
+      if (!document.getElementById(initialTab)) initialTab = 'overview';
         renderEnvironmentSelector();
         showTab(initialTab);
         if (document.getElementById('tenants')) { showTenantSubTab(loadTenantActive()); }
