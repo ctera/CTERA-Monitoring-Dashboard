@@ -210,11 +210,11 @@ prompt_helper_source_mode() {
   fi
 
   while true; do
-    echo
-    echo "Private helper install source:"
-    echo "  1) Download from GitHub"
-    echo "  2) Use a local file path"
-    printf 'Choose [1/2] (default 1): '
+    echo >&2
+    echo "Helper install source:" >&2
+    echo "  1) Download from GitHub" >&2
+    echo "  2) Use a local file path" >&2
+    printf 'Choose [1/2] (default 1): ' >&2
     read -r answer
     case "${answer:-1}" in
       1) printf '%s' "github"; return 0 ;;
@@ -346,7 +346,7 @@ install_private_helper() {
     return 0
   fi
 
-  section "Installing private telnet helper"
+  section "Installing helper"
 
   helper_source_mode="$(prompt_helper_source_mode)"
   if [[ "${helper_source_mode}" == "local" ]]; then
