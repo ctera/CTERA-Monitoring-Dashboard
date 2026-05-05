@@ -806,12 +806,12 @@ def derive_fields(rows, headers, cfg):
             headers.append(cpu_key)
         if mem_key not in headers:
             headers.append(mem_key)
-        pat = re.compile(r"CPU:\s*([0-9]+)%\s*Mem:\s*([0-9]+)%", re.I)
+        pat = re.compile(r"CPU:\s*(N/A|[0-9]+(?:\.[0-9]+)?)%?\s*Mem:\s*(N/A|[0-9]+(?:\.[0-9]+)?)%?", re.I)
         for r in rows:
             perf = (r.get("Current Performance") or "").strip()
             m = pat.search(perf)
-            r[cpu_key] = m.group(1) if m else ""
-            r[mem_key] = m.group(2) if m else ""
+            r[cpu_key] = m.group(1) if m else "N/A"
+            r[mem_key] = m.group(2) if m else "N/A"
     return rows, headers
 
 
@@ -4248,7 +4248,7 @@ async function runAISummary(){
 
     async function refreshUpgradeStatus(){
       try{
-        const resp = await fetch('/upgrade_status');
+        const resp = await fetch('/upgrade_status', { cache: 'no-store' });
         const data = await resp.json();
         const previousStatus = upgradeStatusSnapshot;
         const currentStatus = data.status || 'idle';
@@ -4267,7 +4267,10 @@ async function runAISummary(){
         if (finished) finished.textContent = formatLocalTimestamp(data.finished_at || '');
         if (exitCode) exitCode.textContent = data.last_exit || '—';
         if (tailCmd) tailCmd.textContent = data.tail_command || '';
-        if (tail) tail.textContent = data.tail || 'No recent log lines.';
+          if (tail) {
+            tail.textContent = data.tail || 'No recent log lines.';
+            tail.scrollTop = tail.scrollHeight;
+          }
         if (btn) {
           if (currentStatus === 'running') {
             btn.disabled = true;
@@ -4334,7 +4337,7 @@ async function runAISummary(){
 
     async function refreshJobStatus(){
       try{
-        const resp = await fetch('/job_status');
+        const resp = await fetch('/job_status', { cache: 'no-store' });
         const data = await resp.json();
         let shouldAutoRefresh = false;
         ['portal','filer'].forEach(name => {
@@ -4357,7 +4360,10 @@ async function runAISummary(){
           if (finished) finished.textContent = formatLocalTimestamp(card.finished_at || '');
           if (exitCode) exitCode.textContent = card.last_exit || '—';
           if (tailCmd) tailCmd.textContent = card.tail_command || '';
-          if (tail) tail.textContent = card.tail || 'No recent log lines.';
+          if (tail) {
+            tail.textContent = card.tail || 'No recent log lines.';
+            tail.scrollTop = tail.scrollHeight;
+          }
           if (btn) btn.disabled = (card.status === 'running');
           if (previousStatus === 'running' && currentStatus !== 'running') {
             shouldAutoRefresh = true;

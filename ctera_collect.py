@@ -442,6 +442,12 @@ def write_status(self, p_filename, all_tenants):
                 except (TypeError, ValueError):
                     return 'N/A'
 
+            def _display_pct(value):
+                value = str(value or '').strip()
+                if not value or value.upper() == 'N/A':
+                    return 'N/A'
+                return value if value.endswith('%') else f"{value}%"
+
             def _extract_first_number(text):
                 m = re.search(r'([0-9]+(?:\.[0-9]+)?)', text or '')
                 return m.group(1) if m else ''
@@ -522,7 +528,9 @@ def write_status(self, p_filename, all_tenants):
                 max_cpu_value = shell_metrics['max_cpu']
             if max_mem_value == 'N/A' and shell_metrics.get('max_mem'):
                 max_mem_value = shell_metrics['max_mem']
-            db_size_value = shell_metrics.get('db_size', 'N/A')
+            db_size_value = shell_metrics.get('db_size')
+            if db_size_value in ("", None):
+                db_size_value = 'N/A'
 
             if not _budget_ok():
                 raise TimeoutError(f"Per-filer budget {BUDGET_PER_FILER}s exceeded")
@@ -557,7 +565,7 @@ def write_status(self, p_filename, all_tenants):
                     Alerts,
                     time_s,
                     uptime,
-                    f"CPU: {curr_cpu}% Mem: {curr_mem}%",
+                    f"CPU: {_display_pct(curr_cpu)} Mem: {_display_pct(curr_mem)}",
                     max_cpu_value,
                     max_mem_value,
                     db_size_value
