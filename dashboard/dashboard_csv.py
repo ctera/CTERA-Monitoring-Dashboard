@@ -4248,7 +4248,7 @@ async function runAISummary(){
 
     async function refreshUpgradeStatus(){
       try{
-        const resp = await fetch('/upgrade_status', { cache: 'no-store' });
+        const resp = await fetch('/upgrade_status?_=' + Date.now(), { cache: 'no-store' });
         const data = await resp.json();
         const previousStatus = upgradeStatusSnapshot;
         const currentStatus = data.status || 'idle';
@@ -4337,7 +4337,7 @@ async function runAISummary(){
 
     async function refreshJobStatus(){
       try{
-        const resp = await fetch('/job_status', { cache: 'no-store' });
+        const resp = await fetch('/job_status?_=' + Date.now(), { cache: 'no-store' });
         const data = await resp.json();
         let shouldAutoRefresh = false;
         ['portal','filer'].forEach(name => {

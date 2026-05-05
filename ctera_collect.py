@@ -473,24 +473,34 @@ def write_status(self, p_filename, all_tenants):
                     telnet_enable_safe(self, filer, secret)
                     try:
                         db_bytes = _run_numeric('for f in /var/volumes/*/.ctera/cloudSync/CloudSync.db; do [ -f "$f" ] && stat -c %s "$f" && break; done')
+                        if not db_bytes:
+                            db_bytes = _run_numeric("""for f in /var/volumes/*/.ctera/cloudSync/CloudSync.db; do [ -f "$f" ] && ls -ln "$f" 2>/dev/null | awk 'NR==1 {print $5; exit}' && break; done""")
                         if db_bytes:
                             metrics['db_size'] = round(int(float(db_bytes)) / (1 << 30), 2)
 
                         cpu_now = _run_numeric("""sar -u 1 1 2>/dev/null | awk 'BEGIN{col=0;found=0} /%idle/ {for(i=1;i<=NF;i++) if($i=="%idle") col=i} col && $1 ~ /^[0-9:]+$/ && $(col) ~ /^[0-9.]+$/ {last=100-$(col); found=1} END {if(found) printf "%.1f", last}'""")
+                        if not cpu_now:
+                            cpu_now = _run_numeric("""top -bn1 2>/dev/null | awk '/^%?Cpu/ {for(i=1;i<=NF;i++) if($i ~ /^id,?$/) {idle=$(i-1); gsub(/[% ,]/, "", idle); if(idle!="") printf "%.1f", 100-idle}}'""")
                         if cpu_now:
                             metrics['curr_cpu'] = _format_pct(cpu_now)
 
                         mem_now = _run_numeric("""sar -r 1 1 2>/dev/null | awk 'BEGIN{col=0;found=0} /%memused/ {for(i=1;i<=NF;i++) if($i=="%memused") col=i} col && $1 ~ /^[0-9:]+$/ && $(col) ~ /^[0-9.]+$/ {last=$(col); found=1} END {if(found) printf "%.1f", last}'""")
                         if not mem_now:
                             mem_now = _run_numeric("""free 2>/dev/null | awk '/Mem:/ {if ($2 > 0) printf "%.1f", ($3/$2)*100}'""")
+                        if not mem_now:
+                            mem_now = _run_numeric("""awk '/MemTotal:/ {t=$2} /MemAvailable:/ {a=$2} END {if (t > 0 && a >= 0) printf "%.1f", 100-((a/t)*100)}' /proc/meminfo 2>/dev/null""")
                         if mem_now:
                             metrics['curr_mem'] = _format_pct(mem_now)
 
                         max_cpu = _run_numeric("""sar -u 2>/dev/null | awk 'BEGIN{col=0;found=0} /%idle/ {for(i=1;i<=NF;i++) if($i=="%idle") col=i} col && $1 ~ /^[0-9:]+$/ && $(col) ~ /^[0-9.]+$/ {v=100-$(col); if(!found || v>max) max=v; found=1} END {if(found) printf "%.1f", max}'""")
+                        if not max_cpu:
+                            max_cpu = cpu_now
                         if max_cpu:
                             metrics['max_cpu'] = _format_pct(max_cpu)
 
                         max_mem = _run_numeric("""sar -r 2>/dev/null | awk 'BEGIN{col=0;found=0} /%memused/ {for(i=1;i<=NF;i++) if($i=="%memused") col=i} col && $1 ~ /^[0-9:]+$/ && $(col) ~ /^[0-9.]+$/ {v=$(col); if(!found || v>max) max=v; found=1} END {if(found) printf "%.1f", max}'""")
+                        if not max_mem:
+                            max_mem = mem_now
                         if max_mem:
                             metrics['max_mem'] = _format_pct(max_mem)
                     finally:
