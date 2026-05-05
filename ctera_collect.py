@@ -310,10 +310,17 @@ def write_status(self, p_filename, all_tenants):
 
     def shell_safe(self, filer, cmd):
         lab = f"shell:{cmd.split()[0]}"
-        return _with_timeout(
+        result = _with_timeout(
             TIMEOUT_SHELL, lab,
             lambda: _with_reauth(self, lambda: filer.shell.run_command(cmd), retries=2, label=lab)
         )
+        if isinstance(result, str):
+            return result
+        if hasattr(result, "value"):
+            return str(result.value)
+        if hasattr(result, "text"):
+            return str(result.text)
+        return str(result) if result is not None else ""
 
     # ---------- your existing loop, now using the signal timeouts + per-filer budget ----------
     for filer in (get_filers(self, all_tenants) or []):
