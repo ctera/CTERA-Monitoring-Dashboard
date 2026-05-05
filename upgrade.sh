@@ -31,9 +31,10 @@ PKG_MGR=""
 HELPER_NAME="ctera-secret-helper"
 HELPER_INSTALL_PATH="/usr/local/bin/${HELPER_NAME}"
 HELPER_VERSION="0.1.0"
-HELPER_RELEASE_TAG="v${HELPER_VERSION}"
-HELPER_REPO="ctera/ctera-monitoring-helper"
+HELPER_REPO="ctera/ctera-monitoring-helper-download-binary"
 HELPER_ASSET_NAME_LINUX_AMD64="${HELPER_NAME}-linux-amd64"
+HELPER_CHECKSUM_SUFFIX=".sha256"
+HELPER_REF="main"
 HELPER_TOKEN_FILE="/etc/ctera-monitoring-dashboard-helper.token"
 
 usage() {
@@ -284,33 +285,44 @@ install_private_helper() {
 
   section "Installing private telnet helper"
 
-  local asset_name token api_url asset_url tmp_file release_json
+  local asset_name checksum_name token asset_api_url checksum_api_url tmp_dir tmp_file checksum_file
   asset_name="$(helper_asset_name)"
+  checksum_name="${asset_name}${HELPER_CHECKSUM_SUFFIX}"
   token="$(load_or_prompt_helper_token)"
-  api_url="https://api.github.com/repos/${HELPER_REPO}/releases/tags/${HELPER_RELEASE_TAG}"
-  tmp_file="$(mktemp)"
+  asset_api_url="https://api.github.com/repos/${HELPER_REPO}/contents/${asset_name}?ref=${HELPER_REF}"
+  checksum_api_url="https://api.github.com/repos/${HELPER_REPO}/contents/${checksum_name}?ref=${HELPER_REF}"
+  tmp_dir="$(mktemp -d)"
+  tmp_file="${tmp_dir}/${asset_name}"
+  checksum_file="${tmp_dir}/${checksum_name}"
 
   mapfile -t CURL_ARGS < <(github_curl_args)
-  release_json="$(curl "${CURL_ARGS[@]}" \
-    -H "Accept: application/vnd.github+json" \
+  if ! curl "${CURL_ARGS[@]}" \
+    -H "Accept: application/vnd.github.raw" \
     -H "Authorization: Bearer ${token}" \
-    "${api_url}")"
-  asset_url="$(printf '%s' "${release_json}" | jq -r --arg name "${asset_name}" '.assets[] | select(.name == $name) | .url' | head -n1)"
-
-  if [[ -z "${asset_url}" || "${asset_url}" == "null" ]]; then
-    rm -f "${tmp_file}"
-    echo "Could not find helper asset ${asset_name} in ${HELPER_REPO} release ${HELPER_RELEASE_TAG}." >&2
+    "${asset_api_url}" -o "${tmp_file}"; then
+    rm -rf "${tmp_dir}"
+    echo "Could not download helper asset ${asset_name} from ${HELPER_REPO}." >&2
     return 1
   fi
 
-  curl "${CURL_ARGS[@]}" \
-    -H "Accept: application/octet-stream" \
+  if ! curl "${CURL_ARGS[@]}" \
+    -H "Accept: application/vnd.github.raw" \
     -H "Authorization: Bearer ${token}" \
-    "${asset_url}" -o "${tmp_file}"
+    "${checksum_api_url}" -o "${checksum_file}"; then
+    rm -rf "${tmp_dir}"
+    echo "Could not download helper checksum ${checksum_name} from ${HELPER_REPO}." >&2
+    return 1
+  fi
+
+  if ! (cd "${tmp_dir}" && sha256sum -c "${checksum_name}"); then
+    rm -rf "${tmp_dir}"
+    echo "Checksum validation failed for ${asset_name}." >&2
+    return 1
+  fi
 
   install -d "$(dirname "${HELPER_INSTALL_PATH}")"
   install -m 0755 "${tmp_file}" "${HELPER_INSTALL_PATH}"
-  rm -f "${tmp_file}"
+  rm -rf "${tmp_dir}"
 
   current_version="$(helper_installed_version || true)"
   if [[ "${current_version}" != "${HELPER_VERSION}" ]]; then
