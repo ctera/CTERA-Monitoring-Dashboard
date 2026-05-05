@@ -26,6 +26,8 @@ HELPER_CHECKSUM_SUFFIX=".sha256"
 HELPER_REF="main"
 HELPER_TOKEN_FILE="/etc/ctera-monitoring-dashboard-helper.token"
 HELPER_LOCAL_SOURCE="${CTERA_HELPER_LOCAL_PATH:-}"
+HELPER_SOURCE_MODE="${CTERA_HELPER_SOURCE_MODE:-}"
+HELPER_SAVE_TOKEN="${CTERA_HELPER_SAVE_TOKEN:-false}"
 
 usage() {
   cat <<'EOF'
@@ -209,8 +211,20 @@ save_helper_token() {
   chown root:root "${HELPER_TOKEN_FILE}"
 }
 
+is_truthy() {
+  case "$(printf '%s' "${1:-}" | tr '[:upper:]' '[:lower:]')" in
+    1|true|yes|y|on) return 0 ;;
+  esac
+  return 1
+}
+
 prompt_helper_source_mode() {
   local answer=""
+
+  if [[ "${HELPER_SOURCE_MODE}" == "bundled" || "${HELPER_SOURCE_MODE}" == "github" || "${HELPER_SOURCE_MODE}" == "local" ]]; then
+    printf '%s' "${HELPER_SOURCE_MODE}"
+    return 0
+  fi
 
   if [[ -n "${HELPER_LOCAL_SOURCE}" ]]; then
     printf '%s' "local"
@@ -292,6 +306,9 @@ load_or_prompt_helper_token() {
   local saved_token=""
 
   if [[ -n "${CTERA_HELPER_GITHUB_TOKEN:-}" ]]; then
+    if is_truthy "${HELPER_SAVE_TOKEN}"; then
+      save_helper_token "${CTERA_HELPER_GITHUB_TOKEN}"
+    fi
     printf '%s' "${CTERA_HELPER_GITHUB_TOKEN}"
     return 0
   fi

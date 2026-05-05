@@ -31,6 +31,7 @@ DEFAULT_STATE_DIR = os.environ.get("FEATHERDASH_STATE_DIR", os.path.join(PROJECT
 DEFAULT_CONFIG_FILE = os.environ.get("FEATHERDASH_CONFIG_FILE", "/etc/ctera-monitoring-dashboard.env")
 DEFAULT_UPGRADE_HELPER = os.environ.get("FEATHERDASH_UPGRADE_HELPER", "/usr/local/sbin/ctera-monitoring-dashboard-upgrade")
 UPGRADE_NETWORK_SETTINGS_FILE = os.environ.get("FEATHERDASH_UPGRADE_NETWORK_SETTINGS_FILE", os.path.join(DEFAULT_STATE_DIR, "upgrade_network.env"))
+UPGRADE_REQUEST_SETTINGS_FILE = os.environ.get("FEATHERDASH_UPGRADE_REQUEST_SETTINGS_FILE", os.path.join(DEFAULT_STATE_DIR, "upgrade_request.env"))
 DEFAULT_HIDDEN_TASK_NAMES = {"csrequestsprocessor", "csrrequestsprocessor"}
 JOB_NAMES = ("portal", "filer")
 
@@ -171,6 +172,20 @@ def _save_upgrade_network_settings(payload):
         handle.write(f"FEATHERDASH_GITHUB_HTTPS_PROXY={_env_quote_line(settings['FEATHERDASH_GITHUB_HTTPS_PROXY'])}\n")
         handle.write(f"FEATHERDASH_GITHUB_INSECURE={_env_quote_line(settings['FEATHERDASH_GITHUB_INSECURE'])}\n")
     return _load_upgrade_network_settings()
+
+
+def _save_upgrade_request_settings(payload):
+    settings = {
+        "CTERA_HELPER_SOURCE_MODE": str(payload.get("helper_source_mode") or "").strip(),
+        "CTERA_HELPER_GITHUB_TOKEN": str(payload.get("helper_github_token") or ""),
+        "CTERA_HELPER_SAVE_TOKEN": "true" if _is_truthy(payload.get("helper_save_token")) else "false",
+    }
+    path = UPGRADE_REQUEST_SETTINGS_FILE
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, "w", encoding="utf-8", newline="\n") as handle:
+        for key, value in settings.items():
+            handle.write(f"{key}={_env_quote_line(value)}\n")
+    return path
 
 
 def _github_network_settings():
@@ -726,15 +741,28 @@ def _launch_job(job_name, environment_id=None):
     return _job_status(job_name), True
 
 
-def _launch_upgrade(threshold_strategy="merge"):
+def _launch_upgrade(threshold_strategy="merge", helper_source_mode="", helper_github_token="", helper_save_token=False):
     strategy = str(threshold_strategy or "merge").strip().lower() or "merge"
     if strategy not in {"merge", "replace"}:
         raise ValueError("Unsupported threshold strategy.")
+    helper_source_mode = str(helper_source_mode or "").strip().lower()
+    if helper_source_mode and helper_source_mode not in {"bundled", "github"}:
+        raise ValueError("Unsupported helper source mode.")
+    helper_github_token = str(helper_github_token or "")
     current = _upgrade_status()
     if current["status"] == "running":
         return current, False
     if not os.path.exists(DEFAULT_UPGRADE_HELPER):
         raise ValueError(f"Upgrade helper not found at {DEFAULT_UPGRADE_HELPER}")
+    if helper_source_mode == "github" and not helper_github_token:
+        token_file = "/etc/ctera-monitoring-dashboard-helper.token"
+        if not os.path.exists(token_file):
+            raise ValueError("GitHub helper download requires a saved token or a new token from the UI.")
+    _save_upgrade_request_settings({
+        "helper_source_mode": helper_source_mode,
+        "helper_github_token": helper_github_token,
+        "helper_save_token": helper_save_token,
+    })
     access_check = subprocess.run(
         ["/usr/bin/env", "bash", "-lc", f"sudo -n {shlex.quote(DEFAULT_UPGRADE_HELPER)} --validate-access"],
         cwd=PROJECT_DIR,
@@ -4187,6 +4215,7 @@ async function runAISummary(){
         if (httpEl) httpEl.value = data.http_proxy || '';
         if (httpsEl) httpsEl.value = data.https_proxy || '';
         if (insecureEl) insecureEl.checked = !!data.insecure;
+        toggleUpgradeHelperAuthFields();
         setActionStatus('upgradeSettingsStatus', data.path ? ('Settings file: ' + data.path) : '', '');
       } catch (e) {
         console.error('upgrade network config load failed', e);
@@ -4299,9 +4328,30 @@ async function runAISummary(){
       }
     }
 
+    function toggleUpgradeHelperAuthFields(){
+      const sourceEl = document.getElementById('upgradeHelperSource');
+      const tokenModeEl = document.getElementById('upgradeHelperTokenMode');
+      const githubWrap = document.getElementById('upgradeHelperGithubFields');
+      const tokenWrap = document.getElementById('upgradeHelperTokenWrap');
+      const source = sourceEl ? sourceEl.value : 'bundled';
+      const tokenMode = tokenModeEl ? tokenModeEl.value : 'saved';
+      if (githubWrap) githubWrap.style.display = source === 'github' ? '' : 'none';
+      if (tokenWrap) tokenWrap.style.display = (source === 'github' && tokenMode === 'new') ? '' : 'none';
+    }
+
     async function runUpgrade(){
       const strategyEl = document.getElementById('upgradeStrategy');
       const strategy = strategyEl ? strategyEl.value : 'merge';
+      const helperSourceEl = document.getElementById('upgradeHelperSource');
+      const helperTokenModeEl = document.getElementById('upgradeHelperTokenMode');
+      const helperTokenEl = document.getElementById('upgradeHelperToken');
+      const helperSaveTokenEl = document.getElementById('upgradeHelperSaveToken');
+      const helperSourceMode = helperSourceEl ? helperSourceEl.value : 'bundled';
+      const helperTokenMode = helperTokenModeEl ? helperTokenModeEl.value : 'saved';
+      const helperGithubToken = (helperSourceMode === 'github' && helperTokenMode === 'new' && helperTokenEl)
+        ? (helperTokenEl.value || '')
+        : '';
+      const helperSaveToken = !!(helperSaveTokenEl && helperSaveTokenEl.checked);
       const flash = document.getElementById('upgradeFlash');
       try{
         if (flash) flash.textContent = 'Checking GitHub before upgrade...';
@@ -4321,7 +4371,12 @@ async function runAISummary(){
         const resp = await fetch('/run_upgrade', {
           method:'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ threshold_strategy: strategy })
+          body: JSON.stringify({
+            threshold_strategy: strategy,
+            helper_source_mode: helperSourceMode,
+            helper_github_token: helperGithubToken,
+            helper_save_token: helperSaveToken,
+          })
         });
         const data = await resp.json();
         if (!resp.ok || !data.ok) {
@@ -5911,6 +5966,7 @@ async function runAISummary(){
       loadNotificationsConfig();
       loadAuthConfig();
       loadUpgradeNetworkConfig();
+      toggleUpgradeHelperAuthFields();
       refreshJobStatus();
       refreshUpgradeStatus();
       scheduleAboutUpdateChecks(currentTab());
@@ -6852,6 +6908,31 @@ async function runAISummary(){
               <option value="replace">Replace thresholds with latest shipped defaults</option>
             </select>
             <div class="notify-helper">The dashboard will restart during the upgrade, so this page may disconnect briefly.</div>
+          </div>
+          <div class="threshold-field" style="margin-top:12px;">
+            <label for="upgradeHelperSource">Helper source during upgrade</label>
+            <select id="upgradeHelperSource" class="threshold-select" onchange="toggleUpgradeHelperAuthFields()">
+              <option value="bundled">Use bundled helper from the upgrade package</option>
+              <option value="github">Download helper from GitHub</option>
+            </select>
+            <div class="notify-helper">Bundled is the default and works best for UI upgrades. GitHub download is useful when you want to refresh the helper from the remote repo.</div>
+          </div>
+          <div id="upgradeHelperGithubFields" style="display:none;">
+            <div class="threshold-field" style="margin-top:12px;">
+              <label for="upgradeHelperTokenMode">GitHub token</label>
+              <select id="upgradeHelperTokenMode" class="threshold-select" onchange="toggleUpgradeHelperAuthFields()">
+                <option value="saved">Use saved token</option>
+                <option value="new">Use a new token</option>
+              </select>
+            </div>
+            <div class="threshold-field" id="upgradeHelperTokenWrap" style="margin-top:12px; display:none;">
+              <label for="upgradeHelperToken">New GitHub PAT</label>
+              <input id="upgradeHelperToken" class="threshold-input" type="password" placeholder="github_pat_...">
+              <label class="notify-checkbox" for="upgradeHelperSaveToken" style="margin-top:8px;">
+                <input id="upgradeHelperSaveToken" type="checkbox">
+                Save this token for future upgrades
+              </label>
+            </div>
           </div>
           <div class="notify-actions" style="margin-top:12px;">
             <button id="runUpgradeBtn" class="ops-btn primary" onclick="runUpgrade()">Upgrade and Restart</button>
@@ -8079,7 +8160,12 @@ def run_upgrade():
                 "version_info": version_state,
                 "status_info": _upgrade_status(),
             }), 409
-        status, started = _launch_upgrade(payload.get("threshold_strategy", "merge"))
+        status, started = _launch_upgrade(
+            payload.get("threshold_strategy", "merge"),
+            payload.get("helper_source_mode", ""),
+            payload.get("helper_github_token", ""),
+            payload.get("helper_save_token", False),
+        )
     except Exception as exc:
         return jsonify({"ok": False, "error": str(exc), "status_info": _upgrade_status()}), 400
     return jsonify({"ok": True, "started": started, "status_info": status}), (202 if started else 200)

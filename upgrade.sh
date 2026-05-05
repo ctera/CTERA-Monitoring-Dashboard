@@ -37,6 +37,8 @@ HELPER_CHECKSUM_SUFFIX=".sha256"
 HELPER_REF="main"
 HELPER_TOKEN_FILE="/etc/ctera-monitoring-dashboard-helper.token"
 HELPER_LOCAL_SOURCE="${CTERA_HELPER_LOCAL_PATH:-}"
+HELPER_SOURCE_MODE="${CTERA_HELPER_SOURCE_MODE:-}"
+HELPER_SAVE_TOKEN="${CTERA_HELPER_SAVE_TOKEN:-false}"
 
 usage() {
   cat <<'EOF'
@@ -239,6 +241,13 @@ save_helper_token() {
   chown root:root "${HELPER_TOKEN_FILE}"
 }
 
+is_truthy() {
+  case "$(printf '%s' "${1:-}" | tr '[:upper:]' '[:lower:]')" in
+    1|true|yes|y|on) return 0 ;;
+  esac
+  return 1
+}
+
 prompt_yes_no() {
   local label="$1"
   local default="${2:-n}"
@@ -266,6 +275,11 @@ prompt_yes_no() {
 
 prompt_helper_source_mode() {
   local answer=""
+
+  if [[ "${HELPER_SOURCE_MODE}" == "bundled" || "${HELPER_SOURCE_MODE}" == "github" || "${HELPER_SOURCE_MODE}" == "local" ]]; then
+    printf '%s' "${HELPER_SOURCE_MODE}"
+    return 0
+  fi
 
   if [[ -n "${HELPER_LOCAL_SOURCE}" ]]; then
     printf '%s' "local"
@@ -347,6 +361,9 @@ load_or_prompt_helper_token() {
   local saved_token=""
 
   if [[ -n "${CTERA_HELPER_GITHUB_TOKEN:-}" ]]; then
+    if is_truthy "${HELPER_SAVE_TOKEN}"; then
+      save_helper_token "${CTERA_HELPER_GITHUB_TOKEN}"
+    fi
     printf '%s' "${CTERA_HELPER_GITHUB_TOKEN}"
     return 0
   fi
@@ -561,6 +578,7 @@ BACKUP_ROOT='${BACKUP_ROOT}'
 STATE_DIR='${INSTALL_DIR}/state'
 STATE_FILE="\${STATE_DIR}/upgrade.state"
 SETTINGS_FILE="\${STATE_DIR}/upgrade_network.env"
+REQUEST_FILE="\${STATE_DIR}/upgrade_request.env"
 LOG_FILE="\${LOG_DIR}/upgrade.log"
 ARCHIVE_URL='https://github.com/ctera/CTERA-Monitoring-Dashboard/archive/refs/heads/main.tar.gz'
 THRESHOLD_STRATEGY="\${1:-merge}"
@@ -584,6 +602,12 @@ if [[ -f "\${SETTINGS_FILE}" ]]; then
   set -a
   # shellcheck disable=SC1090
   source "\${SETTINGS_FILE}"
+  set +a
+fi
+if [[ -f "\${REQUEST_FILE}" ]]; then
+  set -a
+  # shellcheck disable=SC1090
+  source "\${REQUEST_FILE}"
   set +a
 fi
 if [[ -n "\${FEATHERDASH_GITHUB_HTTP_PROXY:-}" ]]; then
@@ -620,6 +644,7 @@ finish_upgrade() {
     final_status="failed"
   fi
   write_state "\${final_status}" "\$(date -u +%Y-%m-%dT%H:%M:%SZ)" "\${rc}" ""
+  rm -f "\${REQUEST_FILE}" >/dev/null 2>&1 || true
   rm -rf "\${TMP_DIR}" >/dev/null 2>&1 || true
   exit "\${rc}"
 }
