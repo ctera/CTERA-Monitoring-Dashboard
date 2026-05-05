@@ -63,13 +63,7 @@ Most users should use **Install Option 2** or the quick tarball flow below.
 Use this when you want the shortest install path with the packaged installer:
 
 ```bash
-cd /tmp
-curl -L https://github.com/ctera/CTERA-Monitoring-Dashboard/archive/refs/heads/main.tar.gz -o ctera-monitoring-dashboard.tar.gz
-rm -rf /tmp/ctera-monitoring-dashboard
-mkdir -p /tmp/ctera-monitoring-dashboard
-sudo tar -xzf /tmp/ctera-monitoring-dashboard.tar.gz -C /tmp/ctera-monitoring-dashboard --strip-components=1
-cd /tmp/ctera-monitoring-dashboard
-sudo bash ./install.sh
+cd /tmp && curl -L https://github.com/ctera/CTERA-Monitoring-Dashboard/archive/refs/heads/main.tar.gz -o ctera-monitoring-dashboard.tar.gz && rm -rf /tmp/ctera-monitoring-dashboard && mkdir -p /tmp/ctera-monitoring-dashboard && sudo tar -xzf /tmp/ctera-monitoring-dashboard.tar.gz -C /tmp/ctera-monitoring-dashboard --strip-components=1 && cd /tmp/ctera-monitoring-dashboard && sudo bash ./install.sh
 ```
 
 This uses `/tmp/ctera-monitoring-dashboard` only as a temporary staging folder for the package.
