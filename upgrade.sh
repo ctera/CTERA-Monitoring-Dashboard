@@ -203,6 +203,19 @@ helper_asset_name() {
   esac
 }
 
+helper_bundled_source() {
+  local asset_name=""
+  asset_name="$(helper_asset_name 2>/dev/null || true)"
+  if [[ -z "${asset_name}" ]]; then
+    return 1
+  fi
+  if [[ -f "${SCRIPT_DIR}/${asset_name}" ]]; then
+    printf '%s' "${SCRIPT_DIR}/${asset_name}"
+    return 0
+  fi
+  return 1
+}
+
 github_curl_args() {
   local -a args=(--http1.1 -fsSL --retry 5 --retry-delay 2 --retry-all-errors)
   if [[ "${FEATHERDASH_GITHUB_INSECURE:-false}" == "true" ]]; then
@@ -259,6 +272,13 @@ prompt_helper_source_mode() {
     return 0
   fi
 
+  if helper_bundled_source >/dev/null 2>&1; then
+    if [[ "${NONINTERACTIVE}" -eq 1 ]]; then
+      printf '%s' "bundled"
+      return 0
+    fi
+  fi
+
   if [[ "${NONINTERACTIVE}" -eq 1 ]]; then
     printf '%s' "github"
     return 0
@@ -267,15 +287,31 @@ prompt_helper_source_mode() {
   while true; do
     echo >&2
     echo "Helper install source:" >&2
-    echo "  1) Download from GitHub" >&2
-    echo "  2) Use a local file path" >&2
-    printf 'Choose [1/2] (default 1): ' >&2
+    if helper_bundled_source >/dev/null 2>&1; then
+      echo "  1) Use bundled helper from this package (Recommended)" >&2
+      echo "  2) Download from GitHub" >&2
+      echo "  3) Use a local file path" >&2
+      printf 'Choose [1/2/3] (default 1): ' >&2
+    else
+      echo "  1) Download from GitHub" >&2
+      echo "  2) Use a local file path" >&2
+      printf 'Choose [1/2] (default 1): ' >&2
+    fi
     read -r answer
-    case "${answer:-1}" in
-      1) printf '%s' "github"; return 0 ;;
-      2) printf '%s' "local"; return 0 ;;
-    esac
-    echo "Enter 1 or 2." >&2
+    if helper_bundled_source >/dev/null 2>&1; then
+      case "${answer:-1}" in
+        1) printf '%s' "bundled"; return 0 ;;
+        2) printf '%s' "github"; return 0 ;;
+        3) printf '%s' "local"; return 0 ;;
+      esac
+      echo "Enter 1, 2, or 3." >&2
+    else
+      case "${answer:-1}" in
+        1) printf '%s' "github"; return 0 ;;
+        2) printf '%s' "local"; return 0 ;;
+      esac
+      echo "Enter 1 or 2." >&2
+    fi
   done
 }
 
@@ -404,6 +440,14 @@ install_private_helper() {
   section "Installing helper"
 
   helper_source_mode="$(prompt_helper_source_mode)"
+  if [[ "${helper_source_mode}" == "bundled" ]]; then
+    local_helper_path="$(helper_bundled_source)" || {
+      echo "Bundled helper binary was not found in this package." >&2
+      return 1
+    }
+    install_helper_from_local_path "${local_helper_path}"
+    return 0
+  fi
   if [[ "${helper_source_mode}" == "local" ]]; then
     local_helper_path="$(prompt_helper_local_source)" || return 1
     install_helper_from_local_path "${local_helper_path}"
