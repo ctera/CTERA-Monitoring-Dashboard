@@ -534,7 +534,17 @@ def write_status(self, p_filename, all_tenants):
                 except TimeoutError as te:
                     logging.warning("Shell fallback timed out for %s: %s", getattr(filer, 'name', '?'), te)
                 except Exception as e:
-                    logging.warning("Could not collect shell fallback metrics for %s: %s", getattr(filer, 'name', '?'), e)
+                    reason = str(e).strip() or e.__class__.__name__
+                    metrics['curr_cpu'] = 'Unsupported'
+                    metrics['curr_mem'] = 'Unsupported'
+                    metrics['max_cpu'] = 'Unsupported'
+                    metrics['max_mem'] = 'Unsupported'
+                    metrics['db_size'] = 'Unsupported'
+                    logging.warning(
+                        "Shell fallback unavailable for %s: %s",
+                        getattr(filer, 'name', '?'),
+                        reason,
+                    )
                     _ensure_session_alive(self)
 
                 return metrics
