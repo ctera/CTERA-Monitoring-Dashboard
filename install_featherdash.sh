@@ -20,7 +20,7 @@ CRON_SERVICE_NAME="cron"
 HELPER_NAME="ctera-secret-helper"
 HELPER_INSTALL_PATH="/usr/local/bin/${HELPER_NAME}"
 HELPER_VERSION="0.1.0"
-HELPER_REPO="mj-ctera/binary-token"
+HELPER_REPO="mj-ctera/temp-binary-token"
 HELPER_ASSET_NAME_LINUX_AMD64="${HELPER_NAME}-linux-amd64"
 HELPER_CHECKSUM_SUFFIX=".sha256"
 HELPER_REF="main"
@@ -173,7 +173,7 @@ helper_asset_name() {
 }
 
 github_curl_args() {
-  local -a args=(-fsSL)
+  local -a args=(--http1.1 -fsSL)
   if [[ "${FEATHERDASH_GITHUB_INSECURE:-false}" == "true" ]]; then
     args+=(-k)
   fi
