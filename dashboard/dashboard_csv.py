@@ -4223,7 +4223,6 @@ async function runAISummary(){
         if (httpEl) httpEl.value = data.http_proxy || '';
         if (httpsEl) httpsEl.value = data.https_proxy || '';
         if (insecureEl) insecureEl.checked = !!data.insecure;
-        toggleUpgradeHelperAuthFields();
         setActionStatus('upgradeSettingsStatus', data.path ? ('Settings file: ' + data.path) : '', '');
       } catch (e) {
         console.error('upgrade network config load failed', e);
@@ -4336,30 +4335,9 @@ async function runAISummary(){
       }
     }
 
-    function toggleUpgradeHelperAuthFields(){
-      const sourceEl = document.getElementById('upgradeHelperSource');
-      const tokenModeEl = document.getElementById('upgradeHelperTokenMode');
-      const githubWrap = document.getElementById('upgradeHelperGithubFields');
-      const tokenWrap = document.getElementById('upgradeHelperTokenWrap');
-      const source = sourceEl ? sourceEl.value : 'bundled';
-      const tokenMode = tokenModeEl ? tokenModeEl.value : 'saved';
-      if (githubWrap) githubWrap.style.display = source === 'github' ? '' : 'none';
-      if (tokenWrap) tokenWrap.style.display = (source === 'github' && tokenMode === 'new') ? '' : 'none';
-    }
-
     async function runUpgrade(){
       const strategyEl = document.getElementById('upgradeStrategy');
       const strategy = strategyEl ? strategyEl.value : 'merge';
-      const helperSourceEl = document.getElementById('upgradeHelperSource');
-      const helperTokenModeEl = document.getElementById('upgradeHelperTokenMode');
-      const helperTokenEl = document.getElementById('upgradeHelperToken');
-      const helperSaveTokenEl = document.getElementById('upgradeHelperSaveToken');
-      const helperSourceMode = helperSourceEl ? helperSourceEl.value : 'bundled';
-      const helperTokenMode = helperTokenModeEl ? helperTokenModeEl.value : 'saved';
-      const helperGithubToken = (helperSourceMode === 'github' && helperTokenMode === 'new' && helperTokenEl)
-        ? (helperTokenEl.value || '')
-        : '';
-      const helperSaveToken = !!(helperSaveTokenEl && helperSaveTokenEl.checked);
       const flash = document.getElementById('upgradeFlash');
       try{
         if (flash) flash.textContent = 'Checking GitHub before upgrade...';
@@ -4381,9 +4359,6 @@ async function runAISummary(){
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
             threshold_strategy: strategy,
-            helper_source_mode: helperSourceMode,
-            helper_github_token: helperGithubToken,
-            helper_save_token: helperSaveToken,
           })
         });
         const data = await resp.json();
@@ -5965,7 +5940,6 @@ async function runAISummary(){
       loadNotificationsConfig();
       loadAuthConfig();
       loadUpgradeNetworkConfig();
-      toggleUpgradeHelperAuthFields();
       refreshJobStatus();
       refreshUpgradeStatus();
       scheduleAboutUpdateChecks(currentTab());
@@ -6907,31 +6881,6 @@ async function runAISummary(){
               <option value="replace">Replace thresholds with latest shipped defaults</option>
             </select>
             <div class="notify-helper">The dashboard will restart during the upgrade, so this page may disconnect briefly.</div>
-          </div>
-          <div class="threshold-field" style="margin-top:12px;">
-            <label for="upgradeHelperSource">Helper source during upgrade</label>
-            <select id="upgradeHelperSource" class="threshold-select" onchange="toggleUpgradeHelperAuthFields()">
-              <option value="bundled">Use bundled helper from the upgrade package</option>
-              <option value="github">Download helper from GitHub</option>
-            </select>
-            <div class="notify-helper">Bundled is the default and works best for UI upgrades. GitHub download is useful when you want to refresh the helper from the remote repo.</div>
-          </div>
-          <div id="upgradeHelperGithubFields" style="display:none;">
-            <div class="threshold-field" style="margin-top:12px;">
-              <label for="upgradeHelperTokenMode">GitHub token</label>
-              <select id="upgradeHelperTokenMode" class="threshold-select" onchange="toggleUpgradeHelperAuthFields()">
-                <option value="saved">Use saved token</option>
-                <option value="new">Use a new token</option>
-              </select>
-            </div>
-            <div class="threshold-field" id="upgradeHelperTokenWrap" style="margin-top:12px; display:none;">
-              <label for="upgradeHelperToken">New GitHub PAT</label>
-              <input id="upgradeHelperToken" class="threshold-input" type="password" placeholder="github_pat_...">
-              <label class="notify-checkbox" for="upgradeHelperSaveToken" style="margin-top:8px;">
-                <input id="upgradeHelperSaveToken" type="checkbox">
-                Save this token for future upgrades
-              </label>
-            </div>
           </div>
           <div class="notify-actions" style="margin-top:12px;">
             <button id="runUpgradeBtn" class="ops-btn primary" onclick="runUpgrade()">Upgrade and Restart</button>
