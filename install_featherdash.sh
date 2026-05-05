@@ -20,11 +20,12 @@ CRON_SERVICE_NAME="cron"
 HELPER_NAME="ctera-secret-helper"
 HELPER_INSTALL_PATH="/usr/local/bin/${HELPER_NAME}"
 HELPER_VERSION="0.1.0"
-HELPER_REPO="mj-ctera/temp-binary-token"
+HELPER_REPO="mj-ctera/binary-token"
 HELPER_ASSET_NAME_LINUX_AMD64="${HELPER_NAME}-linux-amd64"
 HELPER_CHECKSUM_SUFFIX=".sha256"
 HELPER_REF="main"
 HELPER_TOKEN_FILE="/etc/ctera-monitoring-dashboard-helper.token"
+HELPER_LOCAL_SOURCE="${CTERA_HELPER_LOCAL_PATH:-}"
 
 usage() {
   cat <<'EOF'
@@ -187,9 +188,72 @@ helper_installed_version() {
   "${HELPER_INSTALL_PATH}" --version 2>/dev/null | head -n1
 }
 
+save_helper_token() {
+  local token="$1"
+  umask 077
+  printf '%s\n' "${token}" > "${HELPER_TOKEN_FILE}"
+  chmod 600 "${HELPER_TOKEN_FILE}"
+  chown root:root "${HELPER_TOKEN_FILE}"
+}
+
+prompt_helper_source_mode() {
+  local answer=""
+
+  if [[ -n "${HELPER_LOCAL_SOURCE}" ]]; then
+    printf '%s' "local"
+    return 0
+  fi
+
+  if [[ "${NONINTERACTIVE}" -eq 1 ]]; then
+    printf '%s' "github"
+    return 0
+  fi
+
+  while true; do
+    echo
+    echo "Private helper install source:"
+    echo "  1) Download from GitHub"
+    echo "  2) Use a local file path"
+    printf 'Choose [1/2] (default 1): '
+    read -r answer
+    case "${answer:-1}" in
+      1) printf '%s' "github"; return 0 ;;
+      2) printf '%s' "local"; return 0 ;;
+    esac
+    echo "  Enter 1 or 2." >&2
+  done
+}
+
+prompt_helper_local_source() {
+  local local_path="${HELPER_LOCAL_SOURCE:-}"
+
+  if [[ "${NONINTERACTIVE}" -eq 1 ]]; then
+    if [[ -z "${local_path}" ]]; then
+      echo "Set CTERA_HELPER_LOCAL_PATH in non-interactive mode to use a local helper binary." >&2
+      return 1
+    fi
+  else
+    while true; do
+      local_path="$(prompt_value "Local path to ${HELPER_NAME}" "${local_path}" 0 1)"
+      if [[ -f "${local_path}" ]]; then
+        printf '%s' "${local_path}"
+        return 0
+      fi
+      echo "  File not found: ${local_path}" >&2
+    done
+  fi
+
+  if [[ ! -f "${local_path}" ]]; then
+    echo "Local helper file not found: ${local_path}" >&2
+    return 1
+  fi
+  printf '%s' "${local_path}"
+}
+
 load_or_prompt_helper_token() {
   local token=""
   local prompt_tty=""
+  local saved_token=""
 
   if [[ -n "${CTERA_HELPER_GITHUB_TOKEN:-}" ]]; then
     printf '%s' "${CTERA_HELPER_GITHUB_TOKEN}"
@@ -197,10 +261,22 @@ load_or_prompt_helper_token() {
   fi
 
   if [[ -f "${HELPER_TOKEN_FILE}" ]]; then
-    token="$(tr -d '\r\n' < "${HELPER_TOKEN_FILE}")"
-    if [[ -n "${token}" ]]; then
-      printf '%s' "${token}"
-      return 0
+    saved_token="$(tr -d '\r\n' < "${HELPER_TOKEN_FILE}")"
+    if [[ -n "${saved_token}" ]]; then
+      if [[ "${NONINTERACTIVE}" -eq 1 ]]; then
+        printf '%s' "${saved_token}"
+        return 0
+      fi
+      if prompt_yes_no "Use saved helper GitHub token from ${HELPER_TOKEN_FILE}?" "y"; then
+        printf '%s' "${saved_token}"
+        return 0
+      fi
+      if prompt_yes_no "Replace saved helper GitHub token?" "y"; then
+        rm -f "${HELPER_TOKEN_FILE}"
+      else
+        echo "A helper GitHub token is required to continue." >&2
+        return 1
+      fi
     fi
   fi
 
@@ -233,23 +309,51 @@ load_or_prompt_helper_token() {
   fi
 
   if prompt_yes_no "Save helper GitHub token for future upgrades?" "y"; then
-    umask 077
-    printf '%s\n' "${token}" > "${HELPER_TOKEN_FILE}"
-    chmod 600 "${HELPER_TOKEN_FILE}"
-    chown root:root "${HELPER_TOKEN_FILE}"
+    save_helper_token "${token}"
   fi
 
   printf '%s' "${token}"
 }
 
+install_helper_from_local_path() {
+  local source_path="$1"
+  local current_version=""
+  local tmp_dir tmp_file
+
+  tmp_dir="$(mktemp -d)"
+  tmp_file="${tmp_dir}/$(basename "${source_path}")"
+  cp "${source_path}" "${tmp_file}"
+  chmod 0755 "${tmp_file}"
+  install -d "$(dirname "${HELPER_INSTALL_PATH}")"
+  install -m 0755 "${tmp_file}" "${HELPER_INSTALL_PATH}"
+  rm -rf "${tmp_dir}"
+
+  current_version="$(helper_installed_version || true)"
+  if [[ "${current_version}" != "${HELPER_VERSION}" ]]; then
+    echo "Installed helper version '${current_version:-unknown}' does not match expected ${HELPER_VERSION}." >&2
+    return 1
+  fi
+
+  echo "  Installed ${HELPER_NAME} ${current_version} from local path to ${HELPER_INSTALL_PATH}"
+}
+
 install_private_helper() {
   local current_version=""
+  local helper_source_mode=""
+  local local_helper_path=""
   current_version="$(helper_installed_version || true)"
   if [[ "${current_version}" == "${HELPER_VERSION}" ]]; then
     return 0
   fi
 
   section "Installing private telnet helper"
+
+  helper_source_mode="$(prompt_helper_source_mode)"
+  if [[ "${helper_source_mode}" == "local" ]]; then
+    local_helper_path="$(prompt_helper_local_source)" || return 1
+    install_helper_from_local_path "${local_helper_path}"
+    return 0
+  fi
 
   local asset_name checksum_name token asset_api_url checksum_api_url tmp_dir tmp_file checksum_file
   asset_name="$(helper_asset_name)"
