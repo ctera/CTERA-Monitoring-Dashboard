@@ -174,7 +174,7 @@ helper_asset_name() {
 }
 
 github_curl_args() {
-  local -a args=(--http1.1 -fsSL)
+  local -a args=(--http1.1 -fsSL --retry 5 --retry-delay 2 --retry-all-errors)
   if [[ "${FEATHERDASH_GITHUB_INSECURE:-false}" == "true" ]]; then
     args+=(-k)
   fi
