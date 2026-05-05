@@ -635,3 +635,19 @@ Then restart:
 ```bash
 sudo systemctl restart ctera-monitoring-dashboard
 ```
+
+---
+
+# Uninstall
+
+To fully remove the dashboard, service, cron job, helper, saved helper token, logs, data, config, and install directory, run:
+
+```bash
+sudo systemctl disable --now ctera-monitoring-dashboard || true; sudo rm -f /etc/systemd/system/ctera-monitoring-dashboard.service; sudo rm -f /etc/cron.d/ctera-monitoring-dashboard; sudo rm -f /usr/local/sbin/ctera-monitoring-dashboard-upgrade; sudo rm -f /etc/sudoers.d/ctera-monitoring-dashboard-upgrade; sudo rm -f /usr/local/bin/ctera-secret-helper; sudo rm -f /etc/ctera-monitoring-dashboard-helper.token; sudo rm -f /etc/ctera-monitoring-dashboard.env; sudo rm -rf /opt/monitoring/ctera-monitoring-dashboard; sudo rm -rf /var/lib/ctera-monitoring-dashboard; sudo rm -rf /var/log/ctera-monitoring-dashboard; sudo systemctl daemon-reload
+```
+
+If you also want to remove the service account:
+
+```bash
+sudo userdel ctera-monitoring || true
+```
