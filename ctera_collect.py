@@ -436,6 +436,70 @@ def write_status(self, p_filename, all_tenants):
                 except (AttributeError, TypeError, ValueError):
                     return 'N/A'
 
+            def _format_pct(value):
+                try:
+                    return f"{float(value):.1f}%"
+                except (TypeError, ValueError):
+                    return 'N/A'
+
+            def _extract_first_number(text):
+                m = re.search(r'([0-9]+(?:\.[0-9]+)?)', text or '')
+                return m.group(1) if m else ''
+
+            def get_shell_fallback_metrics():
+                if not _budget_ok():
+                    logging.warning("Per-filer budget exceeded before shell fallback; skipping.")
+                    return {}
+
+                mac_addr = first_scalar(safe_attr(info, 'status.device.MacAddress', default=''))
+                firmware = first_scalar(safe_attr(info, 'status.device.runningFirmware', default=''))
+                if not mac_addr or not firmware:
+                    return {}
+
+                secret = _derive_telnet_secret(mac_addr, firmware)
+                metrics = {}
+
+                def _run_numeric(cmd):
+                    out = shell_safe(self, filer, cmd)
+                    return _extract_first_number(out)
+
+                try:
+                    telnet_enable_safe(self, filer, secret)
+                    try:
+                        db_bytes = _run_numeric('for f in /var/volumes/*/.ctera/cloudSync/CloudSync.db; do [ -f "$f" ] && stat -c %s "$f" && break; done')
+                        if db_bytes:
+                            metrics['db_size'] = round(int(float(db_bytes)) / (1 << 30), 2)
+
+                        cpu_now = _run_numeric("""sar -u 1 1 2>/dev/null | awk 'BEGIN{col=0;found=0} /%idle/ {for(i=1;i<=NF;i++) if($i=="%idle") col=i} col && $1 ~ /^[0-9:]+$/ && $(col) ~ /^[0-9.]+$/ {last=100-$(col); found=1} END {if(found) printf "%.1f", last}'""")
+                        if cpu_now:
+                            metrics['curr_cpu'] = _format_pct(cpu_now)
+
+                        mem_now = _run_numeric("""sar -r 1 1 2>/dev/null | awk 'BEGIN{col=0;found=0} /%memused/ {for(i=1;i<=NF;i++) if($i=="%memused") col=i} col && $1 ~ /^[0-9:]+$/ && $(col) ~ /^[0-9.]+$/ {last=$(col); found=1} END {if(found) printf "%.1f", last}'""")
+                        if not mem_now:
+                            mem_now = _run_numeric("""free 2>/dev/null | awk '/Mem:/ {if ($2 > 0) printf "%.1f", ($3/$2)*100}'""")
+                        if mem_now:
+                            metrics['curr_mem'] = _format_pct(mem_now)
+
+                        max_cpu = _run_numeric("""sar -u 2>/dev/null | awk 'BEGIN{col=0;found=0} /%idle/ {for(i=1;i<=NF;i++) if($i=="%idle") col=i} col && $1 ~ /^[0-9:]+$/ && $(col) ~ /^[0-9.]+$/ {v=100-$(col); if(!found || v>max) max=v; found=1} END {if(found) printf "%.1f", max}'""")
+                        if max_cpu:
+                            metrics['max_cpu'] = _format_pct(max_cpu)
+
+                        max_mem = _run_numeric("""sar -r 2>/dev/null | awk 'BEGIN{col=0;found=0} /%memused/ {for(i=1;i<=NF;i++) if($i=="%memused") col=i} col && $1 ~ /^[0-9:]+$/ && $(col) ~ /^[0-9.]+$/ {v=$(col); if(!found || v>max) max=v; found=1} END {if(found) printf "%.1f", max}'""")
+                        if max_mem:
+                            metrics['max_mem'] = _format_pct(max_mem)
+                    finally:
+                        try:
+                            telnet_disable_safe(self, filer)
+                        except Exception:
+                            pass
+                except TimeoutError as te:
+                    logging.warning("Shell fallback timed out for %s: %s", getattr(filer, 'name', '?'), te)
+                except Exception as e:
+                    logging.warning("Could not collect shell fallback metrics for %s: %s", getattr(filer, 'name', '?'), e)
+                    _ensure_session_alive(self)
+
+                return metrics
+
             def get_ad_status(result=None):
                 if result is None:
                     result = safe_attr(info, 'status.fileservices.cifs.joinStatus')
@@ -447,38 +511,18 @@ def write_status(self, p_filename, all_tenants):
                     return 'Failed'
                 return result
 
-            def get_db_size():
-                if not _budget_ok():
-                    logging.warning("Per-filer budget exceeded before DB size; skipping.")
-                    return 'N/A'
-                try:
-                    info2 = api_get_multi_safe(self, filer, '/', ['status', 'config'], label="get_multi(status,config)")
-                    mac_addr = first_scalar(safe_attr(info2, 'status.device.MacAddress', default=''))
-                    firmware = first_scalar(safe_attr(info2, 'status.device.runningFirmware', default=''))
-                    if not mac_addr or not firmware:
-                        return 'N/A'
-                    secret = _derive_telnet_secret(mac_addr, firmware)
-
-                    telnet_enable_safe(self, filer, secret)
-                    try:
-                        output = shell_safe(self, filer, 'stat /var/volumes/*/.ctera/cloudSync/CloudSync.db')
-                        m = re.search(r'(?<=Size:\ )[0-9]+', output or '')
-                        if not m:
-                            return 'N/A'
-                        size_bytes = int(m.group(0))
-                        return round(size_bytes / (1 << 30), 2)
-                    finally:
-                        try:
-                            telnet_disable_safe(self, filer)
-                        except Exception:
-                            pass
-                except TimeoutError as te:
-                    logging.warning("DB size timed out for %s: %s", getattr(filer, 'name', '?'), te)
-                    return 'N/A'
-                except Exception as e:
-                    logging.warning("Could not read CloudSync.db size for %s: %s", getattr(filer, 'name', '?'), e)
-                    _ensure_session_alive(self)
-                    return 'N/A'
+            max_cpu_value = get_max_cpu()
+            max_mem_value = get_max_memory()
+            shell_metrics = get_shell_fallback_metrics()
+            if curr_cpu == 'N/A' and shell_metrics.get('curr_cpu'):
+                curr_cpu = shell_metrics['curr_cpu'].rstrip('%')
+            if curr_mem == 'N/A' and shell_metrics.get('curr_mem'):
+                curr_mem = shell_metrics['curr_mem'].rstrip('%')
+            if max_cpu_value == 'N/A' and shell_metrics.get('max_cpu'):
+                max_cpu_value = shell_metrics['max_cpu']
+            if max_mem_value == 'N/A' and shell_metrics.get('max_mem'):
+                max_mem_value = shell_metrics['max_mem']
+            db_size_value = shell_metrics.get('db_size', 'N/A')
 
             if not _budget_ok():
                 raise TimeoutError(f"Per-filer budget {BUDGET_PER_FILER}s exceeded")
@@ -514,9 +558,9 @@ def write_status(self, p_filename, all_tenants):
                     time_s,
                     uptime,
                     f"CPU: {curr_cpu}% Mem: {curr_mem}%",
-                    get_max_cpu(),
-                    get_max_memory(),
-                    get_db_size()
+                    max_cpu_value,
+                    max_mem_value,
+                    db_size_value
                 ])
 
         except Exception as e:
