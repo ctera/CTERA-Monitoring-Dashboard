@@ -14,6 +14,7 @@
 import argparse
 import ast
 import csv
+import json
 import logging
 import os
 import re
@@ -714,6 +715,87 @@ BUCKET_CLASS_MAP = {
     'FileSystem': 'Local Filesystem',
 }
 
+LOCATION_STORAGE_MAP = {
+    'S3': 'Amazon S3',
+    'AmazonS3': 'Amazon S3',
+    'Azure': 'Azure Blob',
+    'AzureBlob': 'Azure Blob',
+    'WasabiS3': 'Wasabi',
+    'ScalityS3': 'Scality S3',
+    'Scality': 'Scality S3',
+    'Wasabi': 'Wasabi',
+    'Google': 'Google Cloud Storage',
+    'ICOS': 'IBM COS',
+    'HTTP': 'HTTP',
+    'FileSystem': 'Local Filesystem',
+    'LocalFilesystem': 'Local Filesystem',
+}
+
+def _obj_get(obj, name, default=""):
+    if isinstance(obj, dict):
+        value = obj.get(name, default)
+    else:
+        value = getattr(obj, name, default)
+    return default if value is None else value
+
+def _extract_query_objects(payload):
+    if payload is None:
+        return []
+    if isinstance(payload, str):
+        try:
+            payload = json.loads(payload)
+        except Exception:
+            return []
+    if isinstance(payload, dict):
+        objs = payload.get("objects")
+        return objs if isinstance(objs, list) else []
+    objs = getattr(payload, "objects", None)
+    if isinstance(objs, list):
+        return objs
+    if hasattr(objs, "__iter__") and not isinstance(objs, (str, bytes)):
+        return list(objs)
+    if isinstance(payload, list):
+        return payload
+    return []
+
+def _parse_portal_name(ref):
+    ref = str(ref or "").strip()
+    if not ref:
+        return ""
+    return ref.rstrip("/").split("/")[-1]
+
+def _resolve_location_driver(location):
+    storage = str(_obj_get(location, "storage", "") or "")
+    if storage:
+        return LOCATION_STORAGE_MAP.get(storage, storage)
+    clsname = type(location).__name__
+    if clsname and clsname not in ("dict",):
+        return LOCATION_STORAGE_MAP.get(clsname, clsname)
+    return ""
+
+def _get_storage_locations(admin):
+    api_candidates = []
+    core = getattr(admin, "_core", None)
+    direct_api = getattr(admin, "api", None)
+    if direct_api is not None:
+        api_candidates.append(direct_api)
+    if core is not None and getattr(core, "api", None) is not None:
+        api_candidates.append(core.api)
+
+    for api in api_candidates:
+        for method_name in ("get", "raw_get"):
+            method = getattr(api, method_name, None)
+            if not callable(method):
+                continue
+            try:
+                payload = method('/locations?format=jsonext')
+                objs = _extract_query_objects(payload)
+                if objs:
+                    return objs
+            except Exception as exc:
+                logging.debug("Storage locations fetch via %s.%s failed: %s", type(api).__name__, method_name, exc)
+    return []
+
 def resolve_bucket_driver(admin, name, bucket_value):
     """
     Return a human-friendly driver/vendor for a storage node.
@@ -747,22 +829,34 @@ def write_buckets(self, filename):
     logging.info("Collecting Storage Nodes (Buckets) from Global Admin...")
     self.portals.browse_global_admin()
 
-    # list provides names & basic fields; GET each bucket to read 'direct'
-    buckets = self.buckets.list_buckets(include=BUCKET_FIELDS)
     with open(filename, mode='a', newline='', encoding='utf-8-sig') as f:
         w = csv.writer(f, dialect='excel', delimiter=',', quotechar='"', quoting=csv.QUOTE_MINIMAL)
-        for b in buckets:
-            full = self.buckets.get(b.name, include=['bucket', 'direct'])
-            driver = resolve_bucket_driver(self, b.name, getattr(b, 'bucket', ''))
-            direct = getattr(full, 'direct', '')
-            w.writerow([
-                getattr(b, 'name', ''),
-                driver,
-                getattr(b, 'bucket', ''),
-                getattr(b, 'readOnly', ''),
-                getattr(b, 'dedicatedTo', ''),
-                direct,
-            ])
+        locations = _get_storage_locations(self)
+        if locations:
+            for loc in locations:
+                w.writerow([
+                    _obj_get(loc, 'name', ''),
+                    _resolve_location_driver(loc),
+                    _obj_get(loc, 'bucket', ''),
+                    _obj_get(loc, 'readOnly', ''),
+                    _parse_portal_name(_obj_get(loc, 'dedicatedPortal', '')),
+                    _obj_get(loc, 'directUpload', ''),
+                ])
+        else:
+            # Fallback for environments where the richer locations endpoint is unavailable.
+            buckets = self.buckets.list_buckets(include=BUCKET_FIELDS)
+            for b in buckets:
+                full = self.buckets.get(b.name, include=['bucket', 'direct'])
+                driver = resolve_bucket_driver(self, b.name, getattr(b, 'bucket', ''))
+                direct = getattr(full, 'direct', '')
+                w.writerow([
+                    getattr(b, 'name', ''),
+                    driver,
+                    getattr(b, 'bucket', ''),
+                    getattr(b, 'readOnly', ''),
+                    getattr(b, 'dedicatedTo', ''),
+                    direct,
+                ])
     logging.info("Wrote storage nodes CSV to %s", filename)
 
 
@@ -807,23 +901,37 @@ def append_servers_to_infra(self, filename):
 
 def append_buckets_to_infra(self, filename):
     self.portals.browse_global_admin()
-    buckets = self.buckets.list_buckets(include=BUCKET_FIELDS)
     with open(filename, mode='a', newline='', encoding='utf-8-sig') as f:
         w = csv.writer(f, dialect='excel', delimiter=',', quotechar='"', quoting=csv.QUOTE_MINIMAL)
-        for b in buckets:
-            full = self.buckets.get(b.name, include=['bucket', 'direct'])
-            driver = resolve_bucket_driver(self, b.name, getattr(b, 'bucket', ''))
-            direct = getattr(full, 'direct', '')
-            w.writerow([
-                'StorageNode',
-                getattr(b, 'name', ''),
-                '', '', '',  # server columns empty
-                driver,
-                getattr(b, 'bucket', ''),
-                getattr(b, 'readOnly', ''),
-                getattr(b, 'dedicatedTo', ''),
-                direct,
-            ])
+        locations = _get_storage_locations(self)
+        if locations:
+            for loc in locations:
+                w.writerow([
+                    'StorageNode',
+                    _obj_get(loc, 'name', ''),
+                    '', '', '',  # server columns empty
+                    _resolve_location_driver(loc),
+                    _obj_get(loc, 'bucket', ''),
+                    _obj_get(loc, 'readOnly', ''),
+                    _parse_portal_name(_obj_get(loc, 'dedicatedPortal', '')),
+                    _obj_get(loc, 'directUpload', ''),
+                ])
+        else:
+            buckets = self.buckets.list_buckets(include=BUCKET_FIELDS)
+            for b in buckets:
+                full = self.buckets.get(b.name, include=['bucket', 'direct'])
+                driver = resolve_bucket_driver(self, b.name, getattr(b, 'bucket', ''))
+                direct = getattr(full, 'direct', '')
+                w.writerow([
+                    'StorageNode',
+                    getattr(b, 'name', ''),
+                    '', '', '',  # server columns empty
+                    driver,
+                    getattr(b, 'bucket', ''),
+                    getattr(b, 'readOnly', ''),
+                    getattr(b, 'dedicatedTo', ''),
+                    direct,
+                ])
 
 
 def run_infra(self, filename):
