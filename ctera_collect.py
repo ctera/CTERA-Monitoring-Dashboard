@@ -836,6 +836,36 @@ def resolve_bucket_driver(admin, name, bucket_value):
         return 'Local Filesystem'
     return 'Amazon S3'
 
+def _collect_bucket_rows(admin):
+    rows = []
+    try:
+        buckets = admin.buckets.list_buckets(include=BUCKET_FIELDS)
+    except Exception as exc:
+        logging.warning("Bucket fallback list failed: %s", exc)
+        return rows
+
+    for b in buckets:
+        name = getattr(b, 'name', '')
+        bucket_value = getattr(b, 'bucket', '')
+        read_only = getattr(b, 'readOnly', '')
+        dedicated_to = getattr(b, 'dedicatedTo', '')
+        driver = resolve_bucket_driver(admin, name, bucket_value)
+        direct = ''
+        try:
+            full = admin.buckets.get(name, include=['bucket', 'direct'])
+            direct = getattr(full, 'direct', '')
+        except Exception as exc:
+            logging.warning("Bucket detail lookup failed for %s: %s", name or '?', exc)
+        rows.append([
+            name,
+            driver,
+            bucket_value,
+            read_only,
+            dedicated_to,
+            direct,
+        ])
+    return rows
+
 
 def write_buckets_header(filename):
     with open(filename, mode='a', newline='', encoding='utf-8-sig') as f:
@@ -862,19 +892,8 @@ def write_buckets(self, filename):
                 ])
         else:
             # Fallback for environments where the richer locations endpoint is unavailable.
-            buckets = self.buckets.list_buckets(include=BUCKET_FIELDS)
-            for b in buckets:
-                full = self.buckets.get(b.name, include=['bucket', 'direct'])
-                driver = resolve_bucket_driver(self, b.name, getattr(b, 'bucket', ''))
-                direct = getattr(full, 'direct', '')
-                w.writerow([
-                    getattr(b, 'name', ''),
-                    driver,
-                    getattr(b, 'bucket', ''),
-                    getattr(b, 'readOnly', ''),
-                    getattr(b, 'dedicatedTo', ''),
-                    direct,
-                ])
+            for row in _collect_bucket_rows(self):
+                w.writerow(row)
     logging.info("Wrote storage nodes CSV to %s", filename)
 
 
@@ -935,20 +954,16 @@ def append_buckets_to_infra(self, filename):
                     _obj_get(loc, 'directUpload', ''),
                 ])
         else:
-            buckets = self.buckets.list_buckets(include=BUCKET_FIELDS)
-            for b in buckets:
-                full = self.buckets.get(b.name, include=['bucket', 'direct'])
-                driver = resolve_bucket_driver(self, b.name, getattr(b, 'bucket', ''))
-                direct = getattr(full, 'direct', '')
+            for row in _collect_bucket_rows(self):
                 w.writerow([
                     'StorageNode',
-                    getattr(b, 'name', ''),
+                    row[0],
                     '', '', '',  # server columns empty
-                    driver,
-                    getattr(b, 'bucket', ''),
-                    getattr(b, 'readOnly', ''),
-                    getattr(b, 'dedicatedTo', ''),
-                    direct,
+                    row[1],
+                    row[2],
+                    row[3],
+                    row[4],
+                    row[5],
                 ])
 
 
