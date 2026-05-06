@@ -775,43 +775,56 @@ def _resolve_location_driver(location):
     return ""
 
 def _get_storage_locations(admin):
-    api_candidates = []
-    core = getattr(admin, "_core", None)
-    direct_api = getattr(admin, "api", None)
-    if direct_api is not None:
-        api_candidates.append(direct_api)
-    if core is not None and getattr(core, "api", None) is not None:
-        api_candidates.append(core.api)
+    for attempt in range(2):
+        api_candidates = []
+        core = getattr(admin, "_core", None)
+        direct_api = getattr(admin, "api", None)
+        if direct_api is not None:
+            api_candidates.append(direct_api)
+        if core is not None and getattr(core, "api", None) is not None:
+            api_candidates.append(core.api)
 
-    for api in api_candidates:
-        raw_wrapper = getattr(api, "_session", None)
-        raw_session = getattr(raw_wrapper, "session", None)
-        raw_loop = getattr(raw_session, "_loop", None)
-        baseurl = getattr(api, "baseurl", "").rstrip("/")
-        if raw_session is not None and raw_loop is not None and baseurl:
-            async def _fetch_locations_text():
-                async with raw_session.get(f"{baseurl}/locations?format=jsonext", ssl=False) as response:
-                    return await response.text()
+        for api in api_candidates:
+            raw_wrapper = getattr(api, "_session", None)
+            raw_session = getattr(raw_wrapper, "session", None)
+            raw_loop = getattr(raw_session, "_loop", None)
+            baseurl = getattr(api, "baseurl", "").rstrip("/")
+            if raw_session is not None and raw_loop is not None and baseurl:
+                async def _fetch_locations_text():
+                    async with raw_session.get(f"{baseurl}/locations?format=jsonext", ssl=False) as response:
+                        return await response.text()
 
-            try:
-                payload = json.loads(raw_loop.run_until_complete(_fetch_locations_text()))
-                objs = _extract_query_objects(payload)
-                if objs:
-                    return objs
-            except Exception as exc:
-                logging.debug("Storage locations fetch via raw session failed: %s", exc)
+                try:
+                    payload = json.loads(raw_loop.run_until_complete(_fetch_locations_text()))
+                    objs = _extract_query_objects(payload)
+                    if objs:
+                        return objs
+                except Exception as exc:
+                    logging.debug("Storage locations fetch via raw session failed: %s", exc)
+                    if "Session expired" in str(exc) and attempt == 0 and _reauth(admin):
+                        try:
+                            admin.portals.browse_global_admin()
+                        except Exception:
+                            pass
+                        break
 
-        for method_name in ("get", "raw_get"):
-            method = getattr(api, method_name, None)
-            if not callable(method):
-                continue
-            try:
-                payload = method('/locations?format=jsonext')
-                objs = _extract_query_objects(payload)
-                if objs:
-                    return objs
-            except Exception as exc:
-                logging.debug("Storage locations fetch via %s.%s failed: %s", type(api).__name__, method_name, exc)
+            for method_name in ("get", "raw_get"):
+                method = getattr(api, method_name, None)
+                if not callable(method):
+                    continue
+                try:
+                    payload = method('/locations?format=jsonext')
+                    objs = _extract_query_objects(payload)
+                    if objs:
+                        return objs
+                except Exception as exc:
+                    logging.debug("Storage locations fetch via %s.%s failed: %s", type(api).__name__, method_name, exc)
+                    if "Session expired" in str(exc) and attempt == 0 and _reauth(admin):
+                        try:
+                            admin.portals.browse_global_admin()
+                        except Exception:
+                            pass
+                        break
     return []
 
 def resolve_bucket_driver(admin, name, bucket_value):
@@ -823,7 +836,7 @@ def resolve_bucket_driver(admin, name, bucket_value):
         * otherwise → Amazon S3 (default for your setup)
     """
     try:
-        full = admin.buckets.get(name, include=['bucket'])
+        full = _with_reauth(admin, lambda: admin.buckets.get(name, include=['bucket']), retries=1, label=f"bucket_get_driver:{name}")
         clsname = type(getattr(full, 'bucket', None)).__name__
     except Exception:
         clsname = None
@@ -839,7 +852,7 @@ def resolve_bucket_driver(admin, name, bucket_value):
 def _collect_bucket_rows(admin):
     rows = []
     try:
-        buckets = admin.buckets.list_buckets(include=BUCKET_FIELDS)
+        buckets = _with_reauth(admin, lambda: list(admin.buckets.list_buckets(include=BUCKET_FIELDS)), retries=1, label="list_buckets")
     except Exception as exc:
         logging.warning("Bucket fallback list failed: %s", exc)
         return rows
@@ -852,7 +865,7 @@ def _collect_bucket_rows(admin):
         driver = resolve_bucket_driver(admin, name, bucket_value)
         direct = ''
         try:
-            full = admin.buckets.get(name, include=['bucket', 'direct'])
+            full = _with_reauth(admin, lambda: admin.buckets.get(name, include=['bucket', 'direct']), retries=1, label=f"bucket_get_detail:{name}")
             direct = getattr(full, 'direct', '')
         except Exception as exc:
             logging.warning("Bucket detail lookup failed for %s: %s", name or '?', exc)
@@ -875,7 +888,7 @@ def write_buckets_header(filename):
 
 def write_buckets(self, filename):
     logging.info("Collecting Storage Nodes (Buckets) from Global Admin...")
-    self.portals.browse_global_admin()
+    _with_reauth(self, lambda: self.portals.browse_global_admin(), retries=1, label="browse_global_admin_storage")
 
     with open(filename, mode='a', newline='', encoding='utf-8-sig') as f:
         w = csv.writer(f, dialect='excel', delimiter=',', quotechar='"', quoting=csv.QUOTE_MINIMAL)
@@ -937,7 +950,7 @@ def append_servers_to_infra(self, filename):
 
 
 def append_buckets_to_infra(self, filename):
-    self.portals.browse_global_admin()
+    _with_reauth(self, lambda: self.portals.browse_global_admin(), retries=1, label="browse_global_admin_infra_storage")
     with open(filename, mode='a', newline='', encoding='utf-8-sig') as f:
         w = csv.writer(f, dialect='excel', delimiter=',', quotechar='"', quoting=csv.QUOTE_MINIMAL)
         locations = _get_storage_locations(self)
