@@ -461,9 +461,13 @@ def write_status(self, p_filename, all_tenants):
                 value = str(value or '').strip()
                 if not value or value.upper() == 'N/A':
                     return 'N/A'
+                if value.lower() == 'unsupported':
+                    return 'Unsupported'
                 return value if value.endswith('%') else f"{value}%"
 
             def _extract_first_number(text):
+                if isinstance(text, (int, float)):
+                    return str(text)
                 m = re.search(r'([0-9]+(?:\.[0-9]+)?)', text or '')
                 return m.group(1) if m else ''
 
