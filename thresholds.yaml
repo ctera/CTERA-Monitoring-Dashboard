@@ -7,12 +7,6 @@ filers:
     uploadingFiles:
       warn: { gt: 10000 }
       crit: { gt: 30000 }
-    scanningFiles:
-      warn: { gt: 1000000 }
-      crit: { gt: 1500000 }
-    EvictionPercentage:
-      warn: { ge: 80 }
-      crit: { ge: 85 }
     Alerts:
       warn: { ge: 10 }
       crit: { ge: 20 }

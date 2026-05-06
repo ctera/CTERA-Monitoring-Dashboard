@@ -1109,6 +1109,8 @@ def eval_level(val, rule):
 
 # -------- rule resolvers (edge / portal / postgres / servers health / tenants)
 def make_edge_warn_fn(base_cfg, ext):
+    ignored_cols = {"scanningFiles", "EvictionPercentage"}
+
     def _resolve(row):
         eff = {}
         if isinstance(base_cfg, dict):
@@ -1125,6 +1127,8 @@ def make_edge_warn_fn(base_cfg, ext):
         return eff
 
     def warn(col, val, row):
+        if col in ignored_cols:
+            return ''
         rule = _resolve(row).get(col)
         return eval_level(val, rule) if rule else ''
 
@@ -1132,6 +1136,8 @@ def make_edge_warn_fn(base_cfg, ext):
 
 
 def make_edge_style_fn(base_cfg, ext):
+    ignored_cols = {"scanningFiles", "EvictionPercentage"}
+
     def _resolve(row):
         eff = {}
         if isinstance(base_cfg, dict):
@@ -1148,6 +1154,8 @@ def make_edge_style_fn(base_cfg, ext):
         return eff
 
     def style(col, val, row):
+        if col in ignored_cols:
+            return ''
         rule = _resolve(row).get(col)
         return _style_from_rule(rule, val)
 
