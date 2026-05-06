@@ -20,6 +20,7 @@ import os
 import re
 import subprocess
 import sys
+import psycopg2
 
 from cterasdk.exceptions import CTERAException
 from cterasdk import GlobalAdmin, ServicesPortal
@@ -774,7 +775,71 @@ def _resolve_location_driver(location):
         return LOCATION_STORAGE_MAP.get(clsname, clsname)
     return ""
 
+def _get_storage_locations_from_postgres():
+    pg_host = str(os.environ.get("PGHOST") or "").strip()
+    pg_port = str(os.environ.get("PGPORT") or "5432").strip() or "5432"
+    pg_database = str(os.environ.get("PGDATABASE") or "postgres").strip() or "postgres"
+    pg_user = str(os.environ.get("PGUSER") or "postgres").strip() or "postgres"
+    pg_password = str(os.environ.get("PGPASSWORD") or "").strip()
+
+    if not pg_host or not pg_password:
+        return []
+
+    conn = None
+    try:
+        conn = psycopg2.connect(
+            host=pg_host,
+            port=pg_port,
+            dbname=pg_database,
+            user=pg_user,
+            password=pg_password,
+        )
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                select
+                  bo_loc.name as name,
+                  l.storage as storage,
+                  l.bucket as bucket,
+                  l.readonly as "readOnly",
+                  l.is_direct_upload as "directUpload",
+                  coalesce(bo_portal.name, '') as dedicated_portal_name
+                from locations l
+                join base_objects bo_loc
+                  on bo_loc.uid = l.uid
+                left join base_objects bo_portal
+                  on bo_portal.uid = l.dedicated_portal_id
+                where coalesce(bo_loc.is_deleted, false) = false
+                order by bo_loc.name
+                """
+            )
+            rows = cur.fetchall()
+        return [
+            {
+                "name": row[0],
+                "storage": row[1],
+                "bucket": row[2],
+                "readOnly": row[3],
+                "directUpload": row[4],
+                "dedicatedPortal": row[5],
+            }
+            for row in rows
+        ]
+    except Exception as exc:
+        logging.debug("Storage locations fetch via Postgres failed: %s", exc)
+        return []
+    finally:
+        if conn is not None:
+            try:
+                conn.close()
+            except Exception:
+                pass
+
 def _get_storage_locations(admin):
+    pg_locations = _get_storage_locations_from_postgres()
+    if pg_locations:
+        return pg_locations
+
     for attempt in range(2):
         api_candidates = []
         core = getattr(admin, "_core", None)
