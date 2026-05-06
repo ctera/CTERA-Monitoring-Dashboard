@@ -776,8 +776,8 @@ def _resolve_location_driver(location):
     return ""
 
 def _get_storage_locations_from_postgres():
-    pg_host = str(os.environ.get("PGHOST") or "").strip()
-    pg_port = str(os.environ.get("PGPORT") or "5432").strip() or "5432"
+    pg_host = str(os.environ.get("LOCAL_PGHOST") or os.environ.get("PGHOST") or "").strip()
+    pg_port = str(os.environ.get("LOCAL_PGPORT") or os.environ.get("PGPORT") or "5432").strip() or "5432"
     pg_database = str(os.environ.get("PGDATABASE") or "postgres").strip() or "postgres"
     pg_user = str(os.environ.get("PGUSER") or "postgres").strip() or "postgres"
     pg_password = str(os.environ.get("PGPASSWORD") or "").strip()
@@ -793,6 +793,7 @@ def _get_storage_locations_from_postgres():
             dbname=pg_database,
             user=pg_user,
             password=pg_password,
+            connect_timeout=5,
         )
         with conn.cursor() as cur:
             cur.execute(

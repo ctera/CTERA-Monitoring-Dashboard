@@ -223,6 +223,7 @@ if [[ "${JUMP_HOST_ENABLED}" =~ ^(1|true|yes|on)$ ]]; then
 fi
 
 rm -f "${FEATHERDASH_DATA_DIR}/storage.csv"
+LOCAL_PGHOST="${LOCAL_PGHOST}" LOCAL_PGPORT="${LOCAL_PGPORT}" \
 python ctera_collect.py -H "${CTERA_HOST}" -u "${CTERA_USERNAME}" -p "${CTERA_PASSWORD}" --mode storage --global-admin -o "${FEATHERDASH_DATA_DIR}/storage.csv"
 
 rm -f "${FEATHERDASH_DATA_DIR}/servers.csv"
