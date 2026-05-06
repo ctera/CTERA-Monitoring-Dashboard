@@ -720,6 +720,7 @@ LOCATION_STORAGE_MAP = {
     'AmazonS3': 'Amazon S3',
     'Azure': 'Azure Blob',
     'AzureBlob': 'Azure Blob',
+    'FS': 'Local Filesystem',
     'WasabiS3': 'Wasabi',
     'ScalityS3': 'Scality S3',
     'Scality': 'Scality S3',
@@ -783,6 +784,23 @@ def _get_storage_locations(admin):
         api_candidates.append(core.api)
 
     for api in api_candidates:
+        raw_wrapper = getattr(api, "_session", None)
+        raw_session = getattr(raw_wrapper, "session", None)
+        raw_loop = getattr(raw_session, "_loop", None)
+        baseurl = getattr(api, "baseurl", "").rstrip("/")
+        if raw_session is not None and raw_loop is not None and baseurl:
+            async def _fetch_locations_text():
+                async with raw_session.get(f"{baseurl}/locations?format=jsonext", ssl=False) as response:
+                    return await response.text()
+
+            try:
+                payload = json.loads(raw_loop.run_until_complete(_fetch_locations_text()))
+                objs = _extract_query_objects(payload)
+                if objs:
+                    return objs
+            except Exception as exc:
+                logging.debug("Storage locations fetch via raw session failed: %s", exc)
+
         for method_name in ("get", "raw_get"):
             method = getattr(api, method_name, None)
             if not callable(method):
