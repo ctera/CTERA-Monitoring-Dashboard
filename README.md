@@ -56,6 +56,8 @@ There are three supported install options.
 
 Most users should use **Install Option 2** or the quick tarball flow below.
 
+Before you start any install option, contact CTERA Support and get the GitHub token required for the private helper download. The installer will prompt you for this helper token during installation.
+
 ---
 
 ## Recommended Quick Install (Tarball)
@@ -145,6 +147,8 @@ cd /opt/monitoring/ctera-monitoring-dashboard
 sudo bash ./install.sh
 ```
 
+During the install, the script will prompt for the helper GitHub token used to download the private helper binary. Have the token from CTERA Support ready before you begin this step.
+
 ---
 
 ## Install Option 2: Download Package Directly on Server
@@ -185,6 +189,8 @@ cd /opt/monitoring/ctera-monitoring-dashboard
 sudo bash ./install.sh
 ```
 
+During the install, the script will prompt for the helper GitHub token used to download the private helper binary. Have the token from CTERA Support ready before you begin this step.
+
 ---
 
 ## Install Option 3: Clone Repository With Git
@@ -213,6 +219,8 @@ cd ctera-monitoring-dashboard
 ```bash
 sudo bash ./install.sh
 ```
+
+During the install, the script will prompt for the helper GitHub token used to download the private helper binary. Have the token from CTERA Support ready before you begin this step.
 
 ---
 
