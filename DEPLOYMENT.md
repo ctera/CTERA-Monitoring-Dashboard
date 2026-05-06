@@ -61,7 +61,7 @@ Important variables:
 
 ```bash
 CTERA_HOST=<portal-fqdn>
-CTERA_USERNAME=<global-admin-read-only-admin-user>
+CTERA_USERNAME=<global-admin-user>
 CTERA_PASSWORD=<password>
 CTERA_VERIFY_SSL=false
 PGHOST=<main-db-ip>
@@ -84,6 +84,8 @@ FEATHERDASH_DB_DIR=/var/lib/ctera-monitoring-dashboard/data/db
 FEATHERDASH_THRESHOLDS=/opt/monitoring/ctera-monitoring-dashboard/thresholds.yaml
 PYTHONUNBUFFERED=1
 ```
+
+Use a read-write global administrator if you want filer CloudSync DB size and filer CPU/memory shell metrics. A read-only global administrator still works for standard portal and filer collection, but those filer shell metrics will stay unavailable.
 
 ## One CSV Location
 

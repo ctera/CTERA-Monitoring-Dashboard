@@ -5394,7 +5394,7 @@ async function runAISummary(){
       const status = document.getElementById('environmentStatus');
       if (status) status.textContent = 'Portal environment form cleared.';
       const hints = {
-        envCteraPasswordHint: 'Leave blank if you are not setting the secret yet.',
+        envCteraPasswordHint: 'Use a read-write global administrator if you want filer CloudSync DB size and filer CPU/memory shell metrics. A read-only global administrator still works for standard portal and filer collection, but those filer shell metrics will stay unavailable.',
         envOpenAiKeyHint: 'Optional. Only needed if this environment uses AI Summary.',
         envInitialSshHelp: 'Used one time for bootstrap. After that the dashboard uses the installed SSH key going forward.',
         envInitialSshPasswordHint: 'Enter the bootstrap SSH password only if this mode uses username and password.',
@@ -5477,7 +5477,7 @@ async function runAISummary(){
       const status = document.getElementById('environmentStatus');
       if (status) status.textContent = 'Editing environment ' + env.name + '.';
       const hints = {
-        envCteraPasswordHint: env.ctera_password_set ? 'A CTERA password is already saved. Leave blank to keep it.' : 'No CTERA password saved yet.',
+        envCteraPasswordHint: env.ctera_password_set ? 'A CTERA password is already saved. Leave blank to keep it. Use a read-write global administrator if you want filer CloudSync DB size and filer CPU/memory shell metrics. A read-only global administrator still works for standard portal and filer collection, but those filer shell metrics will stay unavailable.' : 'No CTERA password saved yet. Use a read-write global administrator if you want filer CloudSync DB size and filer CPU/memory shell metrics. A read-only global administrator still works for standard portal and filer collection, but those filer shell metrics will stay unavailable.',
         envOpenAiKeyHint: env.openai_key_set ? 'An OpenAI key is already saved. Leave blank to keep it.' : 'Optional. Only needed if this environment uses AI Summary.',
         envInitialSshHelp: 'Used one time for bootstrap. After that the dashboard uses the installed SSH key going forward.',
         envInitialSshPasswordHint: env.ssh_password_set ? 'A bootstrap SSH password is already saved. Leave blank to keep it.' : 'Enter the bootstrap SSH password only if this mode uses username and password.',
@@ -7751,8 +7751,9 @@ async function runAISummary(){
             <input id="envPortalFqdn" class="threshold-input" type="text" placeholder="files.example.com">
           </div>
           <div class="threshold-field">
-            <label for="envCteraUsername">CTERA Portal Read-Only Global Administrator</label>
+            <label for="envCteraUsername">CTERA Portal Global Administrator</label>
             <input id="envCteraUsername" class="threshold-input" type="text" placeholder="monitoring">
+            <div class="env-secret-hint">Use a read-write global administrator for filer CloudSync DB size and filer CPU/memory shell metrics. A read-only global administrator still works for standard portal and filer collection.</div>
           </div>
           <div class="threshold-field">
             <label for="envCteraPassword">CTERA Password</label>
