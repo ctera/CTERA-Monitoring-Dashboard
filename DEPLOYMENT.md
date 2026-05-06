@@ -85,7 +85,7 @@ FEATHERDASH_THRESHOLDS=/opt/monitoring/ctera-monitoring-dashboard/thresholds.yam
 PYTHONUNBUFFERED=1
 ```
 
-Use a read-write global administrator if you want filer CloudSync DB size and filer CPU/memory shell metrics. A read-only global administrator still works for standard portal and filer collection, but those filer shell metrics will stay unavailable.
+Use a read-write global administrator if you want the dashboard to pull everything. A read-only global administrator can still pull everything except filer CloudSync DB size and filer CPU/memory shell metrics.
 
 ## One CSV Location
 

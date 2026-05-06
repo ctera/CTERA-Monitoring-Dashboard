@@ -2543,7 +2543,7 @@ def _save_environment(payload):
     if not portal_fqdn:
         raise ValueError("Portal FQDN is required.")
     if not ctera_username:
-        raise ValueError("CTERA Portal Read-Only Global Administrator is required.")
+        raise ValueError("CTERA Portal Global Administrator is required.")
     if not main_db_ip:
         raise ValueError("MainDB IP is required.")
     if not ctera_password.strip():
@@ -3826,7 +3826,9 @@ HTML = """
       return path + joiner + 'env=' + encodeURIComponent(envId);
     }
     function navigateToEnvironment(envId){
-      saveEnvironmentContext(envId || 'admin');
+      const nextContext = envId || 'admin';
+      saveEnvironmentContext(nextContext);
+      saveActive(nextContext === 'admin' ? 'admin_env' : 'overview');
       const url = new URL(window.location.href);
       if (!envId || envId === 'admin') {
         url.searchParams.delete('env');
@@ -5394,7 +5396,7 @@ async function runAISummary(){
       const status = document.getElementById('environmentStatus');
       if (status) status.textContent = 'Portal environment form cleared.';
       const hints = {
-        envCteraPasswordHint: 'Use a read-write global administrator if you want filer CloudSync DB size and filer CPU/memory shell metrics. A read-only global administrator still works for standard portal and filer collection, but those filer shell metrics will stay unavailable.',
+        envCteraPasswordHint: 'Use a read-write global administrator if you want the dashboard to pull everything. A read-only global administrator can still pull everything except filer CloudSync DB size and filer CPU/memory shell metrics.',
         envOpenAiKeyHint: 'Optional. Only needed if this environment uses AI Summary.',
         envInitialSshHelp: 'Used one time for bootstrap. After that the dashboard uses the installed SSH key going forward.',
         envInitialSshPasswordHint: 'Enter the bootstrap SSH password only if this mode uses username and password.',
@@ -5477,7 +5479,7 @@ async function runAISummary(){
       const status = document.getElementById('environmentStatus');
       if (status) status.textContent = 'Editing environment ' + env.name + '.';
       const hints = {
-        envCteraPasswordHint: env.ctera_password_set ? 'A CTERA password is already saved. Leave blank to keep it. Use a read-write global administrator if you want filer CloudSync DB size and filer CPU/memory shell metrics. A read-only global administrator still works for standard portal and filer collection, but those filer shell metrics will stay unavailable.' : 'No CTERA password saved yet. Use a read-write global administrator if you want filer CloudSync DB size and filer CPU/memory shell metrics. A read-only global administrator still works for standard portal and filer collection, but those filer shell metrics will stay unavailable.',
+        envCteraPasswordHint: env.ctera_password_set ? 'A CTERA password is already saved. Leave blank to keep it. Use a read-write global administrator if you want the dashboard to pull everything. A read-only global administrator can still pull everything except filer CloudSync DB size and filer CPU/memory shell metrics.' : 'No CTERA password saved yet. Use a read-write global administrator if you want the dashboard to pull everything. A read-only global administrator can still pull everything except filer CloudSync DB size and filer CPU/memory shell metrics.',
         envOpenAiKeyHint: env.openai_key_set ? 'An OpenAI key is already saved. Leave blank to keep it.' : 'Optional. Only needed if this environment uses AI Summary.',
         envInitialSshHelp: 'Used one time for bootstrap. After that the dashboard uses the installed SSH key going forward.',
         envInitialSshPasswordHint: env.ssh_password_set ? 'A bootstrap SSH password is already saved. Leave blank to keep it.' : 'Enter the bootstrap SSH password only if this mode uses username and password.',
@@ -5672,7 +5674,7 @@ async function runAISummary(){
 
       if (!String(payload.environment_name || '').trim()) return 'Environment name is required.';
       if (!String(payload.portal_fqdn || '').trim()) return 'Portal FQDN is required.';
-      if (!String(payload.ctera_username || '').trim()) return 'CTERA Portal Read-Only Global Administrator is required.';
+      if (!String(payload.ctera_username || '').trim()) return 'CTERA Portal Global Administrator is required.';
       if (!String(payload.main_db_ip || '').trim()) return 'MainDB IP is required.';
       if (!String(payload.ctera_password || '').trim() && !hasSavedCteraPassword) return 'CTERA password is required.';
       if (useJumpHost && !String(payload.jump_host || '').trim()) return 'Jump host is required when jump-host access is enabled.';
@@ -6480,8 +6482,8 @@ async function runAISummary(){
         <article class="notify-card">
           <h4>CTERA Access</h4>
           <ul class="about-list">
-            <li>Make sure you have created a read-only administrator in Global Admin. We recommend naming that user <strong>monitoring</strong>.</li>
-            <li>Know the password for the read-only administrator before starting portal setup.</li>
+            <li>Use a read-write global administrator in Global Admin if you want the dashboard to pull everything. We recommend naming that user <strong>monitoring</strong>.</li>
+            <li>A read-only global administrator can still pull everything except filer CloudSync DB size and filer CPU/memory shell metrics.</li>
           </ul>
         </article>
         <article class="notify-card">
@@ -7753,7 +7755,7 @@ async function runAISummary(){
           <div class="threshold-field">
             <label for="envCteraUsername">CTERA Portal Global Administrator</label>
             <input id="envCteraUsername" class="threshold-input" type="text" placeholder="monitoring">
-            <div class="env-secret-hint">Use a read-write global administrator for filer CloudSync DB size and filer CPU/memory shell metrics. A read-only global administrator still works for standard portal and filer collection.</div>
+            <div class="env-secret-hint">Use a read-write global administrator if you want the dashboard to pull everything. A read-only global administrator can still pull everything except filer CloudSync DB size and filer CPU/memory shell metrics.</div>
           </div>
           <div class="threshold-field">
             <label for="envCteraPassword">CTERA Password</label>
