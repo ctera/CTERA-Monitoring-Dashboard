@@ -539,13 +539,8 @@ def write_status(self, p_filename, all_tenants):
                     logging.warning("Shell fallback timed out for %s: %s", getattr(filer, 'name', '?'), te)
                 except Exception as e:
                     reason = str(e).strip() or e.__class__.__name__
-                    metrics['curr_cpu'] = 'Unsupported'
-                    metrics['curr_mem'] = 'Unsupported'
-                    metrics['max_cpu'] = 'Unsupported'
-                    metrics['max_mem'] = 'Unsupported'
-                    metrics['db_size'] = 'Unsupported'
                     logging.warning(
-                        "Shell fallback unavailable for %s: %s",
+                        "Shell fallback failed for %s: %s",
                         getattr(filer, 'name', '?'),
                         reason,
                     )
