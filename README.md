@@ -4,6 +4,10 @@ CTERA Monitoring Dashboard is a lightweight Flask based dashboard for collecting
 
 The application runs on Linux as a systemd service and uses scheduled collector jobs to generate CSV files used by the dashboard.
 
+## Reference Docs
+
+- Collection and thresholds reference: [docs/collection-and-thresholds.md](docs/collection-and-thresholds.md)
+
 ## Repository
 
 ```text
