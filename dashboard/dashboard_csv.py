@@ -6496,15 +6496,15 @@ async function runAISummary(){
         <article class="notify-card">
           <h4>MainDB SSH Access</h4>
           <ul class="about-list">
-            <li>Have a user that can SSH to MainDB using either a password or a private key.</li>
-            <li>That SSH user can be <strong>root</strong>, or another user that can <strong>sudo</strong> to root.</li>
+            <li><strong>Root access to MainDB is required.</strong></li>
+            <li>The initial SSH connection can use either a password or a private key, either directly as <strong>root</strong> or through another user that can <strong>sudo</strong> to root.</li>
           </ul>
         </article>
         <article class="notify-card">
           <h4>Bootstrap Behavior</h4>
           <ul class="about-list">
             <li>The dashboard uses the initial SSH access mode one time for bootstrap.</li>
-            <li>After bootstrap, the dashboard uses the installed SSH key and saved runtime environment for ongoing runs.</li>
+            <li>No matter how that first connection is made, the dashboard installs its SSH key and switches ongoing access to certificate/key-based authentication for later runs.</li>
           </ul>
         </article>
       </div>
@@ -6531,7 +6531,7 @@ async function runAISummary(){
           <button class="ops-btn" onclick="loadEnvironmentConfig()">Reload</button>
         </div>
       </div>
-      <div class="env-note">Review <strong>Prerequisites</strong> before adding a portal. Then use <strong>New Portal Environment</strong> to add it. The dashboard uses the initial SSH access mode one time to bootstrap access and retrieve what it needs, then uses the installed key going forward.</div>
+      <div class="env-note">Review <strong>Prerequisites</strong> before adding a portal. Then use <strong>New Portal Environment</strong> to add it. Root access to MainDB is required, and the dashboard uses the initial SSH access mode one time to bootstrap access and retrieve what it needs before switching ongoing access to certificate/key-based authentication.</div>
       <div class="threshold-status" id="environmentStatus">Loading portal environments...</div>
       <div id="environmentListEmpty" class="notify-empty">No portal environments saved yet.</div>
       <div class="notify-table-wrap">
@@ -7736,7 +7736,7 @@ async function runAISummary(){
         <div>
           <div id="environmentEditorCrumb" class="portal-crumb">Portals <span>› New Portal Environment</span></div>
           <h3 id="environmentEditorTitle">Add Portal Environment</h3>
-          <div class="modal-sub">Use the same core details as the original install flow. The initial SSH access mode is only for the first bootstrap step so the dashboard can install the SSH key and retrieve what it needs from MainDB, then use the installed key going forward.</div>
+          <div class="modal-sub">Use the same core details as the original install flow. Root access to MainDB is required, and the initial SSH access mode is only for the first bootstrap step so the dashboard can install the SSH key, retrieve what it needs from MainDB, and then switch ongoing access to certificate/key-based authentication.</div>
         </div>
         <button class="modal-close" type="button" aria-label="Close" onclick="closeEnvironmentModal()">x</button>
       </div>
