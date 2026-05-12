@@ -25,6 +25,12 @@ sudo bash ./install.sh
 
 The installer prompts for CTERA, MainDB, SSH collection setup, collector frequency, and optional OpenAI settings. It installs OS packages, creates the `ctera-monitoring` service user, creates the Python virtualenv, writes `/etc/ctera-monitoring-dashboard.env`, installs systemd and cron, starts the dashboard, and prints validation commands.
 
+## Prerequisites
+
+- Root access to the MainDB server is required during setup.
+- The initial connection method can be password-based or key-based, and it can start either as `root` or as another user that can `sudo` to root.
+- Regardless of how the initial connection is made, the installer switches to certificate/key-based authentication for ongoing collection and automation.
+
 For SSH collection and MainDB password discovery, the installer walks through these options:
 
 - SSH to `root` with username and password.

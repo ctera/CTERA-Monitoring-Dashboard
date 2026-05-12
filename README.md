@@ -62,6 +62,8 @@ Most users should use **Install Option 2** or the quick tarball flow below.
 
 Before you start any install option, contact CTERA Support and get the GitHub token required for the private helper download. The installer will prompt you for this helper token during installation.
 
+MainDB root access is required during setup. The initial connection can start with password or key authentication, either directly as `root` or through a user that can `sudo` to root, but the installer switches the ongoing workflow to certificate/key-based authentication.
+
 ---
 
 ## Recommended Quick Install (Tarball)
