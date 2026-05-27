@@ -247,6 +247,7 @@ if [[ -n "${ROOT_KEY:-}" && -r "${ROOT_KEY}" ]]; then
     --nomad-out "${FEATHERDASH_DATA_DIR}/nomad_nodes.csv"
     --consul-out "${FEATHERDASH_DATA_DIR}/consul_members.csv"
     --docker-out "${FEATHERDASH_DATA_DIR}/docker_containers.csv"
+    --replication-out "${FEATHERDASH_DB_DIR}/replication_status.csv"
   )
   if [[ "${SERVER_METRICS_MODE}" == "jump" ]]; then
     if [[ "${JUMP_HOST_ENABLED}" =~ ^(1|true|yes|on)$ && "${MAINDB_VIA_JUMP_PRECONFIGURED}" =~ ^(1|true|yes|on)$ ]]; then
@@ -285,6 +286,10 @@ else
   cat > "${FEATHERDASH_DATA_DIR}/server_metrics.csv" <<EOF
 Name,Host,Status,UID,Connected,MainDB,RunningVersion,ImageVersion,ServiceVersion,PublicIP,UptimeSeconds,Load1,Load5,Load15,MemTotalGB,MemUsedGB,MemUsedPct,RootDiskSizeGB,RootDiskUsedGB,RootDiskUsedPct,DataPoolSizeGB,DataPoolUsedGB,DataPoolUsedPct,DBArchivePoolSizeGB,DBArchivePoolUsedGB,DBArchivePoolUsedPct,CPUUserPct,CPUSystemPct,CPUIOWaitPct,CPUIDLEPct
 SSH key missing,,ROOT_KEY is not set or not readable: ${ROOT_KEY:-unset},,,,,,,,,,,,,,,,,,,,,,,,,
+EOF
+  cat > "${FEATHERDASH_DB_DIR}/replication_status.csv" <<EOF
+Name,Host,UID,Role,StreamingReplicationStatus,StreamingReplicationLastSuccess,BaseBackupStatus,BaseBackupLastSuccess,XlogArchiveStatus,XlogArchiveLastSuccess,OverallStatus,CollectionError,RawJson
+SSH key missing,,,MainDB,,,,,,,ERROR,ROOT_KEY is not set or not readable: ${ROOT_KEY:-unset},
 EOF
   cat > "${FEATHERDASH_DATA_DIR}/docker_containers.csv" <<EOF
 SourceName,SourceHost,SourceUID,HostUptimeSeconds,RecentlyBooted,GraceState,ContainerID,ContainerName,Image,State,Health,RestartCount,RestartDelta,RestartPolicy,StartedAt,FinishedAt,StatusText,CollectionError

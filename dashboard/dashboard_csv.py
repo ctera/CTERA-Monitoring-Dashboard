@@ -413,6 +413,7 @@ DEFAULT_CONF = {
     "postgres": {
         "base_dir": DEFAULT_DB_DIR,
         "topics": {
+            "replication_status": "replication_status.csv",
             "long_running_queries": "long_running_queries.csv",
             "wraparound_database": "wraparound_database.csv",
             "wraparound_top_tables": "wraparound_top_tables.csv",
@@ -1252,7 +1253,17 @@ def make_pg_warn_fn(ext):
 
     def warn(topic, col, val, row):
         rule = _rules(topic, row).get(col)
-        return eval_level(val, rule) if rule else ''
+        if rule:
+            return eval_level(val, rule)
+        if topic == "replication_status":
+            c = str(col or "").strip().lower()
+            lower = str(val or "").strip().lower()
+            if c in {"overallstatus", "streamingreplicationstatus", "basebackupstatus", "xlogarchivestatus"}:
+                if lower and lower != "ok":
+                    return "bad"
+            if c == "collectionerror" and lower:
+                return "bad"
+        return ''
 
     return warn
 
@@ -9173,7 +9184,7 @@ def index():
         total_pg_warn += warn_rows
         pg_views.append({
             "key": key,
-            "title": re.sub(r'[_]+', ' ', key).title(),
+            "title": "Replication" if key == "replication_status" else re.sub(r'[_]+', ' ', key).title(),
             "path": path,
             "rows": r,
             "headers": h,
