@@ -3407,12 +3407,16 @@ HTML = """
 
     body { background: rgb(242, 243, 247); color: rgb(64, 95, 110); font-family: "Open Sans", "Segoe UI", Tahoma, Arial, sans-serif; font-size:14px; font-weight:400; line-height:1.42857; margin: 0; }
     .app-shell { display:grid; grid-template-columns: 258px minmax(0, 1fr); min-height:100vh; }
-    .sidebar { background:#14152b; color:#e5e7eb; border-right:1px solid rgba(148,163,184,0.14); }
+    .sidebar { background:#14152b; color:#e5e7eb; border-right:1px solid rgba(148,163,184,0.14); display:flex; flex-direction:column; min-height:100vh; }
     .sidebar-brand { display:flex; align-items:center; gap:12px; padding:18px 18px 16px; background:#ffffff; border-bottom:3px solid #5860ea; }
     .sidebar-brand img { display:block; height: {{ brand.logo_height }}px; }
     .sidebar-brand h1 { margin:0; color:#4f46e5; font-size: 22px; line-height:1.05; font-weight:700; }
-    .sidebar-group { padding:12px 0; }
+    .sidebar-group { padding:12px 0; flex:1 1 auto; }
     .sidebar-label { padding:0 18px 10px; color:#94a3b8; font-size:11px; font-weight:700; text-transform:uppercase; letter-spacing:.08em; }
+    .sidebar-footer { margin-top:auto; padding:16px 12px 18px; }
+    .sidebar-version-card { border:1px solid rgba(199,210,254,0.18); border-radius:10px; background:rgba(255,255,255,0.03); color:#e5e7eb; padding:10px 12px; min-height:48px; display:flex; flex-direction:column; justify-content:center; gap:2px; }
+    .sidebar-version-primary { color:#dbe4ff; font-size:18px; font-weight:700; line-height:22px; }
+    .sidebar-version-secondary { color:#aeb8d3; font-size:12px; font-weight:600; line-height:16px; }
     .nav-sections { display:grid; gap:2px; }
     .nav-section { border-top:1px solid rgba(148,163,184,0.12); }
     .nav-section:first-child { border-top:none; }
@@ -3454,7 +3458,6 @@ HTML = """
       padding:10px 12px;
     }
     .top-pill { display:inline-flex; align-items:center; gap:8px; padding:8px 12px; border-radius:999px; background:#eef2ff; color:#3730a3; font-size:12px; font-weight:800; border:1px solid #c7d2fe; }
-    .top-pill.portal-build { max-width: 420px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
     .top-user { display:inline-flex; align-items:center; gap:8px; flex-wrap:wrap; }
     .top-user-name { display:inline-flex; align-items:center; gap:8px; padding:8px 12px; border-radius:999px; background:#f8fafc; color:rgb(44, 68, 83); font-size:12px; font-weight:700; border:1px solid #dbe4f0; }
     .top-user-name strong { font-weight:800; color:#1f2937; }
@@ -3574,6 +3577,7 @@ HTML = """
     @media (max-width: 900px) {
       .app-shell { grid-template-columns: 1fr; }
       .sidebar { border-right:none; border-bottom:1px solid rgba(148,163,184,0.18); }
+      .sidebar-footer { padding-top:8px; }
       .content-shell { padding:16px; }
       .topbar { padding:14px 16px; }
       .hero-grid, .overview-grid, .viz-grid, .viz-grid.two, .viz-grid.tenant-summary, .section-cards, .threshold-layout, .threshold-grid, .threshold-form-grid, .threshold-kpis, .notify-grid, .notify-summary-grid { grid-template-columns: 1fr; }
@@ -6132,6 +6136,17 @@ async function runAISummary(){
         </div>
         </div>
       </div>
+      <div class="sidebar-footer">
+        <div class="sidebar-version-card" title="{{ portal_build_summary or ('Dashboard ' ~ app_version) }}">
+          {% if portal_image_version %}
+          <div class="sidebar-version-primary">{{ portal_image_version }}</div>
+          <div class="sidebar-version-secondary">Service {{ portal_service_version or '—' }}</div>
+          {% else %}
+          <div class="sidebar-version-primary">{{ app_version }}</div>
+          <div class="sidebar-version-secondary">Dashboard Version</div>
+          {% endif %}
+        </div>
+      </div>
     </aside>
 
     <main class="main-shell">
@@ -6160,9 +6175,6 @@ async function runAISummary(){
           </div>
           {% endif %}
           <span class="top-pill" id="environmentContextLabel">Administration</span>
-          {% if portal_build_summary %}
-          <span class="top-pill portal-build" title="{{ portal_build_summary }}">Portal {{ portal_build_summary }}</span>
-          {% endif %}
           <span class="top-pill">{{ overall_risk_label }}</span>
           <span class="top-pill">{{ overall_rows }} monitored rows</span>
         </div>
