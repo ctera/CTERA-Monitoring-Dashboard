@@ -534,7 +534,6 @@ def fetch_servers(pg_conn, only_connected=False):
         s.default_ipaddr,
         s.public_ipaddr,
         s.main_db,
-        s.is_application_server,
         s.running_version
     FROM servers s
     JOIN base_objects bo ON bo.uid = s.uid
@@ -681,6 +680,7 @@ def main():
     consul_rows_out = []
     docker_rows_out = []
     replication_rows_out = []
+    replication_db_found = False
     previous_docker_counts = load_previous_docker_counts(args.docker_out) if args.docker_out else {}
 
     # Prepare SSH auth
@@ -792,7 +792,6 @@ def main():
             "UID": s.get("uid"),
             "Connected": s.get("connected"),
             "MainDB": s.get("main_db"),
-            "IsApplicationServer": s.get("is_application_server"),
             "RunningVersion": s.get("running_version"),
             "PublicIP": s.get("public_ipaddr") or "",
         }
@@ -852,8 +851,7 @@ def main():
                 except Exception:
                     portal_versions = {"ImageVersion": "", "ServiceVersion": ""}
 
-            is_db_candidate = bool(meta["MainDB"]) or (meta.get("IsApplicationServer") is False)
-            if is_db_candidate:
+            if meta["MainDB"]:
                 try:
                     replication = gather_replication_status(exec_fn)
                     replication_rows_out.append({
@@ -887,6 +885,27 @@ def main():
                         "CollectionError": str(exc),
                         "RawJson": "",
                     })
+            elif not replication_db_found:
+                try:
+                    replication = gather_replication_status(exec_fn)
+                    replication_rows_out.append({
+                        "Name": meta["Name"],
+                        "Host": meta["Host"],
+                        "UID": meta["UID"],
+                        "Role": "Replication DB",
+                        "StreamingReplicationStatus": replication["StreamingReplicationStatus"],
+                        "StreamingReplicationLastSuccess": replication["StreamingReplicationLastSuccess"],
+                        "BaseBackupStatus": replication["BaseBackupStatus"],
+                        "BaseBackupLastSuccess": replication["BaseBackupLastSuccess"],
+                        "XlogArchiveStatus": replication["XlogArchiveStatus"],
+                        "XlogArchiveLastSuccess": replication["XlogArchiveLastSuccess"],
+                        "OverallStatus": replication["OverallStatus"],
+                        "CollectionError": "",
+                        "RawJson": replication["RawJson"],
+                    })
+                    replication_db_found = True
+                except Exception:
+                    pass
 
             row = {
                 "Name": meta["Name"],
@@ -953,13 +972,12 @@ def main():
                 "PublicIP": meta["PublicIP"],
             }
             rows_out.append(row)
-            is_db_candidate = bool(meta["MainDB"]) or (meta.get("IsApplicationServer") is False)
-            if is_db_candidate:
+            if meta["MainDB"]:
                 replication_rows_out.append({
                     "Name": meta["Name"],
                     "Host": meta["Host"],
                     "UID": meta["UID"],
-                    "Role": "MainDB" if meta["MainDB"] else "Replication DB",
+                    "Role": "MainDB",
                     "StreamingReplicationStatus": "",
                     "StreamingReplicationLastSuccess": "",
                     "BaseBackupStatus": "",
