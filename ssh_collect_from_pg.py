@@ -18,6 +18,7 @@ import os
 import shlex
 import time
 import json
+import re
 
 import paramiko
 import psycopg2
@@ -195,6 +196,23 @@ def compute_view_hash(rows, keys):
         canonical.append("|".join(str(row.get(key, "")).strip() for key in keys))
     canonical.sort()
     return hashlib.sha1("\n".join(canonical).encode("utf-8")).hexdigest()[:12] if canonical else ""
+
+
+def parse_portal_manage_versions(text):
+    image_version = ""
+    service_version = ""
+    for line in (text or "").splitlines():
+        if "Image version" not in line and "Service version" not in line:
+            continue
+        m = re.search(r"Image version\s+([^\s|]+)", line)
+        if m:
+            image_version = m.group(1).strip()
+        m = re.search(r"Service version\s+([^\s|]+)", line)
+        if m:
+            service_version = m.group(1).strip()
+        if image_version or service_version:
+            break
+    return image_version, service_version
 
 
 def parse_nomad_nodes(text):
@@ -435,6 +453,24 @@ for p in $candidates; do [ -e "$p" ] && list="$list $p"; done
         "DiskCteraTotalBytes": disk["ctera"]["total"], "DiskCteraUsedBytes": disk["ctera"]["used"], "DiskCteraUsedPct": disk["ctera"]["pct"],
         "DiskDbArchiveTotalBytes": disk["dbarch"]["total"], "DiskDbArchiveUsedBytes": disk["dbarch"]["used"], "DiskDbArchiveUsedPct": disk["dbarch"]["pct"],
         "CPUUserPct": user_pct, "CPUSystemPct": sys_pct, "CPUIOWaitPct": iow_pct, "CPUIDLEPct": idle_pct
+    }
+
+
+def gather_portal_manage_versions(exec_text):
+    cmd = r"""
+if command -v portal-manage.sh >/dev/null 2>&1; then
+  portal-manage.sh status 2>/dev/null | sed -n '1p'
+elif [ -x /usr/local/bin/portal-manage.sh ]; then
+  /usr/local/bin/portal-manage.sh status 2>/dev/null | sed -n '1p'
+else
+  echo ''
+fi
+"""
+    text = exec_text(cmd)
+    image_version, service_version = parse_portal_manage_versions(text)
+    return {
+        "ImageVersion": image_version,
+        "ServiceVersion": service_version,
     }
 
 
@@ -758,6 +794,13 @@ def main():
                 m = gather_metrics(client, exec_text=exec_fn)
                 client.close()
 
+            portal_versions = {"ImageVersion": "", "ServiceVersion": ""}
+            if meta["MainDB"]:
+                try:
+                    portal_versions = gather_portal_manage_versions(exec_fn)
+                except Exception:
+                    portal_versions = {"ImageVersion": "", "ServiceVersion": ""}
+
             row = {
                 "Name": meta["Name"],
                 "Host": meta["Host"],
@@ -766,6 +809,8 @@ def main():
                 "Connected": meta["Connected"],
                 "MainDB": meta["MainDB"],
                 "RunningVersion": meta["RunningVersion"],
+                "ImageVersion": portal_versions["ImageVersion"],
+                "ServiceVersion": portal_versions["ServiceVersion"],
                 "PublicIP": meta["PublicIP"],
 
                 "UptimeSeconds": m["UptimeSeconds"],
@@ -816,6 +861,8 @@ def main():
                 "Connected": meta["Connected"],
                 "MainDB": meta["MainDB"],
                 "RunningVersion": meta["RunningVersion"],
+                "ImageVersion": "",
+                "ServiceVersion": "",
                 "PublicIP": meta["PublicIP"],
             }
             rows_out.append(row)
@@ -876,7 +923,7 @@ def main():
 
     # Write CSV
     headers = [
-        "Name","Host","Status","UID","Connected","MainDB","RunningVersion","PublicIP",
+        "Name","Host","Status","UID","Connected","MainDB","RunningVersion","ImageVersion","ServiceVersion","PublicIP",
         "UptimeSeconds","Load1","Load5","Load15",
         "MemTotalGB","MemUsedGB","MemUsedPct",
         "RootDiskSizeGB","RootDiskUsedGB","RootDiskUsedPct",

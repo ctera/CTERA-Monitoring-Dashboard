@@ -3454,6 +3454,7 @@ HTML = """
       padding:10px 12px;
     }
     .top-pill { display:inline-flex; align-items:center; gap:8px; padding:8px 12px; border-radius:999px; background:#eef2ff; color:#3730a3; font-size:12px; font-weight:800; border:1px solid #c7d2fe; }
+    .top-pill.portal-build { max-width: 420px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
     .top-user { display:inline-flex; align-items:center; gap:8px; flex-wrap:wrap; }
     .top-user-name { display:inline-flex; align-items:center; gap:8px; padding:8px 12px; border-radius:999px; background:#f8fafc; color:rgb(44, 68, 83); font-size:12px; font-weight:700; border:1px solid #dbe4f0; }
     .top-user-name strong { font-weight:800; color:#1f2937; }
@@ -6159,6 +6160,9 @@ async function runAISummary(){
           </div>
           {% endif %}
           <span class="top-pill" id="environmentContextLabel">Administration</span>
+          {% if portal_build_summary %}
+          <span class="top-pill portal-build" title="{{ portal_build_summary }}">Portal {{ portal_build_summary }}</span>
+          {% endif %}
           <span class="top-pill">{{ overall_risk_label }}</span>
           <span class="top-pill">{{ overall_rows }} monitored rows</span>
         </div>
@@ -7216,6 +7220,14 @@ async function runAISummary(){
         </table>
       </div>
       <div class="viz-grid two" style="margin-top:12px;">
+        <section class="viz-panel">
+          <h3>Portal Build</h3>
+          <div class="headline-metrics">
+            <div class="headline-metric"><div class="metric-label">MainDB</div><div class="metric-value" style="font-size:22px">{{ portal_build_host or '—' }}</div></div>
+            <div class="headline-metric"><div class="metric-label">Image Version</div><div class="metric-value" style="font-size:22px">{{ portal_image_version or '—' }}</div></div>
+            <div class="headline-metric"><div class="metric-label">Service Version</div><div class="metric-value" style="font-size:22px">{{ portal_service_version or '—' }}</div></div>
+          </div>
+        </section>
         <section class="viz-panel">
           <h3>License Summary</h3>
           <div class="headline-metrics">
@@ -9171,6 +9183,18 @@ def index():
     warn_hosts = make_servers_health_warn_fn(ext)
     style_hosts = make_servers_health_style_fn(ext)
     hosts_base_counts = _count_row_severity(hosts_rows, hosts_headers, warn_hosts)
+    def _truthy(value):
+        return str(value or "").strip().lower() in {"true", "1", "yes", "y", "on"}
+    main_db_host_row = next((row for row in hosts_rows if _truthy(row.get("MainDB"))), {}) if hosts_rows else {}
+    portal_build_host = str(main_db_host_row.get("Name") or main_db_host_row.get("Host") or "").strip()
+    portal_image_version = str(main_db_host_row.get("ImageVersion") or "").strip()
+    portal_service_version = str(main_db_host_row.get("ServiceVersion") or "").strip()
+    portal_build_summary_parts = []
+    if portal_image_version:
+        portal_build_summary_parts.append(f"Image {portal_image_version}")
+    if portal_service_version:
+        portal_build_summary_parts.append(f"Service {portal_service_version}")
+    portal_build_summary = " | ".join(portal_build_summary_parts)
     host_gauges = [
         _gauge("Memory", hosts_rows, ["MemUsedPct"]),
         _gauge("Root Disk", hosts_rows, ["RootDiskUsedPct"]),
@@ -9307,6 +9331,8 @@ def index():
         style_server_cell=style_server_cell, style_storage_cell=style_storage_cell, style_tasks_cell=style_tasks_cell,
         portal_counts=portal_counts, portal_section_cards=portal_section_cards,
         valid_licenses=valid_licenses, expired_licenses=expired_licenses, portal_license_rows=portal_license_rows,
+        portal_build_host=portal_build_host, portal_image_version=portal_image_version,
+        portal_service_version=portal_service_version, portal_build_summary=portal_build_summary,
         # postgres (sub-tabs)
         pg_base_dir=base_dir, pg_views=pg_views, warn_pg=warn_pg, style_pg=style_pg, pg_counts=pg_counts, pg_topic_chart=pg_topic_chart,
         # servers health

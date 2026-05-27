@@ -283,7 +283,7 @@ if [[ -n "${ROOT_KEY:-}" && -r "${ROOT_KEY}" ]]; then
 else
   echo "Skipping server_metrics.csv: ROOT_KEY is not set or not readable (${ROOT_KEY:-unset}). Configure ROOT_KEY in ${FEATHERDASH_CONFIG} to enable SSH server metrics." >&2
   cat > "${FEATHERDASH_DATA_DIR}/server_metrics.csv" <<EOF
-Name,Host,Status,UID,Connected,MainDB,RunningVersion,PublicIP,UptimeSeconds,Load1,Load5,Load15,MemTotalGB,MemUsedGB,MemUsedPct,RootDiskSizeGB,RootDiskUsedGB,RootDiskUsedPct,DataPoolSizeGB,DataPoolUsedGB,DataPoolUsedPct,DBArchivePoolSizeGB,DBArchivePoolUsedGB,DBArchivePoolUsedPct,CPUUserPct,CPUSystemPct,CPUIOWaitPct,CPUIDLEPct
+Name,Host,Status,UID,Connected,MainDB,RunningVersion,ImageVersion,ServiceVersion,PublicIP,UptimeSeconds,Load1,Load5,Load15,MemTotalGB,MemUsedGB,MemUsedPct,RootDiskSizeGB,RootDiskUsedGB,RootDiskUsedPct,DataPoolSizeGB,DataPoolUsedGB,DataPoolUsedPct,DBArchivePoolSizeGB,DBArchivePoolUsedGB,DBArchivePoolUsedPct,CPUUserPct,CPUSystemPct,CPUIOWaitPct,CPUIDLEPct
 SSH key missing,,ROOT_KEY is not set or not readable: ${ROOT_KEY:-unset},,,,,,,,,,,,,,,,,,,,,,,,,
 EOF
   cat > "${FEATHERDASH_DATA_DIR}/docker_containers.csv" <<EOF
