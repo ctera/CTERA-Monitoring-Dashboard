@@ -24,6 +24,8 @@ import subprocess
 import sys
 import psycopg2
 from urllib.parse import urlparse
+from cryptography import x509
+from cryptography.x509.oid import NameOID
 
 from cterasdk.exceptions import CTERAException
 from cterasdk import GlobalAdmin, ServicesPortal
@@ -721,14 +723,13 @@ def _fetch_certificate_details(host_value):
         context.verify_mode = ssl.CERT_NONE
         sock = socket.create_connection((host, port), timeout=10)
         wrapped = context.wrap_socket(sock, server_hostname=host)
-        cert = wrapped.getpeercert()
-        if not cert:
+        cert_der = wrapped.getpeercert(binary_form=True)
+        if not cert_der:
             raise RuntimeError("No certificate returned")
+        cert = x509.load_der_x509_certificate(cert_der)
 
-        not_before = cert.get("notBefore") or ""
-        not_after = cert.get("notAfter") or ""
-        nb_dt = datetime.utcfromtimestamp(ssl.cert_time_to_seconds(not_before)).replace(tzinfo=timezone.utc) if not_before else None
-        na_dt = datetime.utcfromtimestamp(ssl.cert_time_to_seconds(not_after)).replace(tzinfo=timezone.utc) if not_after else None
+        nb_dt = cert.not_valid_before_utc
+        na_dt = cert.not_valid_after_utc
         now = datetime.now(timezone.utc)
         days_left = ""
         status = "OK"
@@ -743,8 +744,8 @@ def _fetch_certificate_details(host_value):
             "Name": "Portal Endpoint",
             "Host": host,
             "Port": str(port),
-            "SubjectCN": _find_dn_value(cert.get("subject"), "commonName"),
-            "IssuerCN": _find_dn_value(cert.get("issuer"), "commonName"),
+            "SubjectCN": cert.subject.get_attributes_for_oid(NameOID.COMMON_NAME)[0].value if cert.subject.get_attributes_for_oid(NameOID.COMMON_NAME) else "",
+            "IssuerCN": cert.issuer.get_attributes_for_oid(NameOID.COMMON_NAME)[0].value if cert.issuer.get_attributes_for_oid(NameOID.COMMON_NAME) else "",
             "NotBefore": nb_dt.isoformat() if nb_dt else "",
             "NotAfter": na_dt.isoformat() if na_dt else "",
             "CertDaysLeft": days_left,
