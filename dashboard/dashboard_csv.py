@@ -1,5 +1,5 @@
-#!/usr/bin/env python3
-# dashboard_csv.py — Edge + Portal + Postgres (with sub-tabs) + Servers Health
+﻿#!/usr/bin/env python3
+# dashboard_csv.py â€” Edge + Portal + Postgres (with sub-tabs) + Servers Health
 # VERSION: 2025-11-20 r10 (AI summary styled + bugfix)
 
 import os, csv, re, base64, mimetypes, subprocess, shlex, sqlite3, smtplib, ssl
@@ -559,13 +559,13 @@ def _file_mtime_utc(path_like):
     try:
         p = path_like or ''
         if not p:
-            return '—'
+            return 'â€”'
         if not os.path.isabs(p):
             p = os.path.join(APP_DIR, p)
         ts = os.path.getmtime(p)
         return datetime.utcfromtimestamp(ts).strftime('%Y-%m-%d %H:%M:%S UTC')
     except Exception:
-        return '—'
+        return 'â€”'
 
 
 def _file_mtime_iso(path_like):
@@ -814,7 +814,7 @@ def resolve_brand(cfg):
 # ---------------- CSV helpers ----------------
 def _clean_header(header):
     h = str(header or "").strip()
-    h = h.lstrip("\ufeff").replace("ï»¿", "").strip()
+    h = h.lstrip("\ufeff").replace("Ã¯Â»Â¿", "").strip()
     if h.startswith("?") and h[1:].lower() in {"tenant", "name", "status"}:
         h = h[1:]
     return h
@@ -3190,6 +3190,7 @@ def _normalize_rule_for_editor(rule):
         "warn_value": "",
         "crit_op": "",
         "crit_value": "",
+        "warn_days": "",
     }
     if not isinstance(rule, dict):
         return out
@@ -3219,6 +3220,8 @@ def _normalize_rule_for_editor(rule):
             out["crit_op"], out["crit_value"] = base_op, base_value
         elif base_op:
             out["crit_op"], out["crit_value"] = base_op, base_value
+    if rule.get("warn_days") is not None:
+        out["warn_days"] = str(rule.get("warn_days"))
     return out
 
 
@@ -3940,7 +3943,7 @@ HTML = """
       if (!section) return;
       section.classList.toggle('expanded', !!expanded);
       const toggle = section.querySelector('.nav-group-toggle');
-      if (toggle) toggle.textContent = expanded ? '−' : '+';
+      if (toggle) toggle.textContent = expanded ? 'âˆ’' : '+';
       section.setAttribute('aria-expanded', expanded ? 'true' : 'false');
     }
     function setOnlyExpanded(sectionId){
@@ -4151,7 +4154,7 @@ async function runAISummary(){
       if (!out || !ts || !st) return;
 
       // keep the old summary visible, just show status
-      st.textContent = "Generating…Hang tight, this usually takes 10-12 seconds";
+      st.textContent = "Generatingâ€¦Hang tight, this usually takes 10-12 seconds";
 
       try {
         const resp = await fetch(apiUrl('/ai_summary'));
@@ -4167,7 +4170,7 @@ async function runAISummary(){
     }
 
     function formatLocalTimestamp(value){
-      if (!value) return '—';
+      if (!value) return 'â€”';
       const normalized = String(value).trim().replace(' UTC', 'Z');
       const dt = new Date(normalized);
       if (Number.isNaN(dt.getTime())) return value;
@@ -4370,7 +4373,7 @@ async function runAISummary(){
         }
         if (started) started.textContent = formatLocalTimestamp(data.started_at || '');
         if (finished) finished.textContent = formatLocalTimestamp(data.finished_at || '');
-        if (exitCode) exitCode.textContent = data.last_exit || '—';
+        if (exitCode) exitCode.textContent = data.last_exit || 'â€”';
         if (tailCmd) tailCmd.textContent = data.tail_command || '';
           if (tail) {
             tail.textContent = data.tail || 'No recent log lines.';
@@ -4465,7 +4468,7 @@ async function runAISummary(){
           }
           if (started) started.textContent = formatLocalTimestamp(card.started_at || '');
           if (finished) finished.textContent = formatLocalTimestamp(card.finished_at || '');
-          if (exitCode) exitCode.textContent = card.last_exit || '—';
+          if (exitCode) exitCode.textContent = card.last_exit || 'â€”';
           if (tailCmd) tailCmd.textContent = card.tail_command || '';
           if (tail) {
             tail.textContent = card.tail || 'No recent log lines.';
@@ -4569,7 +4572,7 @@ async function runAISummary(){
     }
 
     function hasThresholdRule(rule){
-      return Boolean(rule && (rule.warn_op || rule.crit_op));
+      return Boolean(rule && (rule.warn_op || rule.crit_op || rule.warn_days));
     }
 
     function datasetThresholdCount(dataset){
@@ -4577,8 +4580,9 @@ async function runAISummary(){
     }
 
     function describeThresholdRule(rule){
-      if (!hasThresholdRule(rule)) return '—';
+      if (!hasThresholdRule(rule)) return 'â€”';
       const parts = [];
+      if (rule.warn_days) parts.push('Warn: within ' + rule.warn_days + ' days');
       if (rule.warn_op) parts.push('Warn: ' + rule.warn_op + ' ' + rule.warn_value);
       if (rule.crit_op) parts.push('Crit: ' + rule.crit_op + ' ' + rule.crit_value);
       return parts.join(' | ');
@@ -4659,9 +4663,13 @@ async function runAISummary(){
         const fieldTd = document.createElement('td');
         fieldTd.textContent = field.name;
         const warnTd = document.createElement('td');
-        warnTd.innerHTML = field.rule?.warn_op ? ('<code>' + field.rule.warn_op + ' ' + field.rule.warn_value + '</code>') : '—';
+        if (field.rule?.warn_days) {
+          warnTd.innerHTML = '<code>within ' + field.rule.warn_days + ' days</code>';
+        } else {
+          warnTd.innerHTML = field.rule?.warn_op ? ('<code>' + field.rule.warn_op + ' ' + field.rule.warn_value + '</code>') : 'â€”';
+        }
         const critTd = document.createElement('td');
-        critTd.innerHTML = field.rule?.crit_op ? ('<code>' + field.rule.crit_op + ' ' + field.rule.crit_value + '</code>') : '—';
+        critTd.innerHTML = field.rule?.crit_op ? ('<code>' + field.rule.crit_op + ' ' + field.rule.crit_value + '</code>') : 'â€”';
         tr.appendChild(fieldTd);
         tr.appendChild(warnTd);
         tr.appendChild(critTd);
@@ -4695,10 +4703,14 @@ async function runAISummary(){
         fieldTd.textContent = field.name;
 
         const warnTd = document.createElement('td');
-        warnTd.innerHTML = field.rule?.warn_op ? ('<code>' + field.rule.warn_op + ' ' + field.rule.warn_value + '</code>') : '—';
+        if (field.rule?.warn_days) {
+          warnTd.innerHTML = '<code>within ' + field.rule.warn_days + ' days</code>';
+        } else {
+          warnTd.innerHTML = field.rule?.warn_op ? ('<code>' + field.rule.warn_op + ' ' + field.rule.warn_value + '</code>') : 'â€”';
+        }
 
         const critTd = document.createElement('td');
-        critTd.innerHTML = field.rule?.crit_op ? ('<code>' + field.rule.crit_op + ' ' + field.rule.crit_value + '</code>') : '—';
+        critTd.innerHTML = field.rule?.crit_op ? ('<code>' + field.rule.crit_op + ' ' + field.rule.crit_value + '</code>') : 'â€”';
 
         const actionsTd = document.createElement('td');
         const actions = document.createElement('div');
@@ -4755,10 +4767,14 @@ async function runAISummary(){
           fieldTd.textContent = field.name;
 
           const warnTd = document.createElement('td');
-          warnTd.innerHTML = field.rule?.warn_op ? ('<code>' + field.rule.warn_op + ' ' + field.rule.warn_value + '</code>') : '—';
+          if (field.rule?.warn_days) {
+            warnTd.innerHTML = '<code>within ' + field.rule.warn_days + ' days</code>';
+          } else {
+            warnTd.innerHTML = field.rule?.warn_op ? ('<code>' + field.rule.warn_op + ' ' + field.rule.warn_value + '</code>') : 'â€”';
+          }
 
           const critTd = document.createElement('td');
-          critTd.innerHTML = field.rule?.crit_op ? ('<code>' + field.rule.crit_op + ' ' + field.rule.crit_value + '</code>') : '—';
+          critTd.innerHTML = field.rule?.crit_op ? ('<code>' + field.rule.crit_op + ' ' + field.rule.crit_value + '</code>') : 'â€”';
 
           const emailTd = document.createElement('td');
           emailTd.innerHTML = field.notify?.enabled
@@ -5451,7 +5467,7 @@ async function runAISummary(){
       const title = document.getElementById('environmentEditorTitle');
       if (title) title.textContent = 'New Portal Environment';
       const crumb = document.getElementById('environmentEditorCrumb');
-      if (crumb) crumb.innerHTML = 'Portals <span>› New Portal Environment</span>';
+      if (crumb) crumb.innerHTML = 'Portals <span>â€º New Portal Environment</span>';
       const status = document.getElementById('environmentStatus');
       if (status) status.textContent = 'Portal environment form cleared.';
       const hints = {
@@ -5534,7 +5550,7 @@ async function runAISummary(){
       const title = document.getElementById('environmentEditorTitle');
       if (title) title.textContent = 'Edit Portal Environment';
       const crumb = document.getElementById('environmentEditorCrumb');
-      if (crumb) crumb.innerHTML = 'Portals <span>› Edit Portal Environment</span>';
+      if (crumb) crumb.innerHTML = 'Portals <span>â€º Edit Portal Environment</span>';
       const status = document.getElementById('environmentStatus');
       if (status) status.textContent = 'Editing environment ' + env.name + '.';
       const hints = {
@@ -5842,12 +5858,12 @@ async function runAISummary(){
         if (titleEl) titleEl.textContent = 'Threshold Editor';
         if (summaryEl) summaryEl.textContent = 'Threshold rules are global. Email checks evaluate each portal environment against its own CSV files.';
         if (rowsEl) rowsEl.textContent = '0';
-        if (typeEl) typeEl.textContent = '—';
+        if (typeEl) typeEl.textContent = 'â€”';
         if (countEl) countEl.textContent = '0';
         if (tagsEl) tagsEl.innerHTML = '';
         return;
       }
-      if (titleEl) titleEl.textContent = dataset.label + ' — ' + field.name;
+      if (titleEl) titleEl.textContent = dataset.label + ' â€” ' + field.name;
       if (summaryEl) {
         const source = thresholdCatalog.source_label ? ('Alert scope: ' + thresholdCatalog.source_label + '. ') : '';
         summaryEl.textContent = source + 'Threshold rules are global. Email checks run separately against each environment.';
@@ -6194,7 +6210,7 @@ async function runAISummary(){
         <div class="sidebar-version-card" title="{{ portal_build_summary or ('Dashboard ' ~ app_version) }}">
           {% if portal_image_version %}
           <div class="sidebar-version-primary">{{ portal_image_version }}</div>
-          <div class="sidebar-version-secondary">Service {{ portal_service_version or '—' }}</div>
+          <div class="sidebar-version-secondary">Service {{ portal_service_version or 'â€”' }}</div>
           {% else %}
           <div class="sidebar-version-primary">{{ app_version }}</div>
           <div class="sidebar-version-secondary">Dashboard Version</div>
@@ -6267,7 +6283,7 @@ async function runAISummary(){
             <div class="dash-card-head">
               <div>
                 <h3>{{ card.label }}</h3>
-                <div class="hero-sub"><span data-local-time="{{ card.updated_utc }}">{{ card.updated_utc or '—' }}</span></div>
+                <div class="hero-sub"><span data-local-time="{{ card.updated_utc }}">{{ card.updated_utc or 'â€”' }}</span></div>
               </div>
               <div class="count {{ card.status_class }}">{{ card.status_text }}</div>
             </div>
@@ -6298,7 +6314,7 @@ async function runAISummary(){
           {% for item in freshness_items %}
           <div class="ops-row">
             <strong>{{ item.label }}</strong>
-            <span data-local-time="{{ item.updated_utc }}">{{ item.updated_utc or '—' }}</span>
+            <span data-local-time="{{ item.updated_utc }}">{{ item.updated_utc or 'â€”' }}</span>
           </div>
           {% endfor %}
         </div>
@@ -6431,7 +6447,7 @@ async function runAISummary(){
           </div>
           <div class="threshold-kpi">
             <div class="metric-label">Value Type</div>
-            <div class="metric-value" id="thresholdType">—</div>
+            <div class="metric-value" id="thresholdType">â€”</div>
           </div>
           <div class="threshold-kpi">
             <div class="metric-label">Observed Values</div>
@@ -7050,9 +7066,9 @@ async function runAISummary(){
     </div>
     <div class="controls">
       <strong>Tenants</strong>
-      <input id="q_tenants" type="text" placeholder="Search tenants…" oninput="filterTenantTables()" style="min-width:240px; margin-left:8px">
+      <input id="q_tenants" type="text" placeholder="Search tenantsâ€¦" oninput="filterTenantTables()" style="min-width:240px; margin-left:8px">
     </div>
-    <div class="sub">File: <code>{{ tenants_src }}</code> &nbsp;•&nbsp; Updated: <span class="sub" data-local-time="{{ tenants_mtime }}">{{ tenants_mtime or '—' }}</span> {% if refresh_seconds|int>0 %}<span>· auto {{ refresh_seconds|int }}s</span>{% endif %}</div>
+    <div class="sub">File: <code>{{ tenants_src }}</code> &nbsp;â€¢&nbsp; Updated: <span class="sub" data-local-time="{{ tenants_mtime }}">{{ tenants_mtime or 'â€”' }}</span> {% if refresh_seconds|int>0 %}<span>Â· auto {{ refresh_seconds|int }}s</span>{% endif %}</div>
 
     <div class="viz-grid tenant-summary">
       <section class="viz-panel">
@@ -7158,7 +7174,7 @@ async function runAISummary(){
       <span class="dot dok" style="margin-left:14px"></span>OK
       <span class="dot dmuted" style="margin-left:14px"></span>Muted
     </div>
-    <div class="sub">File: <code>{{ csv_path }}</code> &nbsp;•&nbsp; Updated: <span class="sub" data-local-time="{{ csv_mtime }}">{{ csv_mtime or '—' }}</span> {% if refresh_seconds|int>0 %}<span>· auto {{ refresh_seconds|int }}s</span>{% endif %}</div>
+    <div class="sub">File: <code>{{ csv_path }}</code> &nbsp;â€¢&nbsp; Updated: <span class="sub" data-local-time="{{ csv_mtime }}">{{ csv_mtime or 'â€”' }}</span> {% if refresh_seconds|int>0 %}<span>Â· auto {{ refresh_seconds|int }}s</span>{% endif %}</div>
 
     <div class="viz-grid">
       <section class="viz-panel">
@@ -7289,9 +7305,9 @@ async function runAISummary(){
         <section class="viz-panel">
           <h3>Portal Build</h3>
           <div class="headline-metrics">
-            <div class="headline-metric"><div class="metric-label">MainDB</div><div class="metric-value" style="font-size:22px">{{ portal_build_host or '—' }}</div></div>
-            <div class="headline-metric"><div class="metric-label">Image Version</div><div class="metric-value" style="font-size:22px">{{ portal_image_version or '—' }}</div></div>
-            <div class="headline-metric"><div class="metric-label">Service Version</div><div class="metric-value" style="font-size:22px">{{ portal_service_version or '—' }}</div></div>
+            <div class="headline-metric"><div class="metric-label">MainDB</div><div class="metric-value" style="font-size:22px">{{ portal_build_host or 'â€”' }}</div></div>
+            <div class="headline-metric"><div class="metric-label">Image Version</div><div class="metric-value" style="font-size:22px">{{ portal_image_version or 'â€”' }}</div></div>
+            <div class="headline-metric"><div class="metric-label">Service Version</div><div class="metric-value" style="font-size:22px">{{ portal_service_version or 'â€”' }}</div></div>
           </div>
         </section>
         <section class="viz-panel">
@@ -7446,7 +7462,7 @@ async function runAISummary(){
       <span class="dot dok" style="margin-left:14px"></span>OK
       <span class="dot dmuted" style="margin-left:14px"></span>Muted
     </div>
-    <div class="sub">Dir: <code>{{ pg_base_dir }}</code> {% if refresh_seconds|int>0 %}· auto {{ refresh_seconds|int }}s{% endif %}</div>
+    <div class="sub">Dir: <code>{{ pg_base_dir }}</code> {% if refresh_seconds|int>0 %}Â· auto {{ refresh_seconds|int }}s{% endif %}</div>
 
     <div class="viz-grid two">
       <section class="viz-panel">
@@ -7511,7 +7527,7 @@ async function runAISummary(){
     {% for v in pg_views %}
       <div id="pg_{{ v.key }}" class="pgpane" style="display:none">
         <div class="controls">
-          <input id="q_pg_{{ v.key }}" type="text" placeholder="Search {{ v.title }}…" oninput="filterTableByInput('pgTable_{{ v.key }}','q_pg_{{ v.key }}')" style="min-width:280px">
+          <input id="q_pg_{{ v.key }}" type="text" placeholder="Search {{ v.title }}â€¦" oninput="filterTableByInput('pgTable_{{ v.key }}','q_pg_{{ v.key }}')" style="min-width:280px">
           <label for="pgSeverityFilter_{{ v.key }}" class="sub" style="margin-left:8px;">Filter:</label>
           <select id="pgSeverityFilter_{{ v.key }}" onchange="filterPgSeverity('{{ v.key }}')" style="min-width:180px; margin-left:4px;">
             <option value="all">All (no filter)</option>
@@ -7813,7 +7829,7 @@ async function runAISummary(){
     <div class="modal-panel">
       <div class="modal-head">
         <div>
-          <div id="environmentEditorCrumb" class="portal-crumb">Portals <span>› New Portal Environment</span></div>
+          <div id="environmentEditorCrumb" class="portal-crumb">Portals <span>â€º New Portal Environment</span></div>
           <h3 id="environmentEditorTitle">Add Portal Environment</h3>
           <div class="modal-sub">Use the same core details as the original install flow. Root access to MainDB is required, and the initial SSH access mode is only for the first bootstrap step so the dashboard can install the SSH key, retrieve what it needs from MainDB, and then switch ongoing access to certificate/key-based authentication.</div>
         </div>
@@ -9026,9 +9042,9 @@ Formatting requirements:
 - Start with a small <table> giving a one-row-per-subsystem overview
   (Edge, Portal, Postgres, Servers Health) with columns:
   Subsystem, Critical, Warning, Total. Use the counts from the JSON.
-- After the table, add an <h3>Overall health</h3> heading followed by a <ul> of 4–6 <li> bullets.
+- After the table, add an <h3>Overall health</h3> heading followed by a <ul> of 4â€“6 <li> bullets.
   - Mix high-level statements with a bit of concrete detail.
-  - When helpful, use the counts from the JSON explicitly, e.g. “3 critical edge rows out of 47 devices” or “table_bloat has 5 critical tables”.
+  - When helpful, use the counts from the JSON explicitly, e.g. â€œ3 critical edge rows out of 47 devicesâ€ or â€œtable_bloat has 5 critical tablesâ€.
 - Then add an <h3>Key issues to investigate</h3> heading followed by a <ul>.
   - Include one bullet per subsystem that has non-zero critical or warning rows:
     * Edge devices
@@ -9039,15 +9055,15 @@ Formatting requirements:
     * what is wrong (capacity, performance, data-loss, configuration, etc.),
     * roughly how big the problem is (use the counts),
     * what the operator should look at next.
-- Optionally finish with an <h3>Recommended next actions</h3> heading and a <ul> of 3 short bullets grouped by priority (e.g. “Immediate / Today / This week”).
+- Optionally finish with an <h3>Recommended next actions</h3> heading and a <ul> of 3 short bullets grouped by priority (e.g. â€œImmediate / Today / This weekâ€).
 - Optionally add a final <p class="ai-muted"> note about residual risk (for example, no immediate data-loss risk, or replication looking healthy).
 - Use <span class="ai-critical">Critical</span>, <span class="ai-warning">Warning</span>, and <span class="ai-ok">OK</span> inside bullets where appropriate to visually tag severity.
 - Do NOT include any <html>, <head>, or <body> tags.
-- Do NOT use markdown or backticks—only plain HTML elements.
+- Do NOT use markdown or backticksâ€”only plain HTML elements.
 
 Style:
 - Professional but direct.
-- 1–3 sentences per bullet (not just fragments).
+- 1â€“3 sentences per bullet (not just fragments).
 - Be explicit about overall risk level (high/medium/low) for the estate.
 - Avoid repeating the raw JSON verbatim; summarize it into clear guidance.
 """
@@ -9202,7 +9218,7 @@ def index():
         _section_card("Licenses", len(licenses_rows), c_licenses),
     ]
 
-    # POSTGRES — build topic views + compute warn counts
+    # POSTGRES â€” build topic views + compute warn counts
     pg_cfg = cfg.get("postgres") or {}
     base_dir = pg_cfg.get("base_dir")
     topics = pg_cfg.get("topics") or {}
@@ -9435,4 +9451,5 @@ def index():
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=int(os.environ.get("PORT", "8080")), debug=False)
     #app.run(host="127.0.0.1", port=int(os.environ.get("PORT","8080")), debug=False)
+
 
