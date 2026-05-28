@@ -60,7 +60,7 @@ There are three supported install options.
 
 Most users should use **Install Option 2** or the quick tarball flow below.
 
-Fresh package installs use the bundled helper automatically. A GitHub helper token from CTERA Support is only needed for separate manual helper install or recovery steps on existing customer systems.
+Fresh package installs use the bundled helper automatically.
 
 MainDB root access is required during setup. The initial connection can start with password or key authentication, either directly as `root` or through a user that can `sudo` to root, but the installer switches the ongoing workflow to certificate/key-based authentication.
 
@@ -648,10 +648,10 @@ sudo systemctl restart ctera-monitoring-dashboard
 
 # Uninstall
 
-To fully remove the dashboard, service, cron job, helper, saved helper token, logs, data, config, and install directory, run:
+To fully remove the dashboard, service, cron job, helper, logs, data, config, and install directory, run:
 
 ```bash
-sudo systemctl disable --now ctera-monitoring-dashboard || true; sudo rm -f /etc/systemd/system/ctera-monitoring-dashboard.service; sudo rm -f /etc/cron.d/ctera-monitoring-dashboard; sudo rm -f /usr/local/sbin/ctera-monitoring-dashboard-upgrade; sudo rm -f /etc/sudoers.d/ctera-monitoring-dashboard-upgrade; sudo rm -f /usr/local/bin/ctera-secret-helper; sudo rm -f /etc/ctera-monitoring-dashboard-helper.token; sudo rm -f /etc/ctera-monitoring-dashboard.env; sudo rm -rf /opt/monitoring/ctera-monitoring-dashboard; sudo rm -rf /var/lib/ctera-monitoring-dashboard; sudo rm -rf /var/log/ctera-monitoring-dashboard; sudo systemctl daemon-reload
+sudo systemctl disable --now ctera-monitoring-dashboard || true; sudo rm -f /etc/systemd/system/ctera-monitoring-dashboard.service; sudo rm -f /etc/cron.d/ctera-monitoring-dashboard; sudo rm -f /usr/local/sbin/ctera-monitoring-dashboard-upgrade; sudo rm -f /etc/sudoers.d/ctera-monitoring-dashboard-upgrade; sudo rm -f /usr/local/bin/ctera-secret-helper; sudo rm -f /etc/ctera-monitoring-dashboard.env; sudo rm -rf /opt/monitoring/ctera-monitoring-dashboard; sudo rm -rf /var/lib/ctera-monitoring-dashboard; sudo rm -rf /var/log/ctera-monitoring-dashboard; sudo systemctl daemon-reload
 ```
 
 If you also want to remove the service account:
