@@ -106,11 +106,6 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
-AUTO_DETECTED_INSTALL_DIR="$(detect_existing_install_dir || true)"
-if [[ "${INSTALL_DIR_EXPLICIT}" -eq 0 && -n "${AUTO_DETECTED_INSTALL_DIR}" ]]; then
-  INSTALL_DIR="${AUTO_DETECTED_INSTALL_DIR}"
-fi
-
 if [[ "${EUID}" -ne 0 ]]; then
   echo "Run this upgrade as root, for example: sudo bash ./upgrade.sh" >&2
   exit 1
@@ -193,6 +188,11 @@ detect_existing_install_dir() {
 
   return 1
 }
+
+AUTO_DETECTED_INSTALL_DIR="$(detect_existing_install_dir || true)"
+if [[ "${INSTALL_DIR_EXPLICIT}" -eq 0 && -n "${AUTO_DETECTED_INSTALL_DIR}" ]]; then
+  INSTALL_DIR="${AUTO_DETECTED_INSTALL_DIR}"
+fi
 
 detect_platform_tools() {
   if command -v apt >/dev/null 2>&1; then
