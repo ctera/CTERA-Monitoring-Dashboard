@@ -3978,6 +3978,7 @@ HTML = """
       edge: 'edge',
       admin_prereq: 'admin_main',
       admin_env: 'admin_main',
+      admin_certificate: 'admin_main',
       thresholds: 'admin_thresholds',
       thresholds_all: 'admin_thresholds',
       notify_settings: 'admin_notifications',
@@ -4082,7 +4083,10 @@ HTML = """
       try{ localStorage.setItem('fd.portalActive', sub); }catch(e){}
     }
     function loadPortalActive(){
-      try{ return localStorage.getItem('fd.portalActive') || 'portal_overview'; }catch(e){ return 'portal_overview'; }
+      try{
+        const saved = localStorage.getItem('fd.portalActive') || 'portal_overview';
+        return saved === 'portal_certificate' ? 'portal_overview' : saved;
+      }catch(e){ return 'portal_overview'; }
     }
     function showPortalTab(id){
       document.querySelectorAll('.portalpane').forEach(p => p.style.display = 'none');
@@ -6328,6 +6332,10 @@ async function runAISummary(){
               <span class="tabbtn-text"><span class="tabicon"><svg viewBox="0 0 24 24"><path d="M4 6h16v12H4z"></path><path d="M8 6V4h8v2"></path><path d="M8 12h8"></path></svg></span>Portals</span>
               <span class="tabbtn-meta"></span>
             </button>
+            <button class="tabbtn nav-child" data-tab="admin_certificate" onclick="showTab('admin_certificate')">
+              <span class="tabbtn-text"><span class="tabicon"><svg viewBox="0 0 24 24"><path d="M6 4h12l2 4v5c0 4.4-3.1 7.9-8 9-4.9-1.1-8-4.6-8-9V8l2-4z"></path><path d="M9 11l2 2 4-4"></path></svg></span>Certificate</span>
+              <span class="tabbtn-meta"></span>
+            </button>
           </div>
         </div>
 
@@ -6819,6 +6827,40 @@ async function runAISummary(){
             </tr>
           </thead>
           <tbody id="environmentListBody"></tbody>
+        </table>
+      </div>
+    </section>
+  </div>
+
+  <div id="admin_certificate" class="tabpane" style="display:none">
+    <div class="hero-title">
+      <div>
+        <h2>Certificate</h2>
+        <div class="hero-sub">Review the portal endpoint certificate details for the currently selected environment.</div>
+      </div>
+    </div>
+
+    <section class="threshold-card">
+      <div class="threshold-master-head">
+        <div>
+          <h3 style="margin:0; color:var(--primary);">Portal Certificate Details</h3>
+          <div class="threshold-summary">File: <code>{{ portal_certificate_src }}</code> &nbsp;|&nbsp; Updated: <span class="sub" data-local-time="{{ portal_certificate_mtime }}">{{ portal_certificate_mtime or '-' }}</span></div>
+        </div>
+      </div>
+      <div class="table-wrap">
+        <table id="adminCertificateTable">
+          <thead><tr>{% for h in certificate_headers %}<th>{{ h }}</th>{% endfor %}</tr></thead>
+          <tbody>
+            {% for r in certificate_rows %}
+            <tr>
+              {% for h in certificate_headers %}
+                {% set cell = r.get(h, '') %}
+                {% set sev = warn_certificate_cell(h, cell, r) %}
+                <td class="{{ 'sev-critical' if sev == 'bad' else ('sev-warning' if sev == 'warn' else '') }}">{{ display_cell(h, cell) }}</td>
+              {% endfor %}
+            </tr>
+            {% endfor %}
+          </tbody>
         </table>
       </div>
     </section>
@@ -7466,7 +7508,6 @@ async function runAISummary(){
     <div class="subtabs">
       <button class="portalsubbtn" data-portal-sub="portal_overview" onclick="showPortalTab('portal_overview')">Overview</button>
       <button class="portalsubbtn" data-portal-sub="portal_servers" onclick="showPortalTab('portal_servers')">Servers{% if c_servers.bad %}<span class="badge">{{ c_servers.bad }}</span>{% endif %}{% if c_servers.warn %}<span class="tabbadge warn" style="margin-left:6px;">{{ c_servers.warn }}</span>{% endif %}</button>
-      <button class="portalsubbtn" data-portal-sub="portal_certificate" onclick="showPortalTab('portal_certificate')">Certificate{% if c_certificate.bad %}<span class="badge">{{ c_certificate.bad }}</span>{% endif %}{% if c_certificate.warn %}<span class="tabbadge warn" style="margin-left:6px;">{{ c_certificate.warn }}</span>{% endif %}</button>
       <button class="portalsubbtn" data-portal-sub="portal_storage" onclick="showPortalTab('portal_storage')">Storage Nodes{% if c_storage.bad %}<span class="badge">{{ c_storage.bad }}</span>{% endif %}{% if c_storage.warn %}<span class="tabbadge warn" style="margin-left:6px;">{{ c_storage.warn }}</span>{% endif %}</button>
       <button class="portalsubbtn" data-portal-sub="portal_tasks" onclick="showPortalTab('portal_tasks')">Tasks{% if c_tasks.bad %}<span class="badge">{{ c_tasks.bad }}</span>{% endif %}{% if c_tasks.warn %}<span class="tabbadge warn" style="margin-left:6px;">{{ c_tasks.warn }}</span>{% endif %}</button>
       <button class="portalsubbtn" data-portal-sub="portal_licenses" onclick="showPortalTab('portal_licenses')">Licenses{% if c_licenses.bad %}<span class="badge">{{ c_licenses.bad }}</span>{% endif %}{% if c_licenses.warn %}<span class="tabbadge warn" style="margin-left:6px;">{{ c_licenses.warn }}</span>{% endif %}</button>
@@ -7504,14 +7545,6 @@ async function runAISummary(){
             <div class="headline-metric"><div class="metric-label">Valid</div><div class="metric-value ok">{{ valid_licenses }}</div></div>
             <div class="headline-metric"><div class="metric-label">Expired</div><div class="metric-value {{ 'crit' if expired_licenses else '' }}">{{ expired_licenses }}</div></div>
             <div class="headline-metric"><div class="metric-label">Portal Licenses</div><div class="metric-value">{{ portal_license_rows }}</div></div>
-            </div>
-          </section>
-          <section class="viz-panel">
-            <h3>Portal Certificate</h3>
-            <div class="headline-metrics">
-              <div class="headline-metric"><div class="metric-label">Status</div><div class="metric-value {{ 'crit' if certificate_status_tone == 'crit' else ('warn' if certificate_status_tone == 'warn' else 'ok') }}">{{ certificate_status_label }}</div></div>
-              <div class="headline-metric"><div class="metric-label">Days Left</div><div class="metric-value {{ 'crit' if certificate_status_tone == 'crit' else ('warn' if certificate_status_tone == 'warn' else '') }}">{{ certificate_days_left or '-' }}</div></div>
-              <div class="headline-metric"><div class="metric-label">Expires On</div><div class="metric-value" style="font-size:22px">{{ certificate_not_after or '-' }}</div></div>
             </div>
           </section>
         </div>
@@ -7603,31 +7636,6 @@ async function runAISummary(){
         </table>
       </div>
       </div>
-
-    <div id="portal_certificate" class="portalpane" style="display:none">
-      <div class="controls">
-        <strong>Certificate</strong>
-        <div class="sub">File: <code>{{ portal_certificate_src }}</code> &nbsp;|&nbsp; Updated: <span class="sub" data-local-time="{{ portal_certificate_mtime }}">{{ portal_certificate_mtime or '-' }}</span></div>
-      </div>
-      <div class="table-wrap">
-        <table id="certificateTable">
-          <thead><tr>{% for h in certificate_headers %}<th>{{ h }}</th>{% endfor %}</tr></thead>
-          <tbody>
-            {% for r in certificate_rows %}
-            <tr>
-              {% for h in certificate_headers %}
-                {% set cell = r.get(h, '') %}
-                {% set sev = warn_certificate_cell(h, cell, r) %}
-                <td class="{{ 'sev-critical' if sev == 'bad' else ('sev-warning' if sev == 'warn' else '') }}">
-                  {{ display_cell(h, cell) }}
-                </td>
-              {% endfor %}
-            </tr>
-            {% endfor %}
-          </tbody>
-        </table>
-      </div>
-    </div>
 
     <div id="portal_licenses" class="portalpane" style="display:none">
       <div class="controls">
