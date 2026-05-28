@@ -5836,6 +5836,7 @@ async function runAISummary(){
     }
 
     async function collectEnvironmentPayload(){
+      const current = currentEditingEnvironment();
       let uploadedKeyContent = '';
       let uploadedKeyName = '';
       const uploadedKey = document.getElementById('envInitialSshKey');
@@ -5878,7 +5879,7 @@ async function runAISummary(){
         enabled: document.getElementById('envEnabled').checked,
         ssh_mode: document.getElementById('envInitialSshMode').value,
         ssh_username: document.getElementById('envInitialSshUsername').value || 'root',
-        ssh_key_path: '',
+        ssh_key_path: (current && current.ssh_key_path) ? current.ssh_key_path : '',
         ssh_password: document.getElementById('envInitialSshPassword').value || '',
         ssh_private_key_name: uploadedKeyName,
         ssh_private_key_content: uploadedKeyContent,
