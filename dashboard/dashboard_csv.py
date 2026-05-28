@@ -7,7 +7,7 @@ import paramiko
 import requests
 from flask import Flask, render_template_string, jsonify, request, session, redirect, url_for
 import yaml
-from datetime import datetime
+from datetime import datetime, date
 import json
 from collections import Counter
 from email.message import EmailMessage
@@ -1173,6 +1173,17 @@ def make_edge_style_fn(base_cfg, ext):
 
 
 def make_portal_warn_fn(ext, section):
+    def _parse_iso_date(value):
+        text = str(value or "").strip()
+        if not text:
+            return None
+        for fmt in ("%Y-%m-%d", "%Y/%m/%d"):
+            try:
+                return datetime.strptime(text, fmt).date()
+            except Exception:
+                pass
+        return None
+
     def _rules(row):
         eff = {}
         ignores = set()
@@ -1201,19 +1212,42 @@ def make_portal_warn_fn(ext, section):
                 return ''
 
         # TASKS: ElapsedSeconds only when running
-        if section == 'tasks' and c == 'elapsedseconds':
-            try:
-                state = (row.get('State') or '').strip().lower()
-                thr_rule = rules.get('ElapsedSeconds') or rules.get('elapsedseconds')
-                if state == 'running' and thr_rule:
-                    return eval_level(val, thr_rule) or ''
-            except Exception:
-                pass  # fallthrough
+          if section == 'tasks' and c == 'elapsedseconds':
+              try:
+                  state = (row.get('State') or '').strip().lower()
+                  thr_rule = rules.get('ElapsedSeconds') or rules.get('elapsedseconds')
+                  if state == 'running' and thr_rule:
+                      return eval_level(val, thr_rule) or ''
+              except Exception:
+                  pass  # fallthrough
 
-        # YAML rule for this column?
-        rule = rules.get(col)
-        if rule:
-            return eval_level(val, rule) or ''
+          if section == 'licenses':
+              lower = str(val or '').strip().lower()
+              if c == 'valid' and lower in {'false', '0', 'no', 'n', 'off'}:
+                  return 'bad'
+              if c == 'expired' and lower in {'true', '1', 'yes', 'y', 'on'}:
+                  return 'bad'
+              if c == 'expiration_date':
+                  portal = (ext.get("portal") or {}) if isinstance(ext, dict) else {}
+                  lic = portal.get('licenses') or {}
+                  exp_rule = lic.get('expiration_date') or {}
+                  try:
+                      warn_days = int(exp_rule.get('warn_days')) if exp_rule.get('warn_days') is not None else None
+                  except Exception:
+                      warn_days = None
+                  if warn_days is not None:
+                      expired = str(row.get('expired') or '').strip().lower() in {'true', '1', 'yes', 'y', 'on'}
+                      if not expired:
+                          exp_date = _parse_iso_date(val)
+                          if exp_date is not None:
+                              delta = (exp_date - date.today()).days
+                              if 0 <= delta <= warn_days:
+                                  return 'warn'
+
+          # YAML rule for this column?
+          rule = rules.get(col)
+          if rule:
+              return eval_level(val, rule) or ''
 
         # built-ins (backstop)
         if section == "servers" and c == "connected":
@@ -7387,7 +7421,8 @@ async function runAISummary(){
                 {% set lower = (cell|string).lower() %}
                 {% set is_expired = h == 'expired' and lower in ['true','1','yes','y','on'] %}
                 {% set is_invalid = h == 'valid' and lower in ['false','0','no','n','off'] %}
-                <td class="{{ 'sev-critical' if is_expired or is_invalid else '' }}">
+                {% set lic_warn = warn_license_cell(h, cell, r) if warn_license_cell is defined else '' %}
+                <td class="{{ 'sev-critical' if is_expired or is_invalid else ('sev-warning' if lic_warn == 'warn' else '') }}">
                   {% if h in ['expired','valid','portal_license','antivirus','varonis','key_manager','dlp','global_file_lock'] and lower in ['true','false','1','0','yes','no','y','n','on','off'] %}
                     {% set b = lower in ['true','1','yes','y','on'] %}
                     <span class="pill {{ 'pill-ok' if b else 'pill-muted' }}">{{ 'Yes' if b else 'No' }}</span>
@@ -8893,17 +8928,21 @@ def build_ai_summary_data(env_id=None):
     c_servers = _count_row_severity(servers_rows, servers_headers, warn_server_cell)
     c_storage = _count_row_severity(storage_rows, storage_headers, warn_storage_cell)
     c_tasks = _count_row_severity(tasks_rows, tasks_headers, warn_task_cell)
+    warn_license_cell = make_portal_warn_fn(ext, "licenses")
     c_licenses_bad = 0
+    c_licenses_warn = 0
     for row in licenses_rows:
         expired = str(row.get("expired") or "").strip().lower() in {"true", "1", "yes", "y", "on"}
         valid = str(row.get("valid") or "").strip().lower()
         invalid = valid in {"false", "0", "no", "n", "off"}
         if expired or invalid:
             c_licenses_bad += 1
+        elif warn_license_cell("expiration_date", row.get("expiration_date", ""), row) == "warn":
+            c_licenses_warn += 1
 
     portal_counts = {
         "bad": c_servers["bad"] + c_storage["bad"] + c_tasks["bad"] + c_licenses_bad,
-        "warn": c_servers["warn"] + c_storage["warn"] + c_tasks["warn"],
+        "warn": c_servers["warn"] + c_storage["warn"] + c_tasks["warn"] + c_licenses_warn,
     }
 
     # POSTGRES
@@ -9137,14 +9176,18 @@ def index():
     c_servers = _count_row_severity(servers_rows, servers_headers, warn_server_cell)
     c_storage = _count_row_severity(storage_rows, storage_headers, warn_storage_cell)
     c_tasks = _count_row_severity(tasks_rows, tasks_headers, warn_task_cell)
+    warn_license_cell = make_portal_warn_fn(ext, "licenses")
     licenses_bad = 0
+    licenses_warn = 0
     for row in licenses_rows:
         expired = str(row.get("expired") or "").strip().lower() in {"true", "1", "yes", "y", "on"}
         valid = str(row.get("valid") or "").strip().lower()
         invalid = valid in {"false", "0", "no", "n", "off"}
         if expired or invalid:
             licenses_bad += 1
-    c_licenses = {"bad": licenses_bad, "warn": 0}
+        elif warn_license_cell("expiration_date", row.get("expiration_date", ""), row) == "warn":
+            licenses_warn += 1
+    c_licenses = {"bad": licenses_bad, "warn": licenses_warn}
     valid_licenses = sum(1 for row in licenses_rows if str(row.get("valid") or "").strip().lower() in {"true", "1", "yes", "y", "on"})
     expired_licenses = sum(1 for row in licenses_rows if str(row.get("expired") or "").strip().lower() in {"true", "1", "yes", "y", "on"})
     portal_license_rows = sum(1 for row in licenses_rows if str(row.get("portal_license") or "").strip().lower() in {"true", "1", "yes", "y", "on"})
@@ -9359,6 +9402,7 @@ def index():
         licenses_rows=licenses_rows, licenses_headers=licenses_headers,
         licenses_display_headers=licenses_display_headers,
         c_servers=c_servers, c_storage=c_storage, c_tasks=c_tasks, c_licenses=c_licenses,
+        warn_license_cell=warn_license_cell,
         warn_server_cell=warn_server_cell, warn_storage_cell=warn_storage_cell, warn_task_cell=warn_task_cell,
         style_server_cell=style_server_cell, style_storage_cell=style_storage_cell, style_tasks_cell=style_tasks_cell,
         portal_counts=portal_counts, portal_section_cards=portal_section_cards,
