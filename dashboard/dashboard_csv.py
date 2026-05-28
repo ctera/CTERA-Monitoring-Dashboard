@@ -3245,6 +3245,8 @@ def _dataset_rule_container(doc, dataset_key, create=False):
         sec_name = dataset_key.replace("portal_", "", 1)
         portal = doc.setdefault("portal", {}) if create else (doc.get("portal") or {})
         sec = portal.setdefault(sec_name, {}) if create else (portal.get(sec_name) or {})
+        if sec_name == "licenses":
+            return sec if isinstance(sec, dict) else {}
         return sec.setdefault("default", {}) if create else (sec.get("default") or {})
     if dataset_key.startswith("postgres:"):
         topic = dataset_key.split(":", 1)[1]
