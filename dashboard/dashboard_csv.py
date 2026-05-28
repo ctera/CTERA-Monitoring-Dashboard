@@ -3127,6 +3127,8 @@ def _threshold_dataset_configs(cfg):
         datasets.append({"key": "portal_storage", "label": "Portal Storage", "kind": "portal", "section": "storage", "path": portal_cfg.get("storage_csv")})
     if portal_cfg.get("tasks_csv"):
         datasets.append({"key": "portal_tasks", "label": "Portal Tasks", "kind": "portal", "section": "tasks", "path": portal_cfg.get("tasks_csv")})
+    if portal_cfg.get("licenses_csv"):
+        datasets.append({"key": "portal_licenses", "label": "Portal Licenses", "kind": "portal", "section": "licenses", "path": portal_cfg.get("licenses_csv")})
 
     metrics_csv = (cfg.get("servers_health") or {}).get("metrics_csv")
     if metrics_csv:
