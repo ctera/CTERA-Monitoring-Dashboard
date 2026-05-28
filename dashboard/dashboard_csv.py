@@ -3961,7 +3961,7 @@ HTML = """
       if (!section) return;
       section.classList.toggle('expanded', !!expanded);
       const toggle = section.querySelector('.nav-group-toggle');
-      if (toggle) toggle.textContent = expanded ? 'âˆ’' : '+';
+      if (toggle) toggle.textContent = expanded ? '-' : '+';
       section.setAttribute('aria-expanded', expanded ? 'true' : 'false');
     }
     function setOnlyExpanded(sectionId){
