@@ -4338,7 +4338,7 @@ async function runAISummary(){
     function syncLivePolling(activeTab){
       const tab = activeTab || currentTab();
       const wantsJobPolling = tab === 'jobs';
-      const wantsUpgradePolling = tab === 'about' || upgradeStatusSnapshot === 'running';
+      const wantsUpgradePolling = tab === 'about' || ['running', 'restarting', 'finishing'].includes(upgradeStatusSnapshot);
 
       if (jobStatusTimer) {
         window.clearInterval(jobStatusTimer);
@@ -4361,7 +4361,7 @@ async function runAISummary(){
       if (wantsUpgradePolling) {
         refreshUpgradeStatus();
         upgradeStatusTimer = window.setInterval(() => {
-          if (document.visibilityState === 'visible' && (currentTab() === 'about' || upgradeStatusSnapshot === 'running')) {
+          if (document.visibilityState === 'visible' && (currentTab() === 'about' || ['running', 'restarting', 'finishing'].includes(upgradeStatusSnapshot))) {
             refreshUpgradeStatus();
           }
         }, 5000);
@@ -4377,6 +4377,7 @@ async function runAISummary(){
       const btn = document.getElementById('runUpgradeBtn');
       const badge = document.getElementById('upgradeBadge');
       const tail = document.getElementById('upgradeTail');
+      const activeUpgradeStatus = ['running', 'restarting', 'finishing'];
       upgradeVersionState = data || null;
 
       if (opts.updateNote !== false && note) {
@@ -4402,11 +4403,11 @@ async function runAISummary(){
         flash.textContent = message;
       }
       if (status === 'up_to_date') {
-        if (badge && upgradeStatusSnapshot !== 'running') {
+        if (badge && !activeUpgradeStatus.includes(upgradeStatusSnapshot)) {
           badge.className = 'ops-badge idle';
           badge.textContent = 'No Upgrade Needed';
         }
-        if (tail && upgradeStatusSnapshot !== 'running') {
+        if (tail && !activeUpgradeStatus.includes(upgradeStatusSnapshot)) {
           tail.textContent = 'No upgrade run. Installed version already matches GitHub main.';
         }
       }
@@ -4514,6 +4515,12 @@ async function runAISummary(){
           if (currentStatus === 'running') {
             btn.disabled = true;
             btn.textContent = 'Upgrade Running...';
+          } else if (currentStatus === 'restarting') {
+            btn.disabled = true;
+            btn.textContent = 'Restarting...';
+          } else if (currentStatus === 'finishing') {
+            btn.disabled = true;
+            btn.textContent = 'Finishing...';
           } else if (upgradeVersionState) {
             if (upgradeVersionState.status === 'update_available') {
               btn.disabled = false;
@@ -4527,7 +4534,7 @@ async function runAISummary(){
             }
           }
         }
-        if (previousStatus === 'running' && currentStatus !== 'running' && currentTab() === 'about') {
+        if (['running', 'restarting', 'finishing'].includes(previousStatus) && ['finished', 'failed', 'idle'].includes(currentStatus) && currentTab() === 'about') {
           const flash = document.getElementById('upgradeFlash');
           if (flash) flash.textContent = currentStatus === 'finished' ? 'Upgrade finished. Refreshing soon...' : 'Upgrade stopped. Refreshing soon...';
           window.setTimeout(() => window.location.reload(), 2500);
@@ -4557,6 +4564,11 @@ async function runAISummary(){
           return;
         }
         if (flash) flash.textContent = 'Starting upgrade...';
+        const btn = document.getElementById('runUpgradeBtn');
+        if (btn) {
+          btn.disabled = true;
+          btn.textContent = 'Starting...';
+        }
         const resp = await fetch('/run_upgrade', {
           method:'POST',
           headers: { 'Content-Type': 'application/json' },
