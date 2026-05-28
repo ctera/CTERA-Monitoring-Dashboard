@@ -730,13 +730,15 @@ def _upgrade_status():
     except Exception:
         pass
     log_path = _upgrade_log_path()
+    tail_text = _tail_text(log_path)
     status = out.get("status", "idle")
     pid = out.get("pid", "")
     if status == "running" and pid:
         try:
             os.kill(int(pid), 0)
         except Exception:
-            status = "unknown"
+            restart_markers = ("==> Restarting service", "Terminated")
+            status = "restarting" if any(marker in tail_text for marker in restart_markers) else "finishing"
             out["status"] = status
     return {
         "job": "upgrade",
@@ -748,7 +750,7 @@ def _upgrade_status():
         "log_path": log_path,
         "tail_command": f"tail -F {log_path}",
         "last_log_update": _file_mtime_utc(log_path),
-        "tail": _tail_text(log_path),
+        "tail": tail_text,
         "helper_path": DEFAULT_UPGRADE_HELPER,
     }
 
@@ -4266,7 +4268,6 @@ async function runAISummary(){
     }
 
     let jobStatusSnapshot = { portal: null, filer: null };
-    let autoRefreshTimer = null;
     let upgradeStatusSnapshot = null;
     let upgradeVersionState = null;
     let updateCheckTimer = null;
@@ -4288,13 +4289,6 @@ async function runAISummary(){
       window.setTimeout(() => {
         window.location.reload();
       }, 250);
-    }
-
-    function scheduleAutoRefresh(message){
-      if (autoRefreshTimer) return;
-      const note = document.getElementById('refreshNote');
-      if (note) note.textContent = message || 'Collector finished. Refreshing data...';
-      autoRefreshTimer = window.setTimeout(() => refreshCurrentView(message || 'Refreshing data...'), 900);
     }
 
     function scheduleAboutUpdateChecks(activeTab){
@@ -4586,13 +4580,10 @@ async function runAISummary(){
       try{
         const resp = await fetch('/job_status?_=' + Date.now(), { cache: 'no-store' });
         const data = await resp.json();
-        const shouldAutoRefresh = applyJobStatusData(data);
+        applyJobStatusData(data);
         const allBtn = document.getElementById('runBtn_all');
         if (allBtn) {
           allBtn.disabled = ['portal','filer'].some(name => (data[name] || {}).status === 'running');
-        }
-        if (shouldAutoRefresh && currentTab() === 'jobs') {
-          scheduleAutoRefresh('Collector finished. Refreshing data...');
         }
       } catch (e) {
         console.error('job status failed', e);
@@ -4600,10 +4591,8 @@ async function runAISummary(){
     }
 
     function applyJobStatusData(data){
-      let shouldAutoRefresh = false;
       ['portal','filer'].forEach(name => {
         const card = data[name] || {};
-        const previousStatus = jobStatusSnapshot[name];
         const currentStatus = card.status || 'idle';
         const badge = document.getElementById('jobBadge_' + name);
         const started = document.getElementById('jobStarted_' + name);
@@ -4626,12 +4615,8 @@ async function runAISummary(){
           tail.scrollTop = tail.scrollHeight;
         }
         if (btn) btn.disabled = (card.status === 'running');
-        if (previousStatus === 'running' && currentStatus !== 'running') {
-          shouldAutoRefresh = true;
-        }
         jobStatusSnapshot[name] = currentStatus;
       });
-      return shouldAutoRefresh;
     }
 
     async function runCollector(jobName, forcedEnvironmentId){
