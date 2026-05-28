@@ -4584,7 +4584,7 @@ async function runAISummary(){
     }
 
     function describeThresholdRule(rule){
-      if (!hasThresholdRule(rule)) return 'â€”';
+      if (!hasThresholdRule(rule)) return '-';
       const parts = [];
       if (rule.warn_days) parts.push('Warn: within ' + rule.warn_days + ' days');
       if (rule.warn_op) parts.push('Warn: ' + rule.warn_op + ' ' + rule.warn_value);
@@ -4670,10 +4670,10 @@ async function runAISummary(){
         if (field.rule?.warn_days) {
           warnTd.innerHTML = '<code>within ' + field.rule.warn_days + ' days</code>';
         } else {
-          warnTd.innerHTML = field.rule?.warn_op ? ('<code>' + field.rule.warn_op + ' ' + field.rule.warn_value + '</code>') : 'â€”';
+          warnTd.innerHTML = field.rule?.warn_op ? ('<code>' + field.rule.warn_op + ' ' + field.rule.warn_value + '</code>') : '-';
         }
         const critTd = document.createElement('td');
-        critTd.innerHTML = field.rule?.crit_op ? ('<code>' + field.rule.crit_op + ' ' + field.rule.crit_value + '</code>') : 'â€”';
+        critTd.innerHTML = field.rule?.crit_op ? ('<code>' + field.rule.crit_op + ' ' + field.rule.crit_value + '</code>') : '-';
         tr.appendChild(fieldTd);
         tr.appendChild(warnTd);
         tr.appendChild(critTd);
@@ -4710,11 +4710,11 @@ async function runAISummary(){
         if (field.rule?.warn_days) {
           warnTd.innerHTML = '<code>within ' + field.rule.warn_days + ' days</code>';
         } else {
-          warnTd.innerHTML = field.rule?.warn_op ? ('<code>' + field.rule.warn_op + ' ' + field.rule.warn_value + '</code>') : 'â€”';
+          warnTd.innerHTML = field.rule?.warn_op ? ('<code>' + field.rule.warn_op + ' ' + field.rule.warn_value + '</code>') : '-';
         }
 
         const critTd = document.createElement('td');
-        critTd.innerHTML = field.rule?.crit_op ? ('<code>' + field.rule.crit_op + ' ' + field.rule.crit_value + '</code>') : 'â€”';
+        critTd.innerHTML = field.rule?.crit_op ? ('<code>' + field.rule.crit_op + ' ' + field.rule.crit_value + '</code>') : '-';
 
         const actionsTd = document.createElement('td');
         const actions = document.createElement('div');
@@ -4774,11 +4774,11 @@ async function runAISummary(){
           if (field.rule?.warn_days) {
             warnTd.innerHTML = '<code>within ' + field.rule.warn_days + ' days</code>';
           } else {
-            warnTd.innerHTML = field.rule?.warn_op ? ('<code>' + field.rule.warn_op + ' ' + field.rule.warn_value + '</code>') : 'â€”';
+            warnTd.innerHTML = field.rule?.warn_op ? ('<code>' + field.rule.warn_op + ' ' + field.rule.warn_value + '</code>') : '-';
           }
 
           const critTd = document.createElement('td');
-          critTd.innerHTML = field.rule?.crit_op ? ('<code>' + field.rule.crit_op + ' ' + field.rule.crit_value + '</code>') : 'â€”';
+          critTd.innerHTML = field.rule?.crit_op ? ('<code>' + field.rule.crit_op + ' ' + field.rule.crit_value + '</code>') : '-';
 
           const emailTd = document.createElement('td');
           emailTd.innerHTML = field.notify?.enabled
