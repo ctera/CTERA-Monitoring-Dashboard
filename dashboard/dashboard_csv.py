@@ -445,10 +445,19 @@ def load_conf():
             cfg = yaml.safe_load(f) or {}
     except Exception:
         cfg = {}
+    def _deep_merge_dicts(defaults, overrides):
+        merged = dict(defaults or {})
+        for mk, mv in (overrides or {}).items():
+            if isinstance(mv, dict) and isinstance(merged.get(mk), dict):
+                merged[mk] = _deep_merge_dicts(merged.get(mk), mv)
+            else:
+                merged[mk] = mv
+        return merged
+
     base = dict(DEFAULT_CONF)
     for k, v in cfg.items():
         if k in ("ui", "theme", "brand", "portal", "postgres", "servers_health") and isinstance(v, dict):
-            base[k] = {**base.get(k, {}), **v}
+            base[k] = _deep_merge_dicts(base.get(k, {}), v)
         else:
             base[k] = v
     data_dir = os.environ.get("FEATHERDASH_DATA_DIR")

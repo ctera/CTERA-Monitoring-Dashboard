@@ -30,6 +30,7 @@ brand:
 postgres:
   base_dir: /var/lib/ctera-monitoring-dashboard/data/db
   topics:
+    replication_status: "replication_status.csv"
     long_running_queries: "long_running_queries.csv"
     wraparound_database: "wraparound_database.csv"
     wraparound_top_tables: "wraparound_top_tables.csv"
