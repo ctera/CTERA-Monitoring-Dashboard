@@ -18,9 +18,12 @@ import json
 import logging
 import os
 import re
+import socket
+import ssl
 import subprocess
 import sys
 import psycopg2
+from urllib.parse import urlparse
 
 from cterasdk.exceptions import CTERAException
 from cterasdk import GlobalAdmin, ServicesPortal
@@ -665,6 +668,142 @@ def run_filers(self, filename, all_tenants):
 SERVER_FIELDS = ['name', 'connected', 'isApplicationServer', 'mainDB']
 
 
+CERTIFICATE_HEADERS = ['Name', 'Host', 'Port', 'SubjectCN', 'IssuerCN', 'NotBefore', 'NotAfter', 'CertDaysLeft', 'Status', 'Error']
+
+
+def _normalize_tls_target(host_value):
+    raw = str(host_value or "").strip()
+    if not raw:
+        return "", 443
+    parsed = urlparse(raw if "://" in raw else f"https://{raw}")
+    host = parsed.hostname or raw.split("/")[0].split(":")[0].strip()
+    port = parsed.port or 443
+    return host, port
+
+
+def _flatten_dn(parts):
+    items = []
+    for seq in parts or []:
+        for key, value in seq:
+            items.append((str(key or ""), str(value or "")))
+    return items
+
+
+def _find_dn_value(parts, wanted):
+    wanted = str(wanted or "").strip().lower()
+    for key, value in _flatten_dn(parts):
+        if key.strip().lower() == wanted:
+            return value
+    return ""
+
+
+def _fetch_certificate_details(host_value):
+    host, port = _normalize_tls_target(host_value)
+    if not host:
+        return {
+            "Name": "Portal Endpoint",
+            "Host": "",
+            "Port": "",
+            "SubjectCN": "",
+            "IssuerCN": "",
+            "NotBefore": "",
+            "NotAfter": "",
+            "CertDaysLeft": "",
+            "Status": "Error",
+            "Error": "Missing portal host",
+        }
+
+    sock = None
+    wrapped = None
+    try:
+        context = ssl.create_default_context()
+        context.check_hostname = False
+        context.verify_mode = ssl.CERT_NONE
+        sock = socket.create_connection((host, port), timeout=10)
+        wrapped = context.wrap_socket(sock, server_hostname=host)
+        cert = wrapped.getpeercert()
+        if not cert:
+            raise RuntimeError("No certificate returned")
+
+        not_before = cert.get("notBefore") or ""
+        not_after = cert.get("notAfter") or ""
+        nb_dt = datetime.utcfromtimestamp(ssl.cert_time_to_seconds(not_before)).replace(tzinfo=timezone.utc) if not_before else None
+        na_dt = datetime.utcfromtimestamp(ssl.cert_time_to_seconds(not_after)).replace(tzinfo=timezone.utc) if not_after else None
+        now = datetime.now(timezone.utc)
+        days_left = ""
+        status = "OK"
+        if na_dt is not None:
+            days_left = str((na_dt - now).days)
+            if (na_dt - now).days < 0:
+                status = "Expired"
+            elif (na_dt - now).days <= 30:
+                status = "ExpiringSoon"
+
+        return {
+            "Name": "Portal Endpoint",
+            "Host": host,
+            "Port": str(port),
+            "SubjectCN": _find_dn_value(cert.get("subject"), "commonName"),
+            "IssuerCN": _find_dn_value(cert.get("issuer"), "commonName"),
+            "NotBefore": nb_dt.isoformat() if nb_dt else "",
+            "NotAfter": na_dt.isoformat() if na_dt else "",
+            "CertDaysLeft": days_left,
+            "Status": status,
+            "Error": "",
+        }
+    except Exception as exc:
+        return {
+            "Name": "Portal Endpoint",
+            "Host": host,
+            "Port": str(port or 443),
+            "SubjectCN": "",
+            "IssuerCN": "",
+            "NotBefore": "",
+            "NotAfter": "",
+            "CertDaysLeft": "",
+            "Status": "Error",
+            "Error": str(exc),
+        }
+    finally:
+        try:
+            if wrapped is not None:
+                wrapped.close()
+        except Exception:
+            pass
+        try:
+            if sock is not None:
+                sock.close()
+        except Exception:
+            pass
+
+
+def write_certificate_header(filename):
+    with open(filename, mode='a', newline='', encoding='utf-8-sig') as f:
+        w = csv.writer(f, dialect='excel', delimiter=',', quotechar='"', quoting=csv.QUOTE_MINIMAL)
+        w.writerow(CERTIFICATE_HEADERS)
+
+
+def write_certificate(self, filename):
+    details = _fetch_certificate_details(getattr(self, "_featherdash_tls_host", "") or getattr(self, "_baseurl", "") or "")
+    with open(filename, mode='a', newline='', encoding='utf-8-sig') as f:
+        w = csv.writer(f, dialect='excel', delimiter=',', quotechar='"', quoting=csv.QUOTE_MINIMAL)
+        w.writerow([details.get(h, "") for h in CERTIFICATE_HEADERS])
+    logging.info("Wrote portal certificate CSV to %s", filename)
+
+
+def run_certificate(self, filename):
+    logging.info('Starting portal certificate task')
+    if os.path.exists(filename):
+        logging.info('Appending to existing file.')
+    else:
+        write_certificate_header(filename)
+    try:
+        write_certificate(self, filename)
+    except Exception as e:
+        logging.warning("An error occurred: " + str(e))
+    logging.info('Finished portal certificate task.')
+
+
 def write_servers_header(filename):
     with open(filename, mode='a', newline='', encoding='utf-8-sig') as f:
         w = csv.writer(f, dialect='excel', delimiter=',', quotechar='"', quoting=csv.QUOTE_MINIMAL)
@@ -1257,7 +1396,7 @@ def main():
     ap.add_argument("--global-admin", action="store_true", help="Use GlobalAdmin session (default is tenant user via ServicesPortal)")
     ap.add_argument("--all-tenants", action="store_true", help="Scan across all tenants (Global Admin only; filers mode)")
     ap.add_argument("-o", "--outfile", default="output.csv", help="Output CSV file")
-    ap.add_argument("--mode", choices=["filers", "servers", "storage", "infra", "tasks"], default="filers", help="What to export to CSV")
+    ap.add_argument("--mode", choices=["filers", "servers", "storage", "infra", "tasks", "certificate"], default="filers", help="What to export to CSV")
     ap.add_argument("--ensure-remote", action="store_true", help="Open remote access for each filer before collection (filers mode)")
     ap.add_argument("--verify-ssl", action="store_true", default=env_bool("CTERA_VERIFY_SSL", False), help="Verify CTERA portal TLS certificates. Default is disabled for internal/self-signed portals.")
     ap.add_argument("-v", "--verbose", action="store_true", help="Verbose logging")
@@ -1277,6 +1416,7 @@ def main():
         sess._featherdash_user = args.user
         sess._featherdash_password = args.password
         sess._featherdash_global_admin = args.global_admin
+        sess._featherdash_tls_host = args.host
 
         if args.mode == "filers":
             if args.global_admin and args.tenant and not args.all_tenants:
@@ -1297,6 +1437,9 @@ def main():
         elif args.mode == "storage":
             sess.portals.browse_global_admin()
             run_buckets(sess, args.outfile)
+
+        elif args.mode == "certificate":
+            run_certificate(sess, args.outfile)
 
         elif args.mode == "infra":
             sess.portals.browse_global_admin()

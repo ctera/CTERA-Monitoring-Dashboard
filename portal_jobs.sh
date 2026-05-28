@@ -229,6 +229,9 @@ python ctera_collect.py -H "${CTERA_HOST}" -u "${CTERA_USERNAME}" -p "${CTERA_PA
 rm -f "${FEATHERDASH_DATA_DIR}/servers.csv"
 python ctera_collect.py -H "${CTERA_HOST}" -u "${CTERA_USERNAME}" -p "${CTERA_PASSWORD}" --mode servers --global-admin -o "${FEATHERDASH_DATA_DIR}/servers.csv"
 
+rm -f "${FEATHERDASH_DATA_DIR}/certificate.csv"
+python ctera_collect.py -H "${CTERA_HOST}" -u "${CTERA_USERNAME}" -p "${CTERA_PASSWORD}" --mode certificate --global-admin -o "${FEATHERDASH_DATA_DIR}/certificate.csv"
+
 rm -f "${FEATHERDASH_DATA_DIR}/tasks.csv"
 python ctera_collect.py -H "${CTERA_HOST}" -u "${CTERA_USERNAME}" -p "${CTERA_PASSWORD}" --mode tasks --global-admin -o "${FEATHERDASH_DATA_DIR}/tasks.csv"
 

@@ -36,6 +36,14 @@ portal:
   storage:
     default: {}
 
+  certificate:
+    default:
+      Status:
+        crit: { eq: Error }
+      CertDaysLeft:
+        warn: { le: 30 }
+        crit: { lt: 0 }
+
   licenses:
     expiration_date:
       warn_days: 30

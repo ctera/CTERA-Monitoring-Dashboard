@@ -42,6 +42,7 @@ postgres:
 
 portal:
   servers_csv: /var/lib/ctera-monitoring-dashboard/data/servers.csv
+  certificate_csv: /var/lib/ctera-monitoring-dashboard/data/certificate.csv
   storage_csv: /var/lib/ctera-monitoring-dashboard/data/storage.csv
   tasks_csv: /var/lib/ctera-monitoring-dashboard/data/tasks.csv
 

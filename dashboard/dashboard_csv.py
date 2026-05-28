@@ -406,6 +406,7 @@ DEFAULT_CONF = {
     },
     "portal": {
         "servers_csv": _data_path("servers.csv"),
+        "certificate_csv": _data_path("certificate.csv"),
         "storage_csv": _data_path("storage.csv"),
         "tasks_csv": _data_path("tasks.csv"),
         "licenses_csv": os.path.join(DEFAULT_DB_DIR, "licenses.csv")
@@ -483,7 +484,7 @@ def load_conf():
     base["csv_path"] = _abspath_from_app(base.get("csv_path"))
     base["tenants_csv"] = _abspath_from_app(base.get("tenants_csv"))
     portal = base.get("portal", {})
-    for key in ("servers_csv", "storage_csv", "tasks_csv", "licenses_csv"):
+    for key in ("servers_csv", "certificate_csv", "storage_csv", "tasks_csv", "licenses_csv"):
         portal[key] = _abspath_from_app(portal.get(key))
     base["portal"] = portal
     # fix postgres base dir
@@ -523,6 +524,7 @@ def load_conf_for_environment(env_id=None):
     cfg["portal"] = {
         **(cfg.get("portal") or {}),
         "servers_csv": os.path.join(data_dir, "servers.csv"),
+        "certificate_csv": os.path.join(data_dir, "certificate.csv"),
         "storage_csv": os.path.join(data_dir, "storage.csv"),
         "tasks_csv": os.path.join(data_dir, "tasks.csv"),
         "licenses_csv": os.path.join(db_dir, "licenses.csv"),
@@ -3127,6 +3129,8 @@ def _threshold_dataset_configs(cfg):
         datasets.append({"key": "portal_storage", "label": "Portal Storage", "kind": "portal", "section": "storage", "path": portal_cfg.get("storage_csv")})
     if portal_cfg.get("tasks_csv"):
         datasets.append({"key": "portal_tasks", "label": "Portal Tasks", "kind": "portal", "section": "tasks", "path": portal_cfg.get("tasks_csv")})
+    if portal_cfg.get("certificate_csv"):
+        datasets.append({"key": "portal_certificate", "label": "Portal Certificate", "kind": "portal", "section": "certificate", "path": portal_cfg.get("certificate_csv")})
     if portal_cfg.get("licenses_csv"):
         datasets.append({"key": "portal_licenses", "label": "Portal Licenses", "kind": "portal", "section": "licenses", "path": portal_cfg.get("licenses_csv")})
 
@@ -7288,6 +7292,7 @@ async function runAISummary(){
     <div class="subtabs">
       <button class="portalsubbtn" data-portal-sub="portal_overview" onclick="showPortalTab('portal_overview')">Overview</button>
       <button class="portalsubbtn" data-portal-sub="portal_servers" onclick="showPortalTab('portal_servers')">Servers{% if c_servers.bad %}<span class="badge">{{ c_servers.bad }}</span>{% endif %}{% if c_servers.warn %}<span class="tabbadge warn" style="margin-left:6px;">{{ c_servers.warn }}</span>{% endif %}</button>
+      <button class="portalsubbtn" data-portal-sub="portal_certificate" onclick="showPortalTab('portal_certificate')">Certificate{% if c_certificate.bad %}<span class="badge">{{ c_certificate.bad }}</span>{% endif %}{% if c_certificate.warn %}<span class="tabbadge warn" style="margin-left:6px;">{{ c_certificate.warn }}</span>{% endif %}</button>
       <button class="portalsubbtn" data-portal-sub="portal_storage" onclick="showPortalTab('portal_storage')">Storage Nodes{% if c_storage.bad %}<span class="badge">{{ c_storage.bad }}</span>{% endif %}{% if c_storage.warn %}<span class="tabbadge warn" style="margin-left:6px;">{{ c_storage.warn }}</span>{% endif %}</button>
       <button class="portalsubbtn" data-portal-sub="portal_tasks" onclick="showPortalTab('portal_tasks')">Tasks{% if c_tasks.bad %}<span class="badge">{{ c_tasks.bad }}</span>{% endif %}{% if c_tasks.warn %}<span class="tabbadge warn" style="margin-left:6px;">{{ c_tasks.warn }}</span>{% endif %}</button>
       <button class="portalsubbtn" data-portal-sub="portal_licenses" onclick="showPortalTab('portal_licenses')">Licenses{% if c_licenses.bad %}<span class="badge">{{ c_licenses.bad }}</span>{% endif %}{% if c_licenses.warn %}<span class="tabbadge warn" style="margin-left:6px;">{{ c_licenses.warn }}</span>{% endif %}</button>
@@ -7309,26 +7314,34 @@ async function runAISummary(){
           </tbody>
         </table>
       </div>
-      <div class="viz-grid two" style="margin-top:12px;">
-        <section class="viz-panel">
-          <h3>Portal Build</h3>
+        <div class="viz-grid two" style="margin-top:12px;">
+          <section class="viz-panel">
+            <h3>Portal Build</h3>
           <div class="headline-metrics">
             <div class="headline-metric"><div class="metric-label">MainDB</div><div class="metric-value" style="font-size:22px">{{ portal_build_host or 'â€”' }}</div></div>
             <div class="headline-metric"><div class="metric-label">Image Version</div><div class="metric-value" style="font-size:22px">{{ portal_image_version or 'â€”' }}</div></div>
             <div class="headline-metric"><div class="metric-label">Service Version</div><div class="metric-value" style="font-size:22px">{{ portal_service_version or 'â€”' }}</div></div>
           </div>
         </section>
-        <section class="viz-panel">
-          <h3>License Summary</h3>
+          <section class="viz-panel">
+            <h3>License Summary</h3>
           <div class="headline-metrics">
             <div class="headline-metric"><div class="metric-label">Rows</div><div class="metric-value">{{ licenses_rows|length }}</div></div>
             <div class="headline-metric"><div class="metric-label">Valid</div><div class="metric-value ok">{{ valid_licenses }}</div></div>
             <div class="headline-metric"><div class="metric-label">Expired</div><div class="metric-value {{ 'crit' if expired_licenses else '' }}">{{ expired_licenses }}</div></div>
             <div class="headline-metric"><div class="metric-label">Portal Licenses</div><div class="metric-value">{{ portal_license_rows }}</div></div>
-          </div>
-        </section>
+            </div>
+          </section>
+          <section class="viz-panel">
+            <h3>Portal Certificate</h3>
+            <div class="headline-metrics">
+              <div class="headline-metric"><div class="metric-label">Status</div><div class="metric-value {{ 'crit' if certificate_status_tone == 'crit' else ('warn' if certificate_status_tone == 'warn' else 'ok') }}">{{ certificate_status_label }}</div></div>
+              <div class="headline-metric"><div class="metric-label">Days Left</div><div class="metric-value {{ 'crit' if certificate_status_tone == 'crit' else ('warn' if certificate_status_tone == 'warn' else '') }}">{{ certificate_days_left or '-' }}</div></div>
+              <div class="headline-metric"><div class="metric-label">Expires On</div><div class="metric-value" style="font-size:22px">{{ certificate_not_after or '-' }}</div></div>
+            </div>
+          </section>
+        </div>
       </div>
-    </div>
 
     <div id="portal_servers" class="portalpane" style="display:none">
       <div class="controls">
@@ -7409,6 +7422,31 @@ async function runAISummary(){
                 {% set cls = style_tasks_cell(h, cell, r) %}
                 {% set sev = warn_task_cell(h, cell, r) %}
                 <td class="{{ cls }} {{ 'sev-critical' if sev == 'bad' else ('sev-warning' if sev == 'warn' else '') }}">{{ display_cell(h, cell) }}</td>
+              {% endfor %}
+            </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+      </div>
+
+    <div id="portal_certificate" class="portalpane" style="display:none">
+      <div class="controls">
+        <strong>Certificate</strong>
+        <div class="sub">File: <code>{{ portal_certificate_src }}</code> &nbsp;?&nbsp; Updated: <span class="sub" data-local-time="{{ portal_certificate_mtime }}">{{ portal_certificate_mtime or '?' }}</span></div>
+      </div>
+      <div class="table-wrap">
+        <table id="certificateTable">
+          <thead><tr>{% for h in certificate_headers %}<th>{{ h }}</th>{% endfor %}</tr></thead>
+          <tbody>
+            {% for r in certificate_rows %}
+            <tr>
+              {% for h in certificate_headers %}
+                {% set cell = r.get(h, '') %}
+                {% set sev = warn_certificate_cell(h, cell, r) %}
+                <td class="{{ 'sev-critical' if sev == 'bad' else ('sev-warning' if sev == 'warn' else '') }}">
+                  {{ display_cell(h, cell) }}
+                </td>
               {% endfor %}
             </tr>
             {% endfor %}
@@ -8940,16 +8978,19 @@ def build_ai_summary_data(env_id=None):
     # PORTAL
     portal_cfg = cfg.get("portal") or {}
     servers_rows, servers_headers = read_csv_rows(portal_cfg.get("servers_csv"))
+    certificate_rows, certificate_headers = read_csv_rows(portal_cfg.get("certificate_csv"))
     storage_rows, storage_headers = read_csv_rows(portal_cfg.get("storage_csv"))
     tasks_rows, tasks_headers = read_csv_rows(portal_cfg.get("tasks_csv"))
     licenses_rows, licenses_headers = read_csv_rows(portal_cfg.get("licenses_csv"))
     tasks_rows = filter_dashboard_tasks(tasks_rows)
 
     warn_server_cell = make_portal_warn_fn(ext, "servers")
+    warn_certificate_cell = make_portal_warn_fn(ext, "certificate")
     warn_storage_cell = make_portal_warn_fn(ext, "storage")
     warn_task_cell = make_portal_warn_fn(ext, "tasks")
 
     c_servers = _count_row_severity(servers_rows, servers_headers, warn_server_cell)
+    c_certificate = _count_row_severity(certificate_rows, certificate_headers, warn_certificate_cell)
     c_storage = _count_row_severity(storage_rows, storage_headers, warn_storage_cell)
     c_tasks = _count_row_severity(tasks_rows, tasks_headers, warn_task_cell)
     warn_license_cell = make_portal_warn_fn(ext, "licenses")
@@ -8965,8 +9006,8 @@ def build_ai_summary_data(env_id=None):
             c_licenses_warn += 1
 
     portal_counts = {
-        "bad": c_servers["bad"] + c_storage["bad"] + c_tasks["bad"] + c_licenses_bad,
-        "warn": c_servers["warn"] + c_storage["warn"] + c_tasks["warn"] + c_licenses_warn,
+        "bad": c_servers["bad"] + c_certificate["bad"] + c_storage["bad"] + c_tasks["bad"] + c_licenses_bad,
+        "warn": c_servers["warn"] + c_certificate["warn"] + c_storage["warn"] + c_tasks["warn"] + c_licenses_warn,
     }
 
     # POSTGRES
@@ -9009,6 +9050,7 @@ def build_ai_summary_data(env_id=None):
         },
         "portal": {
             "servers_rows": len(servers_rows),
+            "certificate_rows": len(certificate_rows),
             "storage_rows": len(storage_rows),
             "tasks_rows": len(tasks_rows),
             "licenses_rows": len(licenses_rows),
@@ -9156,6 +9198,7 @@ def index():
 
     # PORTAL
     servers_rows, servers_headers = read_csv_rows(cfg["portal"]["servers_csv"])
+    certificate_rows, certificate_headers = read_csv_rows((cfg.get("portal") or {}).get("certificate_csv"))
     storage_rows, storage_headers = read_csv_rows(cfg["portal"]["storage_csv"])
     tasks_rows, tasks_headers = read_csv_rows((cfg.get("portal") or {}).get("tasks_csv"))
     licenses_rows, licenses_headers = read_csv_rows((cfg.get("portal") or {}).get("licenses_csv"))
@@ -9190,6 +9233,7 @@ def index():
     licenses_display_headers.extend([h for h in licenses_visible_set if h not in licenses_display_headers])
 
     warn_server_cell = make_portal_warn_fn(ext, "servers")
+    warn_certificate_cell = make_portal_warn_fn(ext, "certificate")
     warn_storage_cell = make_portal_warn_fn(ext, "storage")
     warn_task_cell = make_portal_warn_fn(ext, "tasks")
     style_server_cell = make_portal_style_fn(ext, "servers")
@@ -9198,6 +9242,7 @@ def index():
 
     # aggregate Portal badge counts across the three sections
     c_servers = _count_row_severity(servers_rows, servers_headers, warn_server_cell)
+    c_certificate = _count_row_severity(certificate_rows, certificate_headers, warn_certificate_cell)
     c_storage = _count_row_severity(storage_rows, storage_headers, warn_storage_cell)
     c_tasks = _count_row_severity(tasks_rows, tasks_headers, warn_task_cell)
     warn_license_cell = make_portal_warn_fn(ext, "licenses")
@@ -9216,11 +9261,12 @@ def index():
     expired_licenses = sum(1 for row in licenses_rows if str(row.get("expired") or "").strip().lower() in {"true", "1", "yes", "y", "on"})
     portal_license_rows = sum(1 for row in licenses_rows if str(row.get("portal_license") or "").strip().lower() in {"true", "1", "yes", "y", "on"})
     portal_counts = {
-        "bad": c_servers["bad"] + c_storage["bad"] + c_tasks["bad"] + c_licenses["bad"],
-        "warn": c_servers["warn"] + c_storage["warn"] + c_tasks["warn"] + c_licenses["warn"],
+        "bad": c_servers["bad"] + c_certificate["bad"] + c_storage["bad"] + c_tasks["bad"] + c_licenses["bad"],
+        "warn": c_servers["warn"] + c_certificate["warn"] + c_storage["warn"] + c_tasks["warn"] + c_licenses["warn"],
     }
     portal_section_cards = [
         _section_card("Servers", len(servers_rows), c_servers),
+        _section_card("Certificate", len(certificate_rows), c_certificate),
         _section_card("Storage", len(storage_rows), c_storage),
         _section_card("Tasks", len(tasks_rows), c_tasks),
         _section_card("Licenses", len(licenses_rows), c_licenses),
@@ -9294,6 +9340,17 @@ def index():
     if portal_service_version:
         portal_build_summary_parts.append(f"Service {portal_service_version}")
     portal_build_summary = " | ".join(portal_build_summary_parts)
+    certificate_row = certificate_rows[0] if certificate_rows else {}
+    certificate_status_label = str(certificate_row.get("Status") or "").strip() or ("No Data" if not certificate_rows else "Unknown")
+    certificate_days_left = str(certificate_row.get("CertDaysLeft") or "").strip()
+    certificate_not_after = str(certificate_row.get("NotAfter") or "").strip()
+    certificate_status_tone = "muted"
+    if certificate_rows:
+        certificate_status_tone = "ok"
+        if warn_certificate_cell("Status", certificate_status_label, certificate_row) == "bad" or warn_certificate_cell("CertDaysLeft", certificate_days_left, certificate_row) == "bad":
+            certificate_status_tone = "crit"
+        elif warn_certificate_cell("Status", certificate_status_label, certificate_row) == "warn" or warn_certificate_cell("CertDaysLeft", certificate_days_left, certificate_row) == "warn":
+            certificate_status_tone = "warn"
     host_gauges = [
         _gauge("Memory", hosts_rows, ["MemUsedPct"]),
         _gauge("Root Disk", hosts_rows, ["RootDiskUsedPct"]),
@@ -9332,6 +9389,7 @@ def index():
     # portal CSV sources (for "File: ...")
     portal_cfg = cfg.get("portal") or {}
     portal_servers_src = portal_cfg.get("servers_csv", "")
+    portal_certificate_src = portal_cfg.get("certificate_csv", "")
     portal_storage_src = portal_cfg.get("storage_csv", "")
     portal_tasks_src = portal_cfg.get("tasks_csv", "")
 
@@ -9346,16 +9404,18 @@ def index():
             return pth
 
     portal_servers_src = _norm_src(portal_servers_src)
+    portal_certificate_src = _norm_src(portal_certificate_src)
     portal_storage_src = _norm_src(portal_storage_src)
     portal_tasks_src = _norm_src(portal_tasks_src)
     portal_licenses_src = _norm_src(portal_cfg.get("licenses_csv", ""))
 
     portal_servers_mtime = _file_mtime_iso(portal_servers_src)
+    portal_certificate_mtime = _file_mtime_iso(portal_certificate_src)
     portal_storage_mtime = _file_mtime_iso(portal_storage_src)
     portal_tasks_mtime = _file_mtime_iso(portal_tasks_src)
     portal_licenses_mtime = _file_mtime_iso(portal_licenses_src)
 
-    portal_rows_total = len(servers_rows) + len(storage_rows) + len(tasks_rows) + len(licenses_rows)
+    portal_rows_total = len(servers_rows) + len(certificate_rows) + len(storage_rows) + len(tasks_rows) + len(licenses_rows)
     pg_rows_total = sum(len(v.get("rows", [])) for v in pg_views)
     overview_cards = [
         _overview_card("Tenants", "tenants", len(tenants_rows), tenants_counts, tenants_mtime),
@@ -9385,6 +9445,7 @@ def index():
         {"label": "Tenants", "updated_utc": tenants_mtime},
         {"label": "Edge Filers", "updated_utc": csv_mtime},
         {"label": "Portal Servers", "updated_utc": portal_servers_mtime},
+        {"label": "Portal Certificate", "updated_utc": portal_certificate_mtime},
         {"label": "Portal Storage", "updated_utc": portal_storage_mtime},
         {"label": "Portal Tasks", "updated_utc": portal_tasks_mtime},
         {"label": "Portal Licenses", "updated_utc": portal_licenses_mtime},
@@ -9421,18 +9482,21 @@ def index():
         # portal
                 # portal
         servers_rows=servers_rows, servers_headers=servers_headers,
+        certificate_rows=certificate_rows, certificate_headers=certificate_headers,
         storage_rows=storage_rows, storage_headers=storage_headers,
         tasks_rows=tasks_rows, tasks_headers=tasks_headers,
         licenses_rows=licenses_rows, licenses_headers=licenses_headers,
         licenses_display_headers=licenses_display_headers,
-        c_servers=c_servers, c_storage=c_storage, c_tasks=c_tasks, c_licenses=c_licenses,
-        warn_license_cell=warn_license_cell,
+        c_servers=c_servers, c_certificate=c_certificate, c_storage=c_storage, c_tasks=c_tasks, c_licenses=c_licenses,
+        warn_certificate_cell=warn_certificate_cell, warn_license_cell=warn_license_cell,
         warn_server_cell=warn_server_cell, warn_storage_cell=warn_storage_cell, warn_task_cell=warn_task_cell,
         style_server_cell=style_server_cell, style_storage_cell=style_storage_cell, style_tasks_cell=style_tasks_cell,
         portal_counts=portal_counts, portal_section_cards=portal_section_cards,
         valid_licenses=valid_licenses, expired_licenses=expired_licenses, portal_license_rows=portal_license_rows,
         portal_build_host=portal_build_host, portal_image_version=portal_image_version,
         portal_service_version=portal_service_version, portal_build_summary=portal_build_summary,
+        certificate_status_label=certificate_status_label, certificate_status_tone=certificate_status_tone,
+        certificate_days_left=certificate_days_left, certificate_not_after=certificate_not_after,
         # postgres (sub-tabs)
         pg_base_dir=base_dir, pg_views=pg_views, warn_pg=warn_pg, style_pg=style_pg, pg_counts=pg_counts, pg_topic_chart=pg_topic_chart,
         # servers health
@@ -9446,8 +9510,8 @@ def index():
         docker_csv=docker_csv, docker_mtime=docker_mtime, docker_rows=docker_rows, docker_headers=docker_headers,
         docker_summary=docker_summary, docker_row_class=_docker_row_class,
         # portal sources
-        portal_servers_src=portal_servers_src, portal_storage_src=portal_storage_src, portal_tasks_src=portal_tasks_src, portal_licenses_src=portal_licenses_src,
-        portal_servers_mtime=portal_servers_mtime, portal_storage_mtime=portal_storage_mtime, portal_tasks_mtime=portal_tasks_mtime, portal_licenses_mtime=portal_licenses_mtime,
+        portal_servers_src=portal_servers_src, portal_certificate_src=portal_certificate_src, portal_storage_src=portal_storage_src, portal_tasks_src=portal_tasks_src, portal_licenses_src=portal_licenses_src,
+        portal_servers_mtime=portal_servers_mtime, portal_certificate_mtime=portal_certificate_mtime, portal_storage_mtime=portal_storage_mtime, portal_tasks_mtime=portal_tasks_mtime, portal_licenses_mtime=portal_licenses_mtime,
         # tenants
         tenants_src=tenants_src, tenants_mtime=tenants_mtime,
         tenants_rows=tenants_rows, tenants_headers=tenants_headers, style_tenants=style_tenants,
