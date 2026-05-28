@@ -1,5 +1,5 @@
 ﻿#!/usr/bin/env python3
-# dashboard_csv.py â€” Edge + Portal + Postgres (with sub-tabs) + Servers Health
+# dashboard_csv.py - Edge + Portal + Postgres (with sub-tabs) + Servers Health
 # VERSION: 2025-11-20 r10 (AI summary styled + bugfix)
 
 import os, csv, re, base64, mimetypes, subprocess, shlex, sqlite3, smtplib, ssl
@@ -561,13 +561,13 @@ def _file_mtime_utc(path_like):
     try:
         p = path_like or ''
         if not p:
-            return 'â€”'
+            return '-'
         if not os.path.isabs(p):
             p = os.path.join(APP_DIR, p)
         ts = os.path.getmtime(p)
         return datetime.utcfromtimestamp(ts).strftime('%Y-%m-%d %H:%M:%S UTC')
     except Exception:
-        return 'â€”'
+        return '-'
 
 
 def _file_mtime_iso(path_like):
@@ -3882,13 +3882,19 @@ HTML = """
     function loadEnvironmentContext(){
       const fromQuery = currentQueryEnvironmentId();
       if (fromQuery) return fromQuery;
-      try{ return localStorage.getItem('fd.environmentContext') || 'admin'; }catch(e){ return 'admin'; }
+      try{ return localStorage.getItem('fd.environmentContext') || ''; }catch(e){ return ''; }
+    }
+    function defaultEnvironmentContext(){
+      const items = environmentConfig.items || [];
+      const preferred = items.find(item => item.enabled) || items[0];
+      return preferred ? String(preferred.id) : 'admin';
     }
     function effectiveEnvironmentContext(){
       const raw = loadEnvironmentContext();
-      if (raw === 'admin') return 'admin';
       const items = environmentConfig.items || [];
-      return items.some(item => String(item.id) === String(raw)) ? String(raw) : 'admin';
+      if (!raw) return defaultEnvironmentContext();
+      if (raw === 'admin') return items.length ? defaultEnvironmentContext() : 'admin';
+      return items.some(item => String(item.id) === String(raw)) ? String(raw) : defaultEnvironmentContext();
     }
     function isAdministrationContext(){
       return effectiveEnvironmentContext() === 'admin';
@@ -4182,7 +4188,7 @@ async function runAISummary(){
     }
 
     function formatLocalTimestamp(value){
-      if (!value) return 'â€”';
+      if (!value) return '-';
       const normalized = String(value).trim().replace(' UTC', 'Z');
       const dt = new Date(normalized);
       if (Number.isNaN(dt.getTime())) return value;
@@ -4385,7 +4391,7 @@ async function runAISummary(){
         }
         if (started) started.textContent = formatLocalTimestamp(data.started_at || '');
         if (finished) finished.textContent = formatLocalTimestamp(data.finished_at || '');
-        if (exitCode) exitCode.textContent = data.last_exit || 'â€”';
+        if (exitCode) exitCode.textContent = data.last_exit || '-';
         if (tailCmd) tailCmd.textContent = data.tail_command || '';
           if (tail) {
             tail.textContent = data.tail || 'No recent log lines.';
@@ -4480,7 +4486,7 @@ async function runAISummary(){
           }
           if (started) started.textContent = formatLocalTimestamp(card.started_at || '');
           if (finished) finished.textContent = formatLocalTimestamp(card.finished_at || '');
-          if (exitCode) exitCode.textContent = card.last_exit || 'â€”';
+          if (exitCode) exitCode.textContent = card.last_exit || '-';
           if (tailCmd) tailCmd.textContent = card.tail_command || '';
           if (tail) {
             tail.textContent = card.tail || 'No recent log lines.';
@@ -5401,10 +5407,10 @@ async function runAISummary(){
         select.appendChild(opt);
       });
       const hasCurrent = Array.from(select.options).some(opt => opt.value === current);
-      const nextValue = hasCurrent ? current : 'admin';
-      if (!hasCurrent || current !== nextValue) saveEnvironmentContext(nextValue);
-      if (!queryEnv && nextValue !== 'admin') {
-        navigateToEnvironment(nextValue);
+        const nextValue = hasCurrent ? current : defaultEnvironmentContext();
+        if (!hasCurrent || current !== nextValue) saveEnvironmentContext(nextValue);
+        if (!queryEnv && nextValue !== 'admin') {
+          navigateToEnvironment(nextValue);
         return;
       }
       select.value = nextValue;
@@ -5870,12 +5876,12 @@ async function runAISummary(){
         if (titleEl) titleEl.textContent = 'Threshold Editor';
         if (summaryEl) summaryEl.textContent = 'Threshold rules are global. Email checks evaluate each portal environment against its own CSV files.';
         if (rowsEl) rowsEl.textContent = '0';
-        if (typeEl) typeEl.textContent = 'â€”';
+        if (typeEl) typeEl.textContent = '-';
         if (countEl) countEl.textContent = '0';
         if (tagsEl) tagsEl.innerHTML = '';
         return;
       }
-      if (titleEl) titleEl.textContent = dataset.label + ' â€” ' + field.name;
+      if (titleEl) titleEl.textContent = dataset.label + ' - ' + field.name;
       if (summaryEl) {
         const source = thresholdCatalog.source_label ? ('Alert scope: ' + thresholdCatalog.source_label + '. ') : '';
         summaryEl.textContent = source + 'Threshold rules are global. Email checks run separately against each environment.';
@@ -6068,7 +6074,8 @@ async function runAISummary(){
 <body>
   <script>
     try {
-      document.body.setAttribute('data-initial-context', (localStorage.getItem('fd.environmentContext') || 'admin') === 'admin' ? 'admin' : 'env');
+      const rawContext = localStorage.getItem('fd.environmentContext') || '';
+      document.body.setAttribute('data-initial-context', rawContext === 'admin' || !rawContext ? 'admin' : 'env');
     } catch (e) {
       document.body.setAttribute('data-initial-context', 'admin');
     }
@@ -6222,7 +6229,7 @@ async function runAISummary(){
         <div class="sidebar-version-card" title="{{ portal_build_summary or ('Dashboard ' ~ app_version) }}">
           {% if portal_image_version %}
           <div class="sidebar-version-primary">{{ portal_image_version }}</div>
-          <div class="sidebar-version-secondary">Service {{ portal_service_version or 'â€”' }}</div>
+          <div class="sidebar-version-secondary">Service {{ portal_service_version or '-' }}</div>
           {% else %}
           <div class="sidebar-version-primary">{{ app_version }}</div>
           <div class="sidebar-version-secondary">Dashboard Version</div>
@@ -6295,7 +6302,7 @@ async function runAISummary(){
             <div class="dash-card-head">
               <div>
                 <h3>{{ card.label }}</h3>
-                <div class="hero-sub"><span data-local-time="{{ card.updated_utc }}">{{ card.updated_utc or 'â€”' }}</span></div>
+                <div class="hero-sub"><span data-local-time="{{ card.updated_utc }}">{{ card.updated_utc or '-' }}</span></div>
               </div>
               <div class="count {{ card.status_class }}">{{ card.status_text }}</div>
             </div>
@@ -6326,7 +6333,7 @@ async function runAISummary(){
           {% for item in freshness_items %}
           <div class="ops-row">
             <strong>{{ item.label }}</strong>
-            <span data-local-time="{{ item.updated_utc }}">{{ item.updated_utc or 'â€”' }}</span>
+            <span data-local-time="{{ item.updated_utc }}">{{ item.updated_utc or '-' }}</span>
           </div>
           {% endfor %}
         </div>
@@ -6459,7 +6466,7 @@ async function runAISummary(){
           </div>
           <div class="threshold-kpi">
             <div class="metric-label">Value Type</div>
-            <div class="metric-value" id="thresholdType">â€”</div>
+            <div class="metric-value" id="thresholdType">-</div>
           </div>
           <div class="threshold-kpi">
             <div class="metric-label">Observed Values</div>
@@ -7078,9 +7085,9 @@ async function runAISummary(){
     </div>
     <div class="controls">
       <strong>Tenants</strong>
-      <input id="q_tenants" type="text" placeholder="Search tenantsâ€¦" oninput="filterTenantTables()" style="min-width:240px; margin-left:8px">
+        <input id="q_tenants" type="text" placeholder="Search tenants..." oninput="filterTenantTables()" style="min-width:240px; margin-left:8px">
     </div>
-    <div class="sub">File: <code>{{ tenants_src }}</code> &nbsp;â€¢&nbsp; Updated: <span class="sub" data-local-time="{{ tenants_mtime }}">{{ tenants_mtime or 'â€”' }}</span> {% if refresh_seconds|int>0 %}<span>Â· auto {{ refresh_seconds|int }}s</span>{% endif %}</div>
+    <div class="sub">File: <code>{{ tenants_src }}</code> &nbsp;|&nbsp; Updated: <span class="sub" data-local-time="{{ tenants_mtime }}">{{ tenants_mtime or '-' }}</span> {% if refresh_seconds|int>0 %}<span>- auto {{ refresh_seconds|int }}s</span>{% endif %}</div>
 
     <div class="viz-grid tenant-summary">
       <section class="viz-panel">
@@ -7186,7 +7193,7 @@ async function runAISummary(){
       <span class="dot dok" style="margin-left:14px"></span>OK
       <span class="dot dmuted" style="margin-left:14px"></span>Muted
     </div>
-    <div class="sub">File: <code>{{ csv_path }}</code> &nbsp;â€¢&nbsp; Updated: <span class="sub" data-local-time="{{ csv_mtime }}">{{ csv_mtime or 'â€”' }}</span> {% if refresh_seconds|int>0 %}<span>Â· auto {{ refresh_seconds|int }}s</span>{% endif %}</div>
+    <div class="sub">File: <code>{{ csv_path }}</code> &nbsp;|&nbsp; Updated: <span class="sub" data-local-time="{{ csv_mtime }}">{{ csv_mtime or '-' }}</span> {% if refresh_seconds|int>0 %}<span>- auto {{ refresh_seconds|int }}s</span>{% endif %}</div>
 
     <div class="viz-grid">
       <section class="viz-panel">
@@ -7318,9 +7325,9 @@ async function runAISummary(){
           <section class="viz-panel">
             <h3>Portal Build</h3>
           <div class="headline-metrics">
-            <div class="headline-metric"><div class="metric-label">MainDB</div><div class="metric-value" style="font-size:22px">{{ portal_build_host or 'â€”' }}</div></div>
-            <div class="headline-metric"><div class="metric-label">Image Version</div><div class="metric-value" style="font-size:22px">{{ portal_image_version or 'â€”' }}</div></div>
-            <div class="headline-metric"><div class="metric-label">Service Version</div><div class="metric-value" style="font-size:22px">{{ portal_service_version or 'â€”' }}</div></div>
+            <div class="headline-metric"><div class="metric-label">MainDB</div><div class="metric-value" style="font-size:22px">{{ portal_build_host or '-' }}</div></div>
+            <div class="headline-metric"><div class="metric-label">Image Version</div><div class="metric-value" style="font-size:22px">{{ portal_image_version or '-' }}</div></div>
+            <div class="headline-metric"><div class="metric-label">Service Version</div><div class="metric-value" style="font-size:22px">{{ portal_service_version or '-' }}</div></div>
           </div>
         </section>
           <section class="viz-panel">
@@ -7347,7 +7354,7 @@ async function runAISummary(){
       <div class="controls">
         <strong>Servers</strong>
         <input id="q_servers" type="text" placeholder="Search servers?" oninput="filterTableByInput('serversTable','q_servers')" style="min-width:240px; margin-left:8px">
-        <div class="sub">File: <code>{{ portal_servers_src }}</code> &nbsp;?&nbsp; Updated: <span class="sub" data-local-time="{{ portal_servers_mtime }}">{{ portal_servers_mtime or '?' }}</span></div>
+        <div class="sub">File: <code>{{ portal_servers_src }}</code> &nbsp;|&nbsp; Updated: <span class="sub" data-local-time="{{ portal_servers_mtime }}">{{ portal_servers_mtime or '-' }}</span></div>
       </div>
       <div class="table-wrap" style="margin-bottom:12px">
         <table id="serversTable">
@@ -7384,7 +7391,7 @@ async function runAISummary(){
       <div class="controls">
         <strong>Storage Nodes</strong>
         <input id="q_storage" type="text" placeholder="Search storage?" oninput="filterTableByInput('storageTable','q_storage')" style="min-width:240px; margin-left:8px">
-        <div class="sub">File: <code>{{ portal_storage_src }}</code> &nbsp;?&nbsp; Updated: <span class="sub" data-local-time="{{ portal_storage_mtime }}">{{ portal_storage_mtime or '?' }}</span></div>
+        <div class="sub">File: <code>{{ portal_storage_src }}</code> &nbsp;|&nbsp; Updated: <span class="sub" data-local-time="{{ portal_storage_mtime }}">{{ portal_storage_mtime or '-' }}</span></div>
       </div>
       <div class="table-wrap">
         <table id="storageTable">
@@ -7409,7 +7416,7 @@ async function runAISummary(){
       <div class="controls" style="margin-top:12px">
         <strong>Tasks</strong>
         <input id="q_tasks" type="text" placeholder="Search tasks..." oninput="filterTableByInput('tasksTable','q_tasks')" style="min-width:240px; margin-left:8px">
-        <div class="sub">File: <code>{{ portal_tasks_src }}</code> &nbsp;?&nbsp; Updated: <span class="sub" data-local-time="{{ portal_tasks_mtime }}">{{ portal_tasks_mtime or '?' }}</span></div>
+        <div class="sub">File: <code>{{ portal_tasks_src }}</code> &nbsp;|&nbsp; Updated: <span class="sub" data-local-time="{{ portal_tasks_mtime }}">{{ portal_tasks_mtime or '-' }}</span></div>
       </div>
       <div class="table-wrap">
         <table id="tasksTable">
@@ -7433,7 +7440,7 @@ async function runAISummary(){
     <div id="portal_certificate" class="portalpane" style="display:none">
       <div class="controls">
         <strong>Certificate</strong>
-        <div class="sub">File: <code>{{ portal_certificate_src }}</code> &nbsp;?&nbsp; Updated: <span class="sub" data-local-time="{{ portal_certificate_mtime }}">{{ portal_certificate_mtime or '?' }}</span></div>
+        <div class="sub">File: <code>{{ portal_certificate_src }}</code> &nbsp;|&nbsp; Updated: <span class="sub" data-local-time="{{ portal_certificate_mtime }}">{{ portal_certificate_mtime or '-' }}</span></div>
       </div>
       <div class="table-wrap">
         <table id="certificateTable">
@@ -7459,7 +7466,7 @@ async function runAISummary(){
       <div class="controls">
         <strong>Licenses</strong>
         <input id="q_licenses" type="text" placeholder="Search licenses?" oninput="filterTableByInput('licensesTable','q_licenses')" style="min-width:240px; margin-left:8px">
-        <div class="sub">File: <code>{{ portal_licenses_src }}</code> &nbsp;?&nbsp; Updated: <span class="sub" data-local-time="{{ portal_licenses_mtime }}">{{ portal_licenses_mtime or '?' }}</span></div>
+        <div class="sub">File: <code>{{ portal_licenses_src }}</code> &nbsp;|&nbsp; Updated: <span class="sub" data-local-time="{{ portal_licenses_mtime }}">{{ portal_licenses_mtime or '-' }}</span></div>
       </div>
       <div class="viz-grid two" style="margin-bottom:12px;">
         <section class="viz-panel">
@@ -7508,7 +7515,7 @@ async function runAISummary(){
       <span class="dot dok" style="margin-left:14px"></span>OK
       <span class="dot dmuted" style="margin-left:14px"></span>Muted
     </div>
-    <div class="sub">Dir: <code>{{ pg_base_dir }}</code> {% if refresh_seconds|int>0 %}Â· auto {{ refresh_seconds|int }}s{% endif %}</div>
+    <div class="sub">Dir: <code>{{ pg_base_dir }}</code> {% if refresh_seconds|int>0 %}- auto {{ refresh_seconds|int }}s{% endif %}</div>
 
     <div class="viz-grid two">
       <section class="viz-panel">
@@ -7620,7 +7627,7 @@ async function runAISummary(){
     </div>
 
     <div id="health_overview" class="healthpane" style="display:none">
-      <div class="sub">File: <code>{{ metrics_csv }}</code> &nbsp;?&nbsp; Updated: <span class="sub" data-local-time="{{ metrics_mtime }}">{{ metrics_mtime or '?' }}</span> {% if refresh_seconds|int>0 %}? auto {{ refresh_seconds|int }}s{% endif %}</div>
+      <div class="sub">File: <code>{{ metrics_csv }}</code> &nbsp;|&nbsp; Updated: <span class="sub" data-local-time="{{ metrics_mtime }}">{{ metrics_mtime or '-' }}</span> {% if refresh_seconds|int>0 %}- auto {{ refresh_seconds|int }}s{% endif %}</div>
       <div class="viz-grid two">
         <section class="viz-panel">
           <h3>Average Utilization</h3>
@@ -7671,7 +7678,7 @@ async function runAISummary(){
     </div>
 
     <div id="health_nomad" class="healthpane" style="display:none">
-      <div class="sub">File: <code>{{ nomad_csv }}</code> &nbsp;?&nbsp; Updated: <span class="sub" data-local-time="{{ nomad_mtime }}">{{ nomad_mtime or '?' }}</span></div>
+      <div class="sub">File: <code>{{ nomad_csv }}</code> &nbsp;|&nbsp; Updated: <span class="sub" data-local-time="{{ nomad_mtime }}">{{ nomad_mtime or '-' }}</span></div>
       <div class="viz-grid two">
         <section class="viz-panel">
           <h3>Nomad Consistency</h3>
@@ -7737,7 +7744,7 @@ async function runAISummary(){
     </div>
 
     <div id="health_consul" class="healthpane" style="display:none">
-      <div class="sub">File: <code>{{ consul_csv }}</code> &nbsp;?&nbsp; Updated: <span class="sub" data-local-time="{{ consul_mtime }}">{{ consul_mtime or '?' }}</span></div>
+      <div class="sub">File: <code>{{ consul_csv }}</code> &nbsp;|&nbsp; Updated: <span class="sub" data-local-time="{{ consul_mtime }}">{{ consul_mtime or '-' }}</span></div>
       <div class="viz-grid two">
         <section class="viz-panel">
           <h3>Consul Consistency</h3>
@@ -7803,7 +7810,7 @@ async function runAISummary(){
     </div>
 
     <div id="health_docker" class="healthpane" style="display:none">
-      <div class="sub">File: <code>{{ docker_csv }}</code> &nbsp;?&nbsp; Updated: <span class="sub" data-local-time="{{ docker_mtime }}">{{ docker_mtime or '?' }}</span></div>
+      <div class="sub">File: <code>{{ docker_csv }}</code> &nbsp;|&nbsp; Updated: <span class="sub" data-local-time="{{ docker_mtime }}">{{ docker_mtime or '-' }}</span></div>
       <div class="viz-grid two">
         <section class="viz-panel">
           <h3>Docker Restart Watch</h3>
