@@ -521,6 +521,18 @@ fi
     return parse_replication_status(text)
 
 
+def host_has_replication_role(exec_text):
+    cmd = r"""
+if [ -f /etc/ctera/.server_roles ]; then
+  cat /etc/ctera/.server_roles 2>/dev/null
+else
+  echo ''
+fi
+"""
+    text = str(exec_text(cmd) or "").strip().lower()
+    return "replication" in text
+
+
 # ---------------------------
 # Postgres fetch (with Name join)
 # ---------------------------
@@ -887,23 +899,24 @@ def main():
                     })
             elif not replication_db_found:
                 try:
-                    replication = gather_replication_status(exec_fn)
-                    replication_rows_out.append({
-                        "Name": meta["Name"],
-                        "Host": meta["Host"],
-                        "UID": meta["UID"],
-                        "Role": "Replication DB",
-                        "StreamingReplicationStatus": replication["StreamingReplicationStatus"],
-                        "StreamingReplicationLastSuccess": replication["StreamingReplicationLastSuccess"],
-                        "BaseBackupStatus": replication["BaseBackupStatus"],
-                        "BaseBackupLastSuccess": replication["BaseBackupLastSuccess"],
-                        "XlogArchiveStatus": replication["XlogArchiveStatus"],
-                        "XlogArchiveLastSuccess": replication["XlogArchiveLastSuccess"],
-                        "OverallStatus": replication["OverallStatus"],
-                        "CollectionError": "",
-                        "RawJson": replication["RawJson"],
-                    })
-                    replication_db_found = True
+                    if host_has_replication_role(exec_fn):
+                        replication = gather_replication_status(exec_fn)
+                        replication_rows_out.append({
+                            "Name": meta["Name"],
+                            "Host": meta["Host"],
+                            "UID": meta["UID"],
+                            "Role": "Replication DB",
+                            "StreamingReplicationStatus": replication["StreamingReplicationStatus"],
+                            "StreamingReplicationLastSuccess": replication["StreamingReplicationLastSuccess"],
+                            "BaseBackupStatus": replication["BaseBackupStatus"],
+                            "BaseBackupLastSuccess": replication["BaseBackupLastSuccess"],
+                            "XlogArchiveStatus": replication["XlogArchiveStatus"],
+                            "XlogArchiveLastSuccess": replication["XlogArchiveLastSuccess"],
+                            "OverallStatus": replication["OverallStatus"],
+                            "CollectionError": "",
+                            "RawJson": replication["RawJson"],
+                        })
+                        replication_db_found = True
                 except Exception:
                     pass
 
