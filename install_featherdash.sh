@@ -407,6 +407,11 @@ install_private_helper() {
 
   section "Installing helper"
 
+  if [[ -f "${SCRIPT_DIR}/${HELPER_ASSET_NAME_LINUX_AMD64}" ]]; then
+    install_helper_from_local_path "${SCRIPT_DIR}/${HELPER_ASSET_NAME_LINUX_AMD64}"
+    return 0
+  fi
+
   helper_source_mode="$(prompt_helper_source_mode)"
   if [[ "${helper_source_mode}" == "bundled" ]]; then
     local_helper_path="$(helper_bundled_source)" || {
