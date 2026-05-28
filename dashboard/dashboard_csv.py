@@ -5420,10 +5420,24 @@ async function runAISummary(){
     }
 
     function reconcileContextAndActiveTab(){
-      const currentTab = loadActive();
-      if (document.getElementById(currentTab)) return;
       const inAdmin = isAdministrationContext();
-      showTab(inAdmin ? 'admin_env' : 'overview');
+      const currentTab = loadActive();
+      const adminTabs = new Set(['admin_prereq', 'admin_env', 'thresholds', 'thresholds_all', 'notify_settings', 'notify_recipients', 'auth_settings', 'about']);
+      const monitoringTabs = new Set(['overview', 'jobs', 'tenants', 'portal', 'pg', 'svrhlth', 'edge']);
+      if (inAdmin) {
+        if (!adminTabs.has(currentTab)) {
+          showTab('admin_env');
+          return;
+        }
+      } else {
+        if (!monitoringTabs.has(currentTab)) {
+          showTab('overview');
+          return;
+        }
+      }
+      if (!document.getElementById(currentTab)) {
+        showTab(inAdmin ? 'admin_env' : 'overview');
+      }
     }
 
     function handleEnvironmentContextChange(){
