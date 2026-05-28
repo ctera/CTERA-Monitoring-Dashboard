@@ -3353,7 +3353,11 @@ def _build_threshold_catalog(cfg, env_id=None):
     for ds, rows, headers in dataset_sources:
         rules = _dataset_rule_container(doc, ds["key"], create=False)
         fields = []
-        for header in headers:
+        field_names = list(headers or [])
+        for rule_name in (rules.keys() if isinstance(rules, dict) else []):
+            if rule_name not in field_names:
+                field_names.append(rule_name)
+        for header in field_names:
             fields.append({
                 "name": header,
                 "rule": _normalize_rule_for_editor(rules.get(header)),
