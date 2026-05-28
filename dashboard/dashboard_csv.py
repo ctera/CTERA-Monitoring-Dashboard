@@ -4047,6 +4047,8 @@ HTML = """
       if (id === 'edge') {
         syncEdgeScrollerSetup();
       }
+      ensureTabDataLoaded(id);
+      syncLivePolling(id);
       scheduleAboutUpdateChecks(id);
     }
 
@@ -4268,6 +4270,14 @@ async function runAISummary(){
     let upgradeStatusSnapshot = null;
     let upgradeVersionState = null;
     let updateCheckTimer = null;
+    let jobStatusTimer = null;
+    let upgradeStatusTimer = null;
+    const lazyLoadState = {
+      thresholds: false,
+      notifications: false,
+      auth: false,
+      upgradeNetwork: false,
+    };
 
     function refreshCurrentView(forceMessage){
       const btn = document.getElementById('globalRefreshBtn');
@@ -4301,6 +4311,67 @@ async function runAISummary(){
           checkForUpdates({ silent:true });
         }
       }, 15 * 60 * 1000);
+    }
+
+    function ensureTabDataLoaded(activeTab){
+      if (activeTab === 'thresholds' || activeTab === 'thresholds_all') {
+        if (!lazyLoadState.thresholds) {
+          lazyLoadState.thresholds = true;
+          loadThresholdCatalog();
+        }
+        return;
+      }
+      if (activeTab === 'notify_settings' || activeTab === 'notify_recipients') {
+        if (!lazyLoadState.notifications) {
+          lazyLoadState.notifications = true;
+          loadNotificationsConfig();
+        }
+        return;
+      }
+      if (activeTab === 'auth_settings') {
+        if (!lazyLoadState.auth) {
+          lazyLoadState.auth = true;
+          loadAuthConfig();
+        }
+        return;
+      }
+      if (activeTab === 'about' && !lazyLoadState.upgradeNetwork) {
+        lazyLoadState.upgradeNetwork = true;
+        loadUpgradeNetworkConfig();
+      }
+    }
+
+    function syncLivePolling(activeTab){
+      const tab = activeTab || currentTab();
+      const wantsJobPolling = tab === 'jobs';
+      const wantsUpgradePolling = tab === 'about' || upgradeStatusSnapshot === 'running';
+
+      if (jobStatusTimer) {
+        window.clearInterval(jobStatusTimer);
+        jobStatusTimer = null;
+      }
+      if (upgradeStatusTimer) {
+        window.clearInterval(upgradeStatusTimer);
+        upgradeStatusTimer = null;
+      }
+
+      if (wantsJobPolling) {
+        refreshJobStatus();
+        jobStatusTimer = window.setInterval(() => {
+          if (document.visibilityState === 'visible' && currentTab() === 'jobs') {
+            refreshJobStatus();
+          }
+        }, 5000);
+      }
+
+      if (wantsUpgradePolling) {
+        refreshUpgradeStatus();
+        upgradeStatusTimer = window.setInterval(() => {
+          if (document.visibilityState === 'visible' && (currentTab() === 'about' || upgradeStatusSnapshot === 'running')) {
+            refreshUpgradeStatus();
+          }
+        }, 5000);
+      }
     }
 
     function applyUpgradeVersionState(data, options){
@@ -4462,7 +4533,7 @@ async function runAISummary(){
             }
           }
         }
-        if (previousStatus === 'running' && currentStatus !== 'running') {
+        if (previousStatus === 'running' && currentStatus !== 'running' && currentTab() === 'about') {
           const flash = document.getElementById('upgradeFlash');
           if (flash) flash.textContent = currentStatus === 'finished' ? 'Upgrade finished. Refreshing soon...' : 'Upgrade stopped. Refreshing soon...';
           window.setTimeout(() => window.location.reload(), 2500);
@@ -4550,7 +4621,7 @@ async function runAISummary(){
         if (allBtn) {
           allBtn.disabled = ['portal','filer'].some(name => (data[name] || {}).status === 'running');
         }
-        if (shouldAutoRefresh) {
+        if (shouldAutoRefresh && currentTab() === 'jobs') {
           scheduleAutoRefresh('Collector finished. Refreshing data...');
         }
       } catch (e) {
@@ -6087,15 +6158,8 @@ async function runAISummary(){
       clearEnvironmentForm();
       reconcileContextAndActiveTab();
       loadEnvironmentConfig();
-      loadThresholdCatalog();
-      loadNotificationsConfig();
-      loadAuthConfig();
-      loadUpgradeNetworkConfig();
-      refreshJobStatus();
-      refreshUpgradeStatus();
       scheduleAboutUpdateChecks(currentTab());
-      window.setInterval(refreshJobStatus, 5000);
-      window.setInterval(refreshUpgradeStatus, 5000);
+      syncLivePolling(currentTab());
     }
     window.addEventListener('DOMContentLoaded', init);
 
