@@ -9156,8 +9156,8 @@ def build_ai_summary_data(env_id=None):
             c_licenses_warn += 1
 
     portal_counts = {
-        "bad": c_servers["bad"] + c_certificate["bad"] + c_storage["bad"] + c_tasks["bad"] + c_licenses_bad,
-        "warn": c_servers["warn"] + c_certificate["warn"] + c_storage["warn"] + c_tasks["warn"] + c_licenses_warn,
+        "bad": c_servers["bad"] + c_storage["bad"] + c_tasks["bad"] + c_licenses_bad,
+        "warn": c_servers["warn"] + c_storage["warn"] + c_tasks["warn"] + c_licenses_warn,
     }
 
     # POSTGRES
@@ -9200,7 +9200,6 @@ def build_ai_summary_data(env_id=None):
         },
         "portal": {
             "servers_rows": len(servers_rows),
-            "certificate_rows": len(certificate_rows),
             "storage_rows": len(storage_rows),
             "tasks_rows": len(tasks_rows),
             "licenses_rows": len(licenses_rows),
@@ -9411,12 +9410,11 @@ def index():
     expired_licenses = sum(1 for row in licenses_rows if str(row.get("expired") or "").strip().lower() in {"true", "1", "yes", "y", "on"})
     portal_license_rows = sum(1 for row in licenses_rows if str(row.get("portal_license") or "").strip().lower() in {"true", "1", "yes", "y", "on"})
     portal_counts = {
-        "bad": c_servers["bad"] + c_certificate["bad"] + c_storage["bad"] + c_tasks["bad"] + c_licenses["bad"],
-        "warn": c_servers["warn"] + c_certificate["warn"] + c_storage["warn"] + c_tasks["warn"] + c_licenses["warn"],
+        "bad": c_servers["bad"] + c_storage["bad"] + c_tasks["bad"] + c_licenses["bad"],
+        "warn": c_servers["warn"] + c_storage["warn"] + c_tasks["warn"] + c_licenses["warn"],
     }
     portal_section_cards = [
         _section_card("Servers", len(servers_rows), c_servers),
-        _section_card("Certificate", len(certificate_rows), c_certificate),
         _section_card("Storage", len(storage_rows), c_storage),
         _section_card("Tasks", len(tasks_rows), c_tasks),
         _section_card("Licenses", len(licenses_rows), c_licenses),
@@ -9565,7 +9563,7 @@ def index():
     portal_tasks_mtime = _file_mtime_iso(portal_tasks_src)
     portal_licenses_mtime = _file_mtime_iso(portal_licenses_src)
 
-    portal_rows_total = len(servers_rows) + len(certificate_rows) + len(storage_rows) + len(tasks_rows) + len(licenses_rows)
+    portal_rows_total = len(servers_rows) + len(storage_rows) + len(tasks_rows) + len(licenses_rows)
     pg_rows_total = sum(len(v.get("rows", [])) for v in pg_views)
     overview_cards = [
         _overview_card("Tenants", "tenants", len(tenants_rows), tenants_counts, tenants_mtime),
@@ -9595,7 +9593,6 @@ def index():
         {"label": "Tenants", "updated_utc": tenants_mtime},
         {"label": "Edge Filers", "updated_utc": csv_mtime},
         {"label": "Portal Servers", "updated_utc": portal_servers_mtime},
-        {"label": "Portal Certificate", "updated_utc": portal_certificate_mtime},
         {"label": "Portal Storage", "updated_utc": portal_storage_mtime},
         {"label": "Portal Tasks", "updated_utc": portal_tasks_mtime},
         {"label": "Portal Licenses", "updated_utc": portal_licenses_mtime},
