@@ -3932,7 +3932,7 @@ HTML = """
       const raw = loadEnvironmentContext();
       const items = environmentConfig.items || [];
       if (!raw) return defaultEnvironmentContext();
-      if (raw === 'admin') return items.length ? defaultEnvironmentContext() : 'admin';
+      if (raw === 'admin') return 'admin';
       return items.some(item => String(item.id) === String(raw)) ? String(raw) : defaultEnvironmentContext();
     }
     function isAdministrationContext(){
