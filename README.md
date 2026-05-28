@@ -60,7 +60,7 @@ There are three supported install options.
 
 Most users should use **Install Option 2** or the quick tarball flow below.
 
-Before you start any install option, contact CTERA Support and get the GitHub token required for the private helper download. The installer will prompt you for this helper token during installation.
+Fresh package installs use the bundled helper automatically. A GitHub helper token from CTERA Support is only needed for separate manual helper install or recovery steps on existing customer systems.
 
 MainDB root access is required during setup. The initial connection can start with password or key authentication, either directly as `root` or through a user that can `sudo` to root, but the installer switches the ongoing workflow to certificate/key-based authentication.
 
@@ -153,7 +153,7 @@ cd /opt/monitoring/ctera-monitoring-dashboard
 sudo bash ./install.sh
 ```
 
-During the install, the script will prompt for the helper GitHub token used to download the private helper binary. Have the token from CTERA Support ready before you begin this step.
+During the install, the packaged helper is installed automatically from the bundle in this release.
 
 ---
 
@@ -195,7 +195,7 @@ cd /opt/monitoring/ctera-monitoring-dashboard
 sudo bash ./install.sh
 ```
 
-During the install, the script will prompt for the helper GitHub token used to download the private helper binary. Have the token from CTERA Support ready before you begin this step.
+During the install, the packaged helper is installed automatically from the bundle in this release.
 
 ---
 
@@ -226,7 +226,7 @@ cd ctera-monitoring-dashboard
 sudo bash ./install.sh
 ```
 
-During the install, the script will prompt for the helper GitHub token used to download the private helper binary. Have the token from CTERA Support ready before you begin this step.
+During the install, the packaged helper is installed automatically from the bundle in this release.
 
 ---
 
