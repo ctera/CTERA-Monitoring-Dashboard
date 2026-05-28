@@ -2,7 +2,7 @@
 # dashboard_csv.py - Edge + Portal + Postgres (with sub-tabs) + Servers Health
 # VERSION: 2025-11-20 r10 (AI summary styled + bugfix)
 
-import os, csv, re, base64, mimetypes, subprocess, shlex, sqlite3, smtplib, ssl
+import os, csv, re, base64, mimetypes, subprocess, shlex, sqlite3, smtplib, ssl, socket
 import paramiko
 import requests
 from flask import Flask, render_template_string, jsonify, request, session, redirect, url_for
@@ -72,6 +72,44 @@ def _shell_quote(value):
 def _env_quote_line(value):
     value = str(value or "").replace("'", "'\\''")
     return f"'{value}'"
+
+
+def _normalize_portal_host(value):
+    host = str(value or "").strip()
+    if not host:
+        return ""
+    host = re.sub(r"^https?://", "", host, flags=re.IGNORECASE)
+    host = host.split("/", 1)[0].strip()
+    return host
+
+
+def _validate_portal_login_settings(portal_fqdn, username, password):
+    host = _normalize_portal_host(portal_fqdn)
+    if not host:
+        raise ValueError("Portal FQDN is required.")
+    try:
+        socket.getaddrinfo(host, 443, type=socket.SOCK_STREAM)
+    except socket.gaierror as exc:
+        raise ValueError(f"Portal host '{host}' could not be resolved from this monitoring server.") from exc
+    try:
+        from cterasdk import GlobalAdmin
+        import cterasdk.settings
+
+        cterasdk.settings.core.syn.settings.connector.ssl = False
+        session = GlobalAdmin(host)
+        session.login(username, password)
+        try:
+            session.portals.browse_global_admin()
+        finally:
+            try:
+                session.logout()
+            except Exception:
+                pass
+    except ValueError:
+        raise
+    except Exception as exc:
+        detail = str(exc).strip() or exc.__class__.__name__
+        raise ValueError(f"Portal login check failed for '{host}': {detail}") from exc
 
 
 def _job_state_path(job_name):
@@ -2621,6 +2659,7 @@ def _save_environment(payload):
         raise ValueError("Initial SSH password is required for this SSH access mode.")
     if ssh_mode in {"root_key", "user_key_sudo"} and not ssh_key_path:
         raise ValueError("Upload an initial SSH private key for this SSH access mode.")
+    _validate_portal_login_settings(portal_fqdn, ctera_username, ctera_password)
     merged["portal_schedule_minutes"] = int(_coerce_threshold_value(merged.get("portal_schedule_minutes")) or 60)
     merged["filer_schedule_minutes"] = int(_coerce_threshold_value(merged.get("filer_schedule_minutes")) or 60)
     merged["pg_port"] = str(merged.get("pg_port") or "5432")
