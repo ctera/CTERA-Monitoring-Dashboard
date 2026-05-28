@@ -3940,10 +3940,9 @@ HTML = """
     }
     function effectiveEnvironmentContext(){
       const raw = loadEnvironmentContext();
+      if (raw === 'admin') return 'admin';
       const items = environmentConfig.items || [];
-      if (!raw) return defaultEnvironmentContext();
-      if (raw === 'admin') return items.length ? defaultEnvironmentContext() : 'admin';
-      return items.some(item => String(item.id) === String(raw)) ? String(raw) : defaultEnvironmentContext();
+      return items.some(item => String(item.id) === String(raw)) ? String(raw) : 'admin';
     }
     function isAdministrationContext(){
       return effectiveEnvironmentContext() === 'admin';
@@ -5456,8 +5455,12 @@ async function runAISummary(){
         select.appendChild(opt);
       });
       const hasCurrent = Array.from(select.options).some(opt => opt.value === current);
-      const nextValue = hasCurrent ? current : defaultEnvironmentContext();
+      const nextValue = hasCurrent ? current : 'admin';
       if (!hasCurrent || current !== nextValue) saveEnvironmentContext(nextValue);
+      if (!queryEnv && nextValue !== 'admin') {
+        navigateToEnvironment(nextValue);
+        return;
+      }
       select.value = nextValue;
       const selected = (environmentConfig.items || []).find(item => String(item.id) === String(nextValue));
       if (label) label.textContent = selected ? selected.name : 'Administration';
@@ -5465,13 +5468,10 @@ async function runAISummary(){
     }
 
     function reconcileContextAndActiveTab(){
-      const inAdmin = isAdministrationContext();
       const currentTab = loadActive();
-      const adminTabs = new Set(['admin_prereq', 'admin_env', 'thresholds', 'thresholds_all', 'notify_settings', 'notify_recipients', 'auth_settings', 'about']);
-      const monitoringTabs = new Set(['overview', 'jobs', 'tenants', 'portal', 'pg', 'svrhlth', 'edge']);
-      if (!document.getElementById(currentTab)) {
-        showTab(inAdmin ? 'admin_env' : 'overview');
-      }
+      if (document.getElementById(currentTab)) return;
+      const inAdmin = isAdministrationContext();
+      showTab(inAdmin ? 'admin_env' : 'overview');
     }
 
     function handleEnvironmentContextChange(){
