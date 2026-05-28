@@ -3942,7 +3942,7 @@ HTML = """
       const raw = loadEnvironmentContext();
       const items = environmentConfig.items || [];
       if (!raw) return defaultEnvironmentContext();
-      if (raw === 'admin') return 'admin';
+      if (raw === 'admin') return items.length ? defaultEnvironmentContext() : 'admin';
       return items.some(item => String(item.id) === String(raw)) ? String(raw) : defaultEnvironmentContext();
     }
     function isAdministrationContext(){
@@ -5456,12 +5456,8 @@ async function runAISummary(){
         select.appendChild(opt);
       });
       const hasCurrent = Array.from(select.options).some(opt => opt.value === current);
-        const nextValue = hasCurrent ? current : defaultEnvironmentContext();
-        if (!hasCurrent || current !== nextValue) saveEnvironmentContext(nextValue);
-        if (!queryEnv && nextValue !== 'admin') {
-          navigateToEnvironment(nextValue);
-        return;
-      }
+      const nextValue = hasCurrent ? current : defaultEnvironmentContext();
+      if (!hasCurrent || current !== nextValue) saveEnvironmentContext(nextValue);
       select.value = nextValue;
       const selected = (environmentConfig.items || []).find(item => String(item.id) === String(nextValue));
       if (label) label.textContent = selected ? selected.name : 'Administration';
@@ -5473,17 +5469,6 @@ async function runAISummary(){
       const currentTab = loadActive();
       const adminTabs = new Set(['admin_prereq', 'admin_env', 'thresholds', 'thresholds_all', 'notify_settings', 'notify_recipients', 'auth_settings', 'about']);
       const monitoringTabs = new Set(['overview', 'jobs', 'tenants', 'portal', 'pg', 'svrhlth', 'edge']);
-      if (inAdmin) {
-        if (!adminTabs.has(currentTab)) {
-          showTab('admin_env');
-          return;
-        }
-      } else {
-        if (!monitoringTabs.has(currentTab)) {
-          showTab('overview');
-          return;
-        }
-      }
       if (!document.getElementById(currentTab)) {
         showTab(inAdmin ? 'admin_env' : 'overview');
       }
