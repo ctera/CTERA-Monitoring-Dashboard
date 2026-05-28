@@ -4586,37 +4586,7 @@ async function runAISummary(){
       try{
         const resp = await fetch('/job_status?_=' + Date.now(), { cache: 'no-store' });
         const data = await resp.json();
-        let shouldAutoRefresh = false;
-        ['portal','filer'].forEach(name => {
-          const card = data[name] || {};
-          const previousStatus = jobStatusSnapshot[name];
-          const currentStatus = card.status || 'idle';
-          const badge = document.getElementById('jobBadge_' + name);
-          const started = document.getElementById('jobStarted_' + name);
-          const finished = document.getElementById('jobFinished_' + name);
-          const exitCode = document.getElementById('jobExit_' + name);
-          const tailCmd = document.getElementById('jobTailCmd_' + name);
-          const tail = document.getElementById('jobTail_' + name);
-          const btn = document.getElementById('runBtn_' + name);
-          if (badge){
-            const status = card.status || 'idle';
-            badge.className = 'ops-badge ' + status;
-            badge.textContent = status.charAt(0).toUpperCase() + status.slice(1);
-          }
-          if (started) started.textContent = formatLocalTimestamp(card.started_at || '');
-          if (finished) finished.textContent = formatLocalTimestamp(card.finished_at || '');
-          if (exitCode) exitCode.textContent = card.last_exit || '-';
-          if (tailCmd) tailCmd.textContent = card.tail_command || '';
-          if (tail) {
-            tail.textContent = card.tail || 'No recent log lines.';
-            tail.scrollTop = tail.scrollHeight;
-          }
-          if (btn) btn.disabled = (card.status === 'running');
-          if (previousStatus === 'running' && currentStatus !== 'running') {
-            shouldAutoRefresh = true;
-          }
-          jobStatusSnapshot[name] = currentStatus;
-        });
+        const shouldAutoRefresh = applyJobStatusData(data);
         const allBtn = document.getElementById('runBtn_all');
         if (allBtn) {
           allBtn.disabled = ['portal','filer'].some(name => (data[name] || {}).status === 'running');
@@ -4627,6 +4597,41 @@ async function runAISummary(){
       } catch (e) {
         console.error('job status failed', e);
       }
+    }
+
+    function applyJobStatusData(data){
+      let shouldAutoRefresh = false;
+      ['portal','filer'].forEach(name => {
+        const card = data[name] || {};
+        const previousStatus = jobStatusSnapshot[name];
+        const currentStatus = card.status || 'idle';
+        const badge = document.getElementById('jobBadge_' + name);
+        const started = document.getElementById('jobStarted_' + name);
+        const finished = document.getElementById('jobFinished_' + name);
+        const exitCode = document.getElementById('jobExit_' + name);
+        const tailCmd = document.getElementById('jobTailCmd_' + name);
+        const tail = document.getElementById('jobTail_' + name);
+        const btn = document.getElementById('runBtn_' + name);
+        if (badge){
+          const status = card.status || 'idle';
+          badge.className = 'ops-badge ' + status;
+          badge.textContent = status.charAt(0).toUpperCase() + status.slice(1);
+        }
+        if (started) started.textContent = formatLocalTimestamp(card.started_at || '');
+        if (finished) finished.textContent = formatLocalTimestamp(card.finished_at || '');
+        if (exitCode) exitCode.textContent = card.last_exit || '-';
+        if (tailCmd) tailCmd.textContent = card.tail_command || '';
+        if (tail) {
+          tail.textContent = card.tail || 'No recent log lines.';
+          tail.scrollTop = tail.scrollHeight;
+        }
+        if (btn) btn.disabled = (card.status === 'running');
+        if (previousStatus === 'running' && currentStatus !== 'running') {
+          shouldAutoRefresh = true;
+        }
+        jobStatusSnapshot[name] = currentStatus;
+      });
+      return shouldAutoRefresh;
     }
 
     async function runCollector(jobName, forcedEnvironmentId){
@@ -4646,6 +4651,34 @@ async function runAISummary(){
           const data = await resp.json();
           if (!resp.ok || !data.ok) {
             throw new Error(data.error || 'Collector launch failed');
+          }
+          if (jobName === 'all') {
+            const current = {
+              portal: {
+                status: jobStatusSnapshot.portal || 'idle',
+                started_at: '',
+                finished_at: '',
+                last_exit: '',
+                tail_command: '',
+                tail: '',
+              },
+              filer: {
+                status: jobStatusSnapshot.filer || 'idle',
+                started_at: '',
+                finished_at: '',
+                last_exit: '',
+                tail_command: '',
+                tail: '',
+              },
+            };
+            current[name] = data.job || current[name];
+            applyJobStatusData(current);
+          } else {
+            applyJobStatusData({ [name]: data.job || {} });
+          }
+          const allBtn = document.getElementById('runBtn_all');
+          if (allBtn) {
+            allBtn.disabled = ['portal','filer'].some(job => jobStatusSnapshot[job] === 'running');
           }
         } catch (e) {
           console.error('job launch failed', e);
