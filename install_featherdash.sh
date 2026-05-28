@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
 PRODUCT_NAME="CTERA Monitoring Dashboard"
 PRODUCT_SLUG="ctera-monitoring-dashboard"
 LEGACY_SERVICE_NAME="featherdash"
