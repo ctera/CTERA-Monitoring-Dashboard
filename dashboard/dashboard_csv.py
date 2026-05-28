@@ -3632,6 +3632,7 @@ HTML = """
     .ops-status-head { display:flex; justify-content:space-between; gap:12px; align-items:flex-start; margin-bottom:10px; }
     .ops-status-head h3 { margin:0; font-size:18px; color:var(--primary); font-weight:600; }
     .ops-badge { display:inline-flex; align-items:center; border-radius:999px; padding:6px 12px; font-size:12px; font-weight:900; letter-spacing:.01em; white-space:nowrap; }
+    .ops-badge.launching { color:#7c2d12; background:#ffedd5; }
     .ops-badge.running { color:#1d4ed8; background:#dbeafe; }
     .ops-badge.finished { color:#166534; background:#dcfce7; }
     .ops-badge.failed { color:#b91c1c; background:#fee2e2; }
@@ -4631,6 +4632,25 @@ async function runAISummary(){
       });
     }
 
+    function setJobLaunchingState(name){
+      const badge = document.getElementById('jobBadge_' + name);
+      const started = document.getElementById('jobStarted_' + name);
+      const finished = document.getElementById('jobFinished_' + name);
+      const exitCode = document.getElementById('jobExit_' + name);
+      const tail = document.getElementById('jobTail_' + name);
+      const btn = document.getElementById('runBtn_' + name);
+      if (badge) {
+        badge.className = 'ops-badge launching';
+        badge.textContent = 'Launching...';
+      }
+      if (started) started.textContent = formatLocalTimestamp(new Date().toISOString());
+      if (finished) finished.textContent = '-';
+      if (exitCode) exitCode.textContent = '-';
+      if (tail) tail.textContent = 'Starting collector...';
+      if (btn) btn.disabled = true;
+      jobStatusSnapshot[name] = 'launching';
+    }
+
     async function runCollector(jobName, forcedEnvironmentId){
       const targetJobs = jobName === 'all' ? ['portal','filer'] : [jobName];
       const environmentId = forcedEnvironmentId || effectiveEnvironmentContext();
@@ -4638,6 +4658,9 @@ async function runAISummary(){
         alert('Select a portal environment first.');
         return;
       }
+      targetJobs.forEach(name => setJobLaunchingState(name));
+      const allBtn = document.getElementById('runBtn_all');
+      if (allBtn) allBtn.disabled = true;
       for (const name of targetJobs) {
         try{
           const resp = await fetch('/run_job/' + name, {
@@ -4675,10 +4698,11 @@ async function runAISummary(){
           }
           const allBtn = document.getElementById('runBtn_all');
           if (allBtn) {
-            allBtn.disabled = ['portal','filer'].some(job => jobStatusSnapshot[job] === 'running');
+            allBtn.disabled = ['portal','filer'].some(job => ['launching', 'running'].includes(jobStatusSnapshot[job]));
           }
         } catch (e) {
           console.error('job launch failed', e);
+          refreshJobStatus();
           alert('Could not start ' + name + ' collector: ' + e.message);
           break;
         }
