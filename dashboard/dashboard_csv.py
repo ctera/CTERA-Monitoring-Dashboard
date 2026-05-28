@@ -2,7 +2,7 @@
 # dashboard_csv.py - Edge + Portal + Postgres (with sub-tabs) + Servers Health
 # VERSION: 2025-11-20 r10 (AI summary styled + bugfix)
 
-import os, csv, re, base64, mimetypes, subprocess, shlex, sqlite3, smtplib, ssl, socket
+import os, csv, re, base64, mimetypes, subprocess, shlex, sqlite3, smtplib, ssl, socket, asyncio
 import paramiko
 import requests
 from flask import Flask, render_template_string, jsonify, request, session, redirect, url_for
@@ -96,6 +96,8 @@ def _validate_portal_login_settings(portal_fqdn, username, password):
         import cterasdk.settings
 
         cterasdk.settings.core.syn.settings.connector.ssl = False
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
         session = GlobalAdmin(host)
         session.login(username, password)
         try:
@@ -103,6 +105,14 @@ def _validate_portal_login_settings(portal_fqdn, username, password):
         finally:
             try:
                 session.logout()
+            except Exception:
+                pass
+            try:
+                loop.close()
+            except Exception:
+                pass
+            try:
+                asyncio.set_event_loop(None)
             except Exception:
                 pass
     except ValueError:

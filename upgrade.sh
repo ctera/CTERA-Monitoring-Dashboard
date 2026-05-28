@@ -28,6 +28,7 @@ UPGRADE_SUDOERS="${DEFAULT_UPGRADE_SUDOERS}"
 NONINTERACTIVE=0
 THRESHOLD_STRATEGY="merge"
 PKG_MGR=""
+INSTALL_DIR_EXPLICIT=0
 HELPER_NAME="ctera-secret-helper"
 HELPER_INSTALL_PATH="/usr/local/bin/${HELPER_NAME}"
 HELPER_VERSION="0.1.0"
@@ -62,6 +63,7 @@ while [[ $# -gt 0 ]]; do
   case "$1" in
     --install-dir)
       INSTALL_DIR="${2:-}"
+      INSTALL_DIR_EXPLICIT=1
       shift 2
       ;;
     --config-file)
@@ -103,6 +105,11 @@ while [[ $# -gt 0 ]]; do
       ;;
   esac
 done
+
+AUTO_DETECTED_INSTALL_DIR="$(detect_existing_install_dir || true)"
+if [[ "${INSTALL_DIR_EXPLICIT}" -eq 0 && -n "${AUTO_DETECTED_INSTALL_DIR}" ]]; then
+  INSTALL_DIR="${AUTO_DETECTED_INSTALL_DIR}"
+fi
 
 if [[ "${EUID}" -ne 0 ]]; then
   echo "Run this upgrade as root, for example: sudo bash ./upgrade.sh" >&2
@@ -152,6 +159,39 @@ prompt_threshold_strategy() {
 section() {
   echo
   echo "==> $1"
+}
+
+detect_existing_install_dir() {
+  local candidate line
+
+  if [[ -f "${DEFAULT_SERVICE_FILE}" ]]; then
+    line="$(grep -E '^WorkingDirectory=' "${DEFAULT_SERVICE_FILE}" 2>/dev/null | head -n 1 || true)"
+    candidate="${line#WorkingDirectory=}"
+    if [[ -n "${candidate}" && -d "${candidate}" ]]; then
+      printf '%s' "${candidate}"
+      return 0
+    fi
+
+    line="$(grep -E '^ExecStart=' "${DEFAULT_SERVICE_FILE}" 2>/dev/null | head -n 1 || true)"
+    candidate="$(printf '%s' "${line}" | sed -E 's#^ExecStart=(.+)/venv/bin/python .*#\1#' || true)"
+    if [[ -n "${candidate}" && -d "${candidate}" ]]; then
+      printf '%s' "${candidate}"
+      return 0
+    fi
+  fi
+
+  for candidate in \
+    "${DEFAULT_INSTALL_DIR}" \
+    "/opt/ctera-monitoring-dashboard" \
+    "/opt/ctera/ctera-monitoring-dashboard"
+  do
+    if [[ -d "${candidate}" ]]; then
+      printf '%s' "${candidate}"
+      return 0
+    fi
+  done
+
+  return 1
 }
 
 detect_platform_tools() {
@@ -702,6 +742,21 @@ if [[ "${NONINTERACTIVE}" -eq 0 ]]; then
   INSTALL_DIR="$(prompt_value "Current installation directory" "${INSTALL_DIR}")"
   BACKUP_ROOT="$(prompt_value "Backup location" "${BACKUP_ROOT}")"
   THRESHOLD_STRATEGY="$(prompt_threshold_strategy)"
+fi
+
+if [[ ! -d "${INSTALL_DIR}" ]]; then
+  if [[ -n "${AUTO_DETECTED_INSTALL_DIR}" && -d "${AUTO_DETECTED_INSTALL_DIR}" ]]; then
+    echo "Requested installation directory does not exist: ${INSTALL_DIR}" >&2
+    echo "Using detected existing installation directory instead: ${AUTO_DETECTED_INSTALL_DIR}" >&2
+    INSTALL_DIR="${AUTO_DETECTED_INSTALL_DIR}"
+  else
+    echo "Installation directory does not exist: ${INSTALL_DIR}" >&2
+    echo "Checked service and known locations such as:" >&2
+    echo "  - ${DEFAULT_INSTALL_DIR}" >&2
+    echo "  - /opt/ctera-monitoring-dashboard" >&2
+    echo "  - /opt/ctera/ctera-monitoring-dashboard" >&2
+    exit 1
+  fi
 fi
 
 if [[ ! -d "${INSTALL_DIR}" ]]; then
