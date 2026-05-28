@@ -1212,42 +1212,42 @@ def make_portal_warn_fn(ext, section):
                 return ''
 
         # TASKS: ElapsedSeconds only when running
-          if section == 'tasks' and c == 'elapsedseconds':
-              try:
-                  state = (row.get('State') or '').strip().lower()
-                  thr_rule = rules.get('ElapsedSeconds') or rules.get('elapsedseconds')
-                  if state == 'running' and thr_rule:
-                      return eval_level(val, thr_rule) or ''
-              except Exception:
-                  pass  # fallthrough
+        if section == 'tasks' and c == 'elapsedseconds':
+            try:
+                state = (row.get('State') or '').strip().lower()
+                thr_rule = rules.get('ElapsedSeconds') or rules.get('elapsedseconds')
+                if state == 'running' and thr_rule:
+                    return eval_level(val, thr_rule) or ''
+            except Exception:
+                pass  # fallthrough
 
-          if section == 'licenses':
-              lower = str(val or '').strip().lower()
-              if c == 'valid' and lower in {'false', '0', 'no', 'n', 'off'}:
-                  return 'bad'
-              if c == 'expired' and lower in {'true', '1', 'yes', 'y', 'on'}:
-                  return 'bad'
-              if c == 'expiration_date':
-                  portal = (ext.get("portal") or {}) if isinstance(ext, dict) else {}
-                  lic = portal.get('licenses') or {}
-                  exp_rule = lic.get('expiration_date') or {}
-                  try:
-                      warn_days = int(exp_rule.get('warn_days')) if exp_rule.get('warn_days') is not None else None
-                  except Exception:
-                      warn_days = None
-                  if warn_days is not None:
-                      expired = str(row.get('expired') or '').strip().lower() in {'true', '1', 'yes', 'y', 'on'}
-                      if not expired:
-                          exp_date = _parse_iso_date(val)
-                          if exp_date is not None:
-                              delta = (exp_date - date.today()).days
-                              if 0 <= delta <= warn_days:
-                                  return 'warn'
+        if section == 'licenses':
+            lower = str(val or '').strip().lower()
+            if c == 'valid' and lower in {'false', '0', 'no', 'n', 'off'}:
+                return 'bad'
+            if c == 'expired' and lower in {'true', '1', 'yes', 'y', 'on'}:
+                return 'bad'
+            if c == 'expiration_date':
+                portal = (ext.get("portal") or {}) if isinstance(ext, dict) else {}
+                lic = portal.get('licenses') or {}
+                exp_rule = lic.get('expiration_date') or {}
+                try:
+                    warn_days = int(exp_rule.get('warn_days')) if exp_rule.get('warn_days') is not None else None
+                except Exception:
+                    warn_days = None
+                if warn_days is not None:
+                    expired = str(row.get('expired') or '').strip().lower() in {'true', '1', 'yes', 'y', 'on'}
+                    if not expired:
+                        exp_date = _parse_iso_date(val)
+                        if exp_date is not None:
+                            delta = (exp_date - date.today()).days
+                            if 0 <= delta <= warn_days:
+                                return 'warn'
 
-          # YAML rule for this column?
-          rule = rules.get(col)
-          if rule:
-              return eval_level(val, rule) or ''
+        # YAML rule for this column?
+        rule = rules.get(col)
+        if rule:
+            return eval_level(val, rule) or ''
 
         # built-ins (backstop)
         if section == "servers" and c == "connected":
