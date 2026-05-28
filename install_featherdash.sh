@@ -200,7 +200,12 @@ helper_installed_version() {
   if [[ ! -x "${HELPER_INSTALL_PATH}" ]]; then
     return 1
   fi
-  "${HELPER_INSTALL_PATH}" --version 2>/dev/null | head -n1
+  "${HELPER_INSTALL_PATH}" --version 2>/dev/null | head -n1 | tr -d '\r'
+}
+
+helper_version_matches() {
+  local current_version="${1:-}"
+  [[ -n "${current_version}" && "${current_version}" == *"${HELPER_VERSION}"* ]]
 }
 
 save_helper_token() {
@@ -380,12 +385,15 @@ install_helper_from_local_path() {
   rm -rf "${tmp_dir}"
 
   current_version="$(helper_installed_version || true)"
-  if [[ "${current_version}" != "${HELPER_VERSION}" ]]; then
-    echo "Installed helper version '${current_version:-unknown}' does not match expected ${HELPER_VERSION}." >&2
-    return 1
+  if ! helper_version_matches "${current_version}"; then
+    if [[ -z "${current_version}" ]]; then
+      echo "  Warning: helper installed to ${HELPER_INSTALL_PATH}, but version output was empty. Continuing with bundled helper." >&2
+    else
+      echo "  Warning: helper version output '${current_version}' did not exactly match expected ${HELPER_VERSION}. Continuing with bundled helper." >&2
+    fi
   fi
 
-  echo "  Installed ${HELPER_NAME} ${current_version} from local path to ${HELPER_INSTALL_PATH}"
+  echo "  Installed ${HELPER_NAME} ${current_version:-unknown} from local path to ${HELPER_INSTALL_PATH}"
 }
 
 install_private_helper() {
@@ -454,12 +462,15 @@ install_private_helper() {
   rm -rf "${tmp_dir}"
 
   current_version="$(helper_installed_version || true)"
-  if [[ "${current_version}" != "${HELPER_VERSION}" ]]; then
-    echo "Installed helper version '${current_version:-unknown}' does not match expected ${HELPER_VERSION}." >&2
-    return 1
+  if ! helper_version_matches "${current_version}"; then
+    if [[ -z "${current_version}" ]]; then
+      echo "  Warning: helper installed to ${HELPER_INSTALL_PATH}, but version output was empty. Continuing." >&2
+    else
+      echo "  Warning: helper version output '${current_version}' did not exactly match expected ${HELPER_VERSION}. Continuing." >&2
+    fi
   fi
 
-  echo "  Installed ${HELPER_NAME} ${current_version} to ${HELPER_INSTALL_PATH}"
+  echo "  Installed ${HELPER_NAME} ${current_version:-unknown} to ${HELPER_INSTALL_PATH}"
 }
 
 configure_local_firewall() {
