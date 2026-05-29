@@ -953,18 +953,19 @@ def main():
                     })
                 try:
                     snapshots = gather_storage_snapshots(exec_fn)
-                    snapshot_rows_out.append({
-                        "Name": meta["Name"],
-                        "Host": meta["Host"],
-                        "UID": meta["UID"],
-                        "Role": "MainDB",
-                        "LatestSnapshot": snapshots["LatestSnapshot"],
-                        "PreviousSnapshot": snapshots["PreviousSnapshot"],
-                        "SnapshotCount": snapshots["SnapshotCount"],
-                        "Status": snapshots["Status"],
-                        "CollectionError": snapshots["CollectionError"],
-                        "RawOutput": snapshots["RawOutput"],
-                    })
+                    if snapshots["Status"] != "NotAvailable":
+                        snapshot_rows_out.append({
+                            "Name": meta["Name"],
+                            "Host": meta["Host"],
+                            "UID": meta["UID"],
+                            "Role": "MainDB",
+                            "LatestSnapshot": snapshots["LatestSnapshot"],
+                            "PreviousSnapshot": snapshots["PreviousSnapshot"],
+                            "SnapshotCount": snapshots["SnapshotCount"],
+                            "Status": snapshots["Status"],
+                            "CollectionError": snapshots["CollectionError"],
+                            "RawOutput": snapshots["RawOutput"],
+                        })
                 except Exception as exc:
                     snapshot_rows_out.append({
                         "Name": meta["Name"],
@@ -997,33 +998,6 @@ def main():
                             "CollectionError": "",
                             "RawJson": replication["RawJson"],
                         })
-                        try:
-                            snapshots = gather_storage_snapshots(exec_fn)
-                            snapshot_rows_out.append({
-                                "Name": meta["Name"],
-                                "Host": meta["Host"],
-                                "UID": meta["UID"],
-                                "Role": "Replication DB",
-                                "LatestSnapshot": snapshots["LatestSnapshot"],
-                                "PreviousSnapshot": snapshots["PreviousSnapshot"],
-                                "SnapshotCount": snapshots["SnapshotCount"],
-                                "Status": snapshots["Status"],
-                                "CollectionError": snapshots["CollectionError"],
-                                "RawOutput": snapshots["RawOutput"],
-                            })
-                        except Exception as exc:
-                            snapshot_rows_out.append({
-                                "Name": meta["Name"],
-                                "Host": meta["Host"],
-                                "UID": meta["UID"],
-                                "Role": "Replication DB",
-                                "LatestSnapshot": "",
-                                "PreviousSnapshot": "",
-                                "SnapshotCount": "",
-                                "Status": "ERROR",
-                                "CollectionError": str(exc),
-                                "RawOutput": "",
-                            })
                         replication_db_found = True
                 except Exception:
                     pass
