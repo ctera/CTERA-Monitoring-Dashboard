@@ -521,6 +521,58 @@ fi
     return parse_replication_status(text)
 
 
+def parse_storage_snapshot_status(text):
+    snapshot_names = []
+    in_snapshots = False
+    for raw_line in (text or "").splitlines():
+        line = raw_line.strip()
+        if not line:
+            continue
+        if "EBS Volume Snapshots" in line:
+            in_snapshots = True
+            continue
+        if not in_snapshots:
+            continue
+        if line.lower().startswith("available snapshots"):
+            continue
+        match = re.match(r"^\d+\.\s*(.+?)\s*$", line)
+        if match:
+            snapshot_names.append(match.group(1).strip())
+    if not in_snapshots:
+        return {
+            "Status": "NotAvailable",
+            "SnapshotCount": 0,
+            "LatestSnapshot": "",
+            "PreviousSnapshot": "",
+            "CollectionError": "",
+        }
+    latest = snapshot_names[-1] if snapshot_names else ""
+    previous = snapshot_names[-2] if len(snapshot_names) >= 2 else ""
+    return {
+        "Status": "OK",
+        "SnapshotCount": len(snapshot_names),
+        "LatestSnapshot": latest,
+        "PreviousSnapshot": previous,
+        "CollectionError": "",
+    }
+
+
+def gather_storage_snapshots(exec_text):
+    cmd = r"""
+if command -v portal-storage-util.sh >/dev/null 2>&1; then
+  portal-storage-util.sh status 2>/dev/null
+elif [ -x /usr/local/bin/portal-storage-util.sh ]; then
+  /usr/local/bin/portal-storage-util.sh status 2>/dev/null
+else
+  echo ''
+fi
+"""
+    text = exec_text(cmd)
+    parsed = parse_storage_snapshot_status(text)
+    parsed["RawOutput"] = str(text or "").strip()
+    return parsed
+
+
 def host_has_replication_role(exec_text):
     cmd = r"""
 if [ -f /etc/ctera/.server_roles ]; then
@@ -672,6 +724,7 @@ def main():
     ap.add_argument("--consul-out", default=None, help="Optional CSV output path for Consul member snapshots")
     ap.add_argument("--docker-out", default=None, help="Optional CSV output path for Docker container snapshots")
     ap.add_argument("--replication-out", default=None, help="Optional CSV output path for portal replication status snapshots")
+    ap.add_argument("--snapshots-out", default=None, help="Optional CSV output path for portal storage snapshot status")
 
     args = ap.parse_args()
 
@@ -692,6 +745,7 @@ def main():
     consul_rows_out = []
     docker_rows_out = []
     replication_rows_out = []
+    snapshot_rows_out = []
     replication_db_found = False
     previous_docker_counts = load_previous_docker_counts(args.docker_out) if args.docker_out else {}
 
@@ -897,6 +951,33 @@ def main():
                         "CollectionError": str(exc),
                         "RawJson": "",
                     })
+                try:
+                    snapshots = gather_storage_snapshots(exec_fn)
+                    snapshot_rows_out.append({
+                        "Name": meta["Name"],
+                        "Host": meta["Host"],
+                        "UID": meta["UID"],
+                        "Role": "MainDB",
+                        "LatestSnapshot": snapshots["LatestSnapshot"],
+                        "PreviousSnapshot": snapshots["PreviousSnapshot"],
+                        "SnapshotCount": snapshots["SnapshotCount"],
+                        "Status": snapshots["Status"],
+                        "CollectionError": snapshots["CollectionError"],
+                        "RawOutput": snapshots["RawOutput"],
+                    })
+                except Exception as exc:
+                    snapshot_rows_out.append({
+                        "Name": meta["Name"],
+                        "Host": meta["Host"],
+                        "UID": meta["UID"],
+                        "Role": "MainDB",
+                        "LatestSnapshot": "",
+                        "PreviousSnapshot": "",
+                        "SnapshotCount": "",
+                        "Status": "ERROR",
+                        "CollectionError": str(exc),
+                        "RawOutput": "",
+                    })
             elif not replication_db_found:
                 try:
                     if host_has_replication_role(exec_fn):
@@ -916,6 +997,33 @@ def main():
                             "CollectionError": "",
                             "RawJson": replication["RawJson"],
                         })
+                        try:
+                            snapshots = gather_storage_snapshots(exec_fn)
+                            snapshot_rows_out.append({
+                                "Name": meta["Name"],
+                                "Host": meta["Host"],
+                                "UID": meta["UID"],
+                                "Role": "Replication DB",
+                                "LatestSnapshot": snapshots["LatestSnapshot"],
+                                "PreviousSnapshot": snapshots["PreviousSnapshot"],
+                                "SnapshotCount": snapshots["SnapshotCount"],
+                                "Status": snapshots["Status"],
+                                "CollectionError": snapshots["CollectionError"],
+                                "RawOutput": snapshots["RawOutput"],
+                            })
+                        except Exception as exc:
+                            snapshot_rows_out.append({
+                                "Name": meta["Name"],
+                                "Host": meta["Host"],
+                                "UID": meta["UID"],
+                                "Role": "Replication DB",
+                                "LatestSnapshot": "",
+                                "PreviousSnapshot": "",
+                                "SnapshotCount": "",
+                                "Status": "ERROR",
+                                "CollectionError": str(exc),
+                                "RawOutput": "",
+                            })
                         replication_db_found = True
                 except Exception:
                     pass
@@ -1000,6 +1108,18 @@ def main():
                     "OverallStatus": "ERROR",
                     "CollectionError": str(e),
                     "RawJson": "",
+                })
+                snapshot_rows_out.append({
+                    "Name": meta["Name"],
+                    "Host": meta["Host"],
+                    "UID": meta["UID"],
+                    "Role": "MainDB",
+                    "LatestSnapshot": "",
+                    "PreviousSnapshot": "",
+                    "SnapshotCount": "",
+                    "Status": "ERROR",
+                    "CollectionError": str(e),
+                    "RawOutput": "",
                 })
             nomad_rows_out.append({
                 "SourceName": meta["Name"],
@@ -1135,6 +1255,21 @@ def main():
             for r in replication_rows_out:
                 w.writerow({h: r.get(h, "") for h in replication_headers})
         os.replace(tmp, args.replication_out)
+
+    if args.snapshots_out:
+        snapshot_headers = [
+            "Name","Host","UID","Role",
+            "LatestSnapshot","PreviousSnapshot","SnapshotCount",
+            "Status","CollectionError","RawOutput"
+        ]
+        tmp = args.snapshots_out + ".tmp"
+        os.makedirs(os.path.dirname(args.snapshots_out), exist_ok=True)
+        with open(tmp, "w", newline="", encoding="utf-8") as f:
+            w = csv.DictWriter(f, fieldnames=snapshot_headers)
+            w.writeheader()
+            for r in snapshot_rows_out:
+                w.writerow({h: r.get(h, "") for h in snapshot_headers})
+        os.replace(tmp, args.snapshots_out)
 
     if jump_client:
         jump_client.close()
