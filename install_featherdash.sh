@@ -644,10 +644,10 @@ NGINXEOF
     fi
     nginx -t
     systemctl enable nginx >/dev/null 2>&1 || true
-    systemctl restart nginx
     set_config_key PORT 8081
     set_config_key FEATHERDASH_BIND_HOST 127.0.0.1
     systemctl restart "${PRODUCT_SLUG}"
+    systemctl restart nginx
     open_firewall_port "\${https_port}"
     if [[ "\${redirect_http}" == "true" ]]; then
       open_firewall_port 8080
