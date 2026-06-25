@@ -339,7 +339,7 @@ def _check_github_version():
             message = f"Update available: {local_version} -> {remote_version}"
         elif comparison > 0:
             status = "stale_remote"
-            message = f"GitHub returned an older version ({remote_version}). The response may be cached; please try again."
+            message = f"Installed build is newer than GitHub main (GitHub: {remote_version})."
         else:
             status = "up_to_date"
             message = f"Up to date: {local_version}"
@@ -3709,7 +3709,7 @@ HTML = """
     .top-user-name { display:inline-flex; align-items:center; gap:8px; padding:8px 12px; border-radius:999px; background:#f8fafc; color:rgb(44, 68, 83); font-size:12px; font-weight:700; border:1px solid #dbe4f0; }
     .top-user-name strong { font-weight:800; color:#1f2937; }
     .refresh-note { color:var(--muted); font-size:12px; font-weight:700; }
-    .update-note { color:var(--muted); font-size:12px; font-weight:700; max-width:320px; text-align:right; }
+    .update-note { color:var(--muted); font-size:12px; font-weight:700; max-width:260px; text-align:right; line-height:1.3; overflow-wrap:anywhere; }
     .update-note.ok { color:#0f766e; }
     .update-note.warn { color:#b45309; }
     .update-note.error { color:#b91c1c; }
