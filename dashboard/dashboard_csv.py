@@ -5405,8 +5405,20 @@ async function runAISummary(){
       });
       const saveBtn = document.querySelector('#sslSettingsActions .ops-btn.primary');
       const generateBtn = document.querySelector('#sslSettingsActions .ops-btn:not(.primary)');
-      if (saveBtn) saveBtn.textContent = isCustom ? 'Save Custom Certificate' : 'Save SSL Settings';
-      if (generateBtn) generateBtn.style.display = isCustom ? 'none' : '';
+      const flowHint = document.getElementById('sslFlowHint');
+      if (saveBtn) saveBtn.textContent = isCustom ? 'Save Custom Certificate' : 'Save HTTPS Options';
+      if (generateBtn) {
+        generateBtn.style.display = isCustom ? 'none' : '';
+        generateBtn.classList.toggle('primary', !isCustom);
+      }
+      if (saveBtn && !isCustom) {
+        saveBtn.classList.remove('primary');
+      }
+      if (flowHint) {
+        flowHint.textContent = isCustom
+          ? 'Paste the certificate PEM, private key PEM, and optional CA bundle, then save the custom certificate.'
+          : 'For self-signed mode, fill in Common Name, Validity Days, and Subject Alternative Names, then generate the certificate first. Save HTTPS options afterward only if you change port, redirect, or enabled state.';
+      }
     }
 
     function clearAuthUserForm(){
@@ -7324,9 +7336,10 @@ async function runAISummary(){
           </div>
         </div>
         <div class="notify-actions" id="sslSettingsActions">
-          <button class="ops-btn primary" onclick="saveSslSettings()">Save SSL Settings</button>
-          <button class="ops-btn" onclick="generateSelfSignedCertificate()">Generate Self-Signed Certificate</button>
+          <button class="ops-btn" onclick="saveSslSettings()">Save HTTPS Options</button>
+          <button class="ops-btn primary" onclick="generateSelfSignedCertificate()">Generate Self-Signed Certificate</button>
         </div>
+        <div class="notify-helper" id="sslFlowHint" style="margin-top:10px;">For self-signed mode, fill in Common Name, Validity Days, and Subject Alternative Names, then generate the certificate first. Save HTTPS options afterward only if you change port, redirect, or enabled state.</div>
         <div class="action-status" id="sslSettingsFlash"></div>
         <div class="threshold-status" id="sslSettingsStatus">Loading SSL settings...</div>
       </section>
