@@ -1,18 +1,22 @@
-﻿#!/usr/bin/env python3
-# dashboard_csv.py - Edge + Portal + Postgres (with sub-tabs) + Servers Health
+#!/usr/bin/env python3
+# dashboard_csv.py — Edge + Portal + Postgres (with sub-tabs) + Servers Health
 # VERSION: 2025-11-20 r10 (AI summary styled + bugfix)
 
-import os, csv, re, base64, mimetypes, subprocess, shlex, sqlite3, smtplib, ssl, socket, asyncio
+import os, csv, re, base64, mimetypes, subprocess, shlex, sqlite3, smtplib, ssl, ipaddress
 import paramiko
 import requests
 from flask import Flask, render_template_string, jsonify, request, session, redirect, url_for
 import yaml
-from datetime import datetime, date
+from datetime import datetime, timedelta
 import json
 from collections import Counter
 from email.message import EmailMessage
 from werkzeug.security import generate_password_hash
 from werkzeug.security import check_password_hash
+from cryptography import x509
+from cryptography.hazmat.primitives import hashes, serialization
+from cryptography.hazmat.primitives.asymmetric import rsa
+from cryptography.x509.oid import NameOID
 
 from openai import OpenAI
 
@@ -72,54 +76,6 @@ def _shell_quote(value):
 def _env_quote_line(value):
     value = str(value or "").replace("'", "'\\''")
     return f"'{value}'"
-
-
-def _normalize_portal_host(value):
-    host = str(value or "").strip()
-    if not host:
-        return ""
-    host = re.sub(r"^https?://", "", host, flags=re.IGNORECASE)
-    host = host.split("/", 1)[0].strip()
-    return host
-
-
-def _validate_portal_login_settings(portal_fqdn, username, password):
-    host = _normalize_portal_host(portal_fqdn)
-    if not host:
-        raise ValueError("Portal FQDN or portal IP is required.")
-    try:
-        socket.getaddrinfo(host, 443, type=socket.SOCK_STREAM)
-    except socket.gaierror as exc:
-        raise ValueError(f"Portal host '{host}' could not be resolved from this monitoring server.") from exc
-    try:
-        from cterasdk import GlobalAdmin
-        import cterasdk.settings
-
-        cterasdk.settings.core.syn.settings.connector.ssl = False
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
-        session = GlobalAdmin(host)
-        session.login(username, password)
-        try:
-            session.portals.browse_global_admin()
-        finally:
-            try:
-                session.logout()
-            except Exception:
-                pass
-            try:
-                loop.close()
-            except Exception:
-                pass
-            try:
-                asyncio.set_event_loop(None)
-            except Exception:
-                pass
-    except ValueError:
-        raise
-    except Exception as exc:
-        detail = str(exc).strip() or exc.__class__.__name__
-        raise ValueError(f"Portal login check failed for '{host}': {detail}") from exc
 
 
 def _job_state_path(job_name):
@@ -454,7 +410,6 @@ DEFAULT_CONF = {
     },
     "portal": {
         "servers_csv": _data_path("servers.csv"),
-        "certificate_csv": _data_path("certificate.csv"),
         "storage_csv": _data_path("storage.csv"),
         "tasks_csv": _data_path("tasks.csv"),
         "licenses_csv": os.path.join(DEFAULT_DB_DIR, "licenses.csv")
@@ -462,8 +417,6 @@ DEFAULT_CONF = {
     "postgres": {
         "base_dir": DEFAULT_DB_DIR,
         "topics": {
-            "snapshots": "snapshots.csv",
-            "replication_status": "replication_status.csv",
             "long_running_queries": "long_running_queries.csv",
             "wraparound_database": "wraparound_database.csv",
             "wraparound_top_tables": "wraparound_top_tables.csv",
@@ -495,19 +448,10 @@ def load_conf():
             cfg = yaml.safe_load(f) or {}
     except Exception:
         cfg = {}
-    def _deep_merge_dicts(defaults, overrides):
-        merged = dict(defaults or {})
-        for mk, mv in (overrides or {}).items():
-            if isinstance(mv, dict) and isinstance(merged.get(mk), dict):
-                merged[mk] = _deep_merge_dicts(merged.get(mk), mv)
-            else:
-                merged[mk] = mv
-        return merged
-
     base = dict(DEFAULT_CONF)
     for k, v in cfg.items():
         if k in ("ui", "theme", "brand", "portal", "postgres", "servers_health") and isinstance(v, dict):
-            base[k] = _deep_merge_dicts(base.get(k, {}), v)
+            base[k] = {**base.get(k, {}), **v}
         else:
             base[k] = v
     data_dir = os.environ.get("FEATHERDASH_DATA_DIR")
@@ -533,7 +477,7 @@ def load_conf():
     base["csv_path"] = _abspath_from_app(base.get("csv_path"))
     base["tenants_csv"] = _abspath_from_app(base.get("tenants_csv"))
     portal = base.get("portal", {})
-    for key in ("servers_csv", "certificate_csv", "storage_csv", "tasks_csv", "licenses_csv"):
+    for key in ("servers_csv", "storage_csv", "tasks_csv", "licenses_csv"):
         portal[key] = _abspath_from_app(portal.get(key))
     base["portal"] = portal
     # fix postgres base dir
@@ -573,7 +517,6 @@ def load_conf_for_environment(env_id=None):
     cfg["portal"] = {
         **(cfg.get("portal") or {}),
         "servers_csv": os.path.join(data_dir, "servers.csv"),
-        "certificate_csv": os.path.join(data_dir, "certificate.csv"),
         "storage_csv": os.path.join(data_dir, "storage.csv"),
         "tasks_csv": os.path.join(data_dir, "tasks.csv"),
         "licenses_csv": os.path.join(db_dir, "licenses.csv"),
@@ -610,13 +553,13 @@ def _file_mtime_utc(path_like):
     try:
         p = path_like or ''
         if not p:
-            return '-'
+            return '—'
         if not os.path.isabs(p):
             p = os.path.join(APP_DIR, p)
         ts = os.path.getmtime(p)
         return datetime.utcfromtimestamp(ts).strftime('%Y-%m-%d %H:%M:%S UTC')
     except Exception:
-        return '-'
+        return '—'
 
 
 def _file_mtime_iso(path_like):
@@ -731,15 +674,13 @@ def _upgrade_status():
     except Exception:
         pass
     log_path = _upgrade_log_path()
-    tail_text = _tail_text(log_path)
     status = out.get("status", "idle")
     pid = out.get("pid", "")
     if status == "running" and pid:
         try:
             os.kill(int(pid), 0)
         except Exception:
-            restart_markers = ("==> Restarting service", "Terminated")
-            status = "restarting" if any(marker in tail_text for marker in restart_markers) else "finishing"
+            status = "unknown"
             out["status"] = status
     return {
         "job": "upgrade",
@@ -751,7 +692,7 @@ def _upgrade_status():
         "log_path": log_path,
         "tail_command": f"tail -F {log_path}",
         "last_log_update": _file_mtime_utc(log_path),
-        "tail": tail_text,
+        "tail": _tail_text(log_path),
         "helper_path": DEFAULT_UPGRADE_HELPER,
     }
 
@@ -867,7 +808,7 @@ def resolve_brand(cfg):
 # ---------------- CSV helpers ----------------
 def _clean_header(header):
     h = str(header or "").strip()
-    h = h.lstrip("\ufeff").replace("Ã¯Â»Â¿", "").strip()
+    h = h.lstrip("\ufeff").replace("ï»¿", "").strip()
     if h.startswith("?") and h[1:].lower() in {"tenant", "name", "status"}:
         h = h[1:]
     return h
@@ -1226,17 +1167,6 @@ def make_edge_style_fn(base_cfg, ext):
 
 
 def make_portal_warn_fn(ext, section):
-    def _parse_iso_date(value):
-        text = str(value or "").strip()
-        if not text:
-            return None
-        for fmt in ("%Y-%m-%d", "%Y/%m/%d"):
-            try:
-                return datetime.strptime(text, fmt).date()
-            except Exception:
-                pass
-        return None
-
     def _rules(row):
         eff = {}
         ignores = set()
@@ -1273,29 +1203,6 @@ def make_portal_warn_fn(ext, section):
                     return eval_level(val, thr_rule) or ''
             except Exception:
                 pass  # fallthrough
-
-        if section == 'licenses':
-            lower = str(val or '').strip().lower()
-            if c == 'valid' and lower in {'false', '0', 'no', 'n', 'off'}:
-                return 'bad'
-            if c == 'expired' and lower in {'true', '1', 'yes', 'y', 'on'}:
-                return 'bad'
-            if c == 'expiration_date':
-                portal = (ext.get("portal") or {}) if isinstance(ext, dict) else {}
-                lic = portal.get('licenses') or {}
-                exp_rule = lic.get('expiration_date') or {}
-                try:
-                    warn_days = int(exp_rule.get('warn_days')) if exp_rule.get('warn_days') is not None else None
-                except Exception:
-                    warn_days = None
-                if warn_days is not None:
-                    expired = str(row.get('expired') or '').strip().lower() in {'true', '1', 'yes', 'y', 'on'}
-                    if not expired:
-                        exp_date = _parse_iso_date(val)
-                        if exp_date is not None:
-                            delta = (exp_date - date.today()).days
-                            if 0 <= delta <= warn_days:
-                                return 'warn'
 
         # YAML rule for this column?
         rule = rules.get(col)
@@ -1349,24 +1256,7 @@ def make_pg_warn_fn(ext):
 
     def warn(topic, col, val, row):
         rule = _rules(topic, row).get(col)
-        if rule:
-            return eval_level(val, rule)
-        if topic == "replication_status":
-            c = str(col or "").strip().lower()
-            lower = str(val or "").strip().lower()
-            if c in {"overallstatus", "streamingreplicationstatus", "basebackupstatus", "xlogarchivestatus"}:
-                if lower and lower != "ok":
-                    return "bad"
-            if c == "collectionerror" and lower:
-                return "bad"
-        if topic == "snapshots":
-            c = str(col or "").strip().lower()
-            lower = str(val or "").strip().lower()
-            if c == "status" and lower == "error":
-                return "bad"
-            if c == "collectionerror" and lower:
-                return "bad"
-        return ''
+        return eval_level(val, rule) if rule else ''
 
     return warn
 
@@ -1517,6 +1407,20 @@ _AUTH_SETTING_DEFAULTS = {
     "auth_mode": "none",
 }
 
+_SSL_SETTING_DEFAULTS = {
+    "enabled": "false",
+    "mode": "self_signed",
+    "common_name": "",
+    "san_list": "",
+    "valid_days": "397",
+    "https_port": "8443",
+    "redirect_http": "true",
+    "cert_path": "",
+    "key_path": "",
+    "ca_path": "",
+    "key_password": "",
+}
+
 _THRESHOLD_NOTIFICATION_DEFAULTS = {
     "enabled": False,
     "severity": "critical",
@@ -1532,6 +1436,238 @@ def _notifications_db_path():
         db_path = os.path.abspath(os.path.join(APP_DIR, db_path))
     os.makedirs(os.path.dirname(db_path), exist_ok=True)
     return db_path
+
+
+def _ssl_state_dir():
+    path = os.path.join(_state_dir(), "ssl")
+    os.makedirs(path, exist_ok=True)
+    return path
+
+
+def _split_multiline_csv(value):
+    items = []
+    for part in re.split(r"[\r\n,]+", str(value or "")):
+        cleaned = part.strip()
+        if cleaned:
+            items.append(cleaned)
+    return items
+
+
+def _pem_text(value):
+    text = str(value or "").strip()
+    if not text:
+        return ""
+    return text if text.endswith("\n") else text + "\n"
+
+
+def _write_ssl_file(file_name, text):
+    path = os.path.join(_ssl_state_dir(), file_name)
+    with open(path, "w", encoding="utf-8", newline="\n") as handle:
+        handle.write(_pem_text(text))
+    try:
+        os.chmod(path, 0o600)
+    except Exception:
+        pass
+    return path
+
+
+def _safe_x509_name_attr(name, oid):
+    try:
+        values = name.get_attributes_for_oid(oid)
+        if values:
+            return str(values[0].value or "").strip()
+    except Exception:
+        return ""
+    return ""
+
+
+def _cert_metadata_from_pem(cert_pem):
+    cert = x509.load_pem_x509_certificate(_pem_text(cert_pem).encode("utf-8"))
+    now = datetime.utcnow()
+    days_left = (cert.not_valid_after - now).days
+    try:
+        san_ext = cert.extensions.get_extension_for_class(x509.SubjectAlternativeName)
+        sans = [str(item.value).strip() for item in san_ext.value]
+    except Exception:
+        sans = []
+    return {
+        "subject_cn": _safe_x509_name_attr(cert.subject, NameOID.COMMON_NAME),
+        "issuer_cn": _safe_x509_name_attr(cert.issuer, NameOID.COMMON_NAME),
+        "not_before": cert.not_valid_before.strftime("%Y-%m-%d %H:%M:%S UTC"),
+        "not_after": cert.not_valid_after.strftime("%Y-%m-%d %H:%M:%S UTC"),
+        "days_left": days_left,
+        "sans": sans,
+        "serial_number": format(cert.serial_number, "x"),
+    }
+
+
+def _validate_private_key_pem(key_pem, password_text=""):
+    password_bytes = str(password_text or "").encode("utf-8") if str(password_text or "") else None
+    key = serialization.load_pem_private_key(_pem_text(key_pem).encode("utf-8"), password=password_bytes)
+    return key.private_bytes(
+        encoding=serialization.Encoding.PEM,
+        format=serialization.PrivateFormat.TraditionalOpenSSL,
+        encryption_algorithm=serialization.NoEncryption(),
+    ).decode("utf-8")
+
+
+def _validate_certificate_bundle(cert_pem, key_pem, ca_pem="", key_password=""):
+    normalized_key = _validate_private_key_pem(key_pem, key_password)
+    metadata = _cert_metadata_from_pem(cert_pem)
+    if str(ca_pem or "").strip():
+        for chunk in re.findall(r"-----BEGIN CERTIFICATE-----.*?-----END CERTIFICATE-----", _pem_text(ca_pem), flags=re.S):
+            x509.load_pem_x509_certificate(chunk.encode("utf-8"))
+    return normalized_key, metadata
+
+
+def _build_self_signed_certificate(common_name, san_items, valid_days):
+    private_key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+    subject = issuer = x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, common_name)])
+    san_values = []
+    for item in san_items:
+        try:
+            san_values.append(x509.IPAddress(ipaddress.ip_address(item)))
+        except Exception:
+            san_values.append(x509.DNSName(item))
+    builder = (
+        x509.CertificateBuilder()
+        .subject_name(subject)
+        .issuer_name(issuer)
+        .public_key(private_key.public_key())
+        .serial_number(x509.random_serial_number())
+        .not_valid_before(datetime.utcnow() - timedelta(minutes=5))
+        .not_valid_after(datetime.utcnow() + timedelta(days=valid_days))
+        .add_extension(x509.SubjectAlternativeName(san_values), critical=False)
+        .add_extension(x509.BasicConstraints(ca=False, path_length=None), critical=True)
+    )
+    cert = builder.sign(private_key=private_key, algorithm=hashes.SHA256())
+    cert_pem = cert.public_bytes(serialization.Encoding.PEM).decode("utf-8")
+    key_pem = private_key.private_bytes(
+        encoding=serialization.Encoding.PEM,
+        format=serialization.PrivateFormat.TraditionalOpenSSL,
+        encryption_algorithm=serialization.NoEncryption(),
+    ).decode("utf-8")
+    return cert_pem, key_pem
+
+
+def _load_ssl_settings(include_secret=False):
+    out = dict(_SSL_SETTING_DEFAULTS)
+    with _notifications_conn() as conn:
+        rows = conn.execute("SELECT setting_key, setting_value FROM app_settings WHERE setting_key LIKE 'ssl_%'").fetchall()
+    for row in rows:
+        out[row["setting_key"][4:]] = row["setting_value"]
+    out["enabled"] = _bool_setting(out.get("enabled"), False)
+    out["redirect_http"] = _bool_setting(out.get("redirect_http"), True)
+    out["https_port"] = str(out.get("https_port") or "8443")
+    out["valid_days"] = str(out.get("valid_days") or "397")
+    out["key_password_set"] = bool(out.get("key_password"))
+    out["material_status"] = "Not configured"
+    out["material_tone"] = "muted"
+    out["metadata"] = {}
+    cert_path = str(out.get("cert_path") or "").strip()
+    key_path = str(out.get("key_path") or "").strip()
+    if cert_path and key_path and os.path.exists(cert_path) and os.path.exists(key_path):
+        try:
+            with open(cert_path, "r", encoding="utf-8", errors="ignore") as handle:
+                metadata = _cert_metadata_from_pem(handle.read())
+            out["metadata"] = metadata
+            days_left = metadata.get("days_left")
+            out["material_status"] = "Configured"
+            out["material_tone"] = "ok"
+            if isinstance(days_left, int) and days_left < 0:
+                out["material_status"] = "Expired"
+                out["material_tone"] = "crit"
+            elif isinstance(days_left, int) and days_left <= 30:
+                out["material_status"] = "Expiring Soon"
+                out["material_tone"] = "warn"
+        except Exception as exc:
+            out["material_status"] = f"Invalid certificate: {exc}"
+            out["material_tone"] = "crit"
+    elif cert_path or key_path:
+        out["material_status"] = "Missing certificate files"
+        out["material_tone"] = "warn"
+    if not include_secret:
+        out["key_password"] = ""
+    return out
+
+
+def _save_ssl_settings(payload):
+    current = _load_ssl_settings(include_secret=True)
+    merged = dict(current)
+    merged["enabled"] = "true" if _bool_setting(payload.get("enabled"), current.get("enabled", False)) else "false"
+    merged["redirect_http"] = "true" if _bool_setting(payload.get("redirect_http"), current.get("redirect_http", True)) else "false"
+    merged["mode"] = str(payload.get("mode") or current.get("mode") or "self_signed").strip().lower() or "self_signed"
+    if merged["mode"] not in {"self_signed", "custom"}:
+        raise ValueError("SSL mode must be self_signed or custom.")
+    merged["common_name"] = str(payload.get("common_name") or current.get("common_name") or "").strip()
+    merged["san_list"] = ", ".join(_split_multiline_csv(payload.get("san_list") if "san_list" in payload else current.get("san_list", "")))
+    merged["https_port"] = str(payload.get("https_port") or current.get("https_port") or "8443").strip() or "8443"
+    merged["valid_days"] = str(payload.get("valid_days") or current.get("valid_days") or "397").strip() or "397"
+    merged["key_password"] = str(payload.get("key_password") or current.get("key_password") or "")
+    try:
+        port = int(merged["https_port"])
+    except Exception:
+        raise ValueError("HTTPS port must be a valid number.")
+    if port < 1 or port > 65535:
+        raise ValueError("HTTPS port must be between 1 and 65535.")
+    try:
+        days = int(merged["valid_days"])
+    except Exception:
+        raise ValueError("Validity days must be a valid number.")
+    if days < 1 or days > 3650:
+        raise ValueError("Validity days must be between 1 and 3650.")
+    if merged["mode"] == "custom":
+        cert_pem = str(payload.get("cert_pem") or "").strip()
+        key_pem = str(payload.get("key_pem") or "").strip()
+        ca_pem = str(payload.get("ca_pem") or "").strip()
+        if cert_pem or key_pem or ca_pem:
+            normalized_key, _ = _validate_certificate_bundle(cert_pem, key_pem, ca_pem, merged["key_password"])
+            merged["cert_path"] = _write_ssl_file("dashboard-custom.crt", cert_pem)
+            merged["key_path"] = _write_ssl_file("dashboard-custom.key", normalized_key)
+            merged["ca_path"] = _write_ssl_file("dashboard-custom-ca.pem", ca_pem) if ca_pem else ""
+        elif not merged.get("cert_path") or not merged.get("key_path"):
+            raise ValueError("Certificate PEM and private key PEM are required for custom SSL.")
+    with _notifications_conn() as conn:
+        for key, value in merged.items():
+            if key in {"metadata", "material_status", "material_tone", "key_password_set"}:
+                continue
+            conn.execute(
+                """
+                INSERT INTO app_settings(setting_key, setting_value)
+                VALUES (?, ?)
+                ON CONFLICT(setting_key) DO UPDATE SET setting_value = excluded.setting_value
+                """,
+                (f"ssl_{key}", str(value)),
+            )
+        conn.commit()
+    return _load_ssl_settings(include_secret=False)
+
+
+def _generate_self_signed_ssl_material(payload):
+    current = _save_ssl_settings(payload)
+    common_name = str(current.get("common_name") or "").strip()
+    if not common_name:
+        raise ValueError("Common Name is required before generating a self-signed certificate.")
+    san_items = _split_multiline_csv(current.get("san_list"))
+    if common_name not in san_items:
+        san_items.insert(0, common_name)
+    valid_days = int(str(current.get("valid_days") or "397"))
+    cert_pem, key_pem = _build_self_signed_certificate(common_name, san_items, valid_days)
+    with _notifications_conn() as conn:
+        conn.execute(
+            "INSERT INTO app_settings(setting_key, setting_value) VALUES (?, ?) ON CONFLICT(setting_key) DO UPDATE SET setting_value=excluded.setting_value",
+            ("ssl_cert_path", _write_ssl_file("dashboard-selfsigned.crt", cert_pem)),
+        )
+        conn.execute(
+            "INSERT INTO app_settings(setting_key, setting_value) VALUES (?, ?) ON CONFLICT(setting_key) DO UPDATE SET setting_value=excluded.setting_value",
+            ("ssl_key_path", _write_ssl_file("dashboard-selfsigned.key", key_pem)),
+        )
+        conn.execute(
+            "INSERT INTO app_settings(setting_key, setting_value) VALUES (?, '') ON CONFLICT(setting_key) DO UPDATE SET setting_value=''",
+            ("ssl_ca_path",),
+        )
+        conn.commit()
+    return _load_ssl_settings(include_secret=False)
 
 
 def _notifications_conn():
@@ -2657,7 +2793,7 @@ def _save_environment(payload):
     if not portal_fqdn:
         raise ValueError("Portal FQDN or portal IP is required.")
     if not ctera_username:
-        raise ValueError("CTERA Portal Global Administrator is required.")
+        raise ValueError("CTERA Portal Read-Only Global Administrator is required.")
     if not main_db_ip:
         raise ValueError("MainDB IP is required.")
     if not ctera_password.strip():
@@ -2679,7 +2815,6 @@ def _save_environment(payload):
         raise ValueError("Initial SSH password is required for this SSH access mode.")
     if ssh_mode in {"root_key", "user_key_sudo"} and not ssh_key_path:
         raise ValueError("Upload an initial SSH private key for this SSH access mode.")
-    _validate_portal_login_settings(portal_fqdn, ctera_username, ctera_password)
     merged["portal_schedule_minutes"] = int(_coerce_threshold_value(merged.get("portal_schedule_minutes")) or 60)
     merged["filer_schedule_minutes"] = int(_coerce_threshold_value(merged.get("filer_schedule_minutes")) or 60)
     merged["pg_port"] = str(merged.get("pg_port") or "5432")
@@ -2790,6 +2925,7 @@ def _auth_settings_payload():
     return {
         "settings": _load_app_settings(),
         "users": _list_local_users(),
+        "ssl": _load_ssl_settings(include_secret=False),
     }
 
 
@@ -3188,10 +3324,6 @@ def _threshold_dataset_configs(cfg):
         datasets.append({"key": "portal_storage", "label": "Portal Storage", "kind": "portal", "section": "storage", "path": portal_cfg.get("storage_csv")})
     if portal_cfg.get("tasks_csv"):
         datasets.append({"key": "portal_tasks", "label": "Portal Tasks", "kind": "portal", "section": "tasks", "path": portal_cfg.get("tasks_csv")})
-    if portal_cfg.get("certificate_csv"):
-        datasets.append({"key": "portal_certificate", "label": "Portal Certificate", "kind": "portal", "section": "certificate", "path": portal_cfg.get("certificate_csv")})
-    if portal_cfg.get("licenses_csv"):
-        datasets.append({"key": "portal_licenses", "label": "Portal Licenses", "kind": "portal", "section": "licenses", "path": portal_cfg.get("licenses_csv")})
 
     metrics_csv = (cfg.get("servers_health") or {}).get("metrics_csv")
     if metrics_csv:
@@ -3255,7 +3387,6 @@ def _normalize_rule_for_editor(rule):
         "warn_value": "",
         "crit_op": "",
         "crit_value": "",
-        "warn_days": "",
     }
     if not isinstance(rule, dict):
         return out
@@ -3285,8 +3416,6 @@ def _normalize_rule_for_editor(rule):
             out["crit_op"], out["crit_value"] = base_op, base_value
         elif base_op:
             out["crit_op"], out["crit_value"] = base_op, base_value
-    if rule.get("warn_days") is not None:
-        out["warn_days"] = str(rule.get("warn_days"))
     return out
 
 
@@ -3308,8 +3437,6 @@ def _dataset_rule_container(doc, dataset_key, create=False):
         sec_name = dataset_key.replace("portal_", "", 1)
         portal = doc.setdefault("portal", {}) if create else (doc.get("portal") or {})
         sec = portal.setdefault(sec_name, {}) if create else (portal.get(sec_name) or {})
-        if sec_name == "licenses":
-            return sec if isinstance(sec, dict) else {}
         return sec.setdefault("default", {}) if create else (sec.get("default") or {})
     if dataset_key.startswith("postgres:"):
         topic = dataset_key.split(":", 1)[1]
@@ -3416,11 +3543,7 @@ def _build_threshold_catalog(cfg, env_id=None):
     for ds, rows, headers in dataset_sources:
         rules = _dataset_rule_container(doc, ds["key"], create=False)
         fields = []
-        field_names = list(headers or [])
-        for rule_name in (rules.keys() if isinstance(rules, dict) else []):
-            if rule_name not in field_names:
-                field_names.append(rule_name)
-        for header in field_names:
+        for header in headers:
             fields.append({
                 "name": header,
                 "rule": _normalize_rule_for_editor(rules.get(header)),
@@ -3535,16 +3658,12 @@ HTML = """
 
     body { background: rgb(242, 243, 247); color: rgb(64, 95, 110); font-family: "Open Sans", "Segoe UI", Tahoma, Arial, sans-serif; font-size:14px; font-weight:400; line-height:1.42857; margin: 0; }
     .app-shell { display:grid; grid-template-columns: 258px minmax(0, 1fr); min-height:100vh; }
-    .sidebar { background:#14152b; color:#e5e7eb; border-right:1px solid rgba(148,163,184,0.14); display:flex; flex-direction:column; min-height:100vh; }
+    .sidebar { background:#14152b; color:#e5e7eb; border-right:1px solid rgba(148,163,184,0.14); }
     .sidebar-brand { display:flex; align-items:center; gap:12px; padding:18px 18px 16px; background:#ffffff; border-bottom:3px solid #5860ea; }
     .sidebar-brand img { display:block; height: {{ brand.logo_height }}px; }
     .sidebar-brand h1 { margin:0; color:#4f46e5; font-size: 22px; line-height:1.05; font-weight:700; }
-    .sidebar-group { padding:12px 0; flex:1 1 auto; }
+    .sidebar-group { padding:12px 0; }
     .sidebar-label { padding:0 18px 10px; color:#94a3b8; font-size:11px; font-weight:700; text-transform:uppercase; letter-spacing:.08em; }
-    .sidebar-footer { margin-top:auto; padding:16px 12px 18px; }
-    .sidebar-version-card { border:1px solid rgba(199,210,254,0.18); border-radius:10px; background:rgba(255,255,255,0.03); color:#e5e7eb; padding:10px 12px; min-height:48px; display:flex; flex-direction:column; justify-content:center; gap:2px; }
-    .sidebar-version-primary { color:#dbe4ff; font-size:18px; font-weight:700; line-height:22px; }
-    .sidebar-version-secondary { color:#aeb8d3; font-size:12px; font-weight:600; line-height:16px; }
     .nav-sections { display:grid; gap:2px; }
     .nav-section { border-top:1px solid rgba(148,163,184,0.12); }
     .nav-section:first-child { border-top:none; }
@@ -3640,7 +3759,6 @@ HTML = """
     .ops-status-head { display:flex; justify-content:space-between; gap:12px; align-items:flex-start; margin-bottom:10px; }
     .ops-status-head h3 { margin:0; font-size:18px; color:var(--primary); font-weight:600; }
     .ops-badge { display:inline-flex; align-items:center; border-radius:999px; padding:6px 12px; font-size:12px; font-weight:900; letter-spacing:.01em; white-space:nowrap; }
-    .ops-badge.launching { color:#7c2d12; background:#ffedd5; }
     .ops-badge.running { color:#1d4ed8; background:#dbeafe; }
     .ops-badge.finished { color:#166534; background:#dcfce7; }
     .ops-badge.failed { color:#b91c1c; background:#fee2e2; }
@@ -3706,7 +3824,6 @@ HTML = """
     @media (max-width: 900px) {
       .app-shell { grid-template-columns: 1fr; }
       .sidebar { border-right:none; border-bottom:1px solid rgba(148,163,184,0.18); }
-      .sidebar-footer { padding-top:8px; }
       .content-shell { padding:16px; }
       .topbar { padding:14px 16px; }
       .hero-grid, .overview-grid, .viz-grid, .viz-grid.two, .viz-grid.tenant-summary, .section-cards, .threshold-layout, .threshold-grid, .threshold-form-grid, .threshold-kpis, .notify-grid, .notify-summary-grid { grid-template-columns: 1fr; }
@@ -3942,12 +4059,7 @@ HTML = """
     function loadEnvironmentContext(){
       const fromQuery = currentQueryEnvironmentId();
       if (fromQuery) return fromQuery;
-      try{ return localStorage.getItem('fd.environmentContext') || ''; }catch(e){ return ''; }
-    }
-    function defaultEnvironmentContext(){
-      const items = environmentConfig.items || [];
-      const preferred = items.find(item => item.enabled) || items[0];
-      return preferred ? String(preferred.id) : 'admin';
+      try{ return localStorage.getItem('fd.environmentContext') || 'admin'; }catch(e){ return 'admin'; }
     }
     function effectiveEnvironmentContext(){
       const raw = loadEnvironmentContext();
@@ -3991,6 +4103,7 @@ HTML = """
       notify_settings: 'admin_notifications',
       notify_recipients: 'admin_notifications',
       auth_settings: 'admin_auth',
+      auth_ssl: 'admin_auth',
       about: 'admin_help'
     };
     const NAV_SECTION_DEFAULT_TAB = {
@@ -4020,7 +4133,7 @@ HTML = """
       if (!section) return;
       section.classList.toggle('expanded', !!expanded);
       const toggle = section.querySelector('.nav-group-toggle');
-      if (toggle) toggle.textContent = expanded ? '-' : '+';
+      if (toggle) toggle.textContent = expanded ? '−' : '+';
       section.setAttribute('aria-expanded', expanded ? 'true' : 'false');
     }
     function setOnlyExpanded(sectionId){
@@ -4058,8 +4171,6 @@ HTML = """
       if (id === 'edge') {
         syncEdgeScrollerSetup();
       }
-      ensureTabDataLoaded(id);
-      syncLivePolling(id);
       scheduleAboutUpdateChecks(id);
     }
 
@@ -4090,10 +4201,7 @@ HTML = """
       try{ localStorage.setItem('fd.portalActive', sub); }catch(e){}
     }
     function loadPortalActive(){
-      try{
-        const saved = localStorage.getItem('fd.portalActive') || 'portal_overview';
-        return saved === 'portal_certificate' ? 'portal_overview' : saved;
-      }catch(e){ return 'portal_overview'; }
+      try{ return localStorage.getItem('fd.portalActive') || 'portal_overview'; }catch(e){ return 'portal_overview'; }
     }
     function showPortalTab(id){
       document.querySelectorAll('.portalpane').forEach(p => p.style.display = 'none');
@@ -4236,7 +4344,7 @@ async function runAISummary(){
       if (!out || !ts || !st) return;
 
       // keep the old summary visible, just show status
-      st.textContent = "Generatingâ€¦Hang tight, this usually takes 10-12 seconds";
+      st.textContent = "Generating…Hang tight, this usually takes 10-12 seconds";
 
       try {
         const resp = await fetch(apiUrl('/ai_summary'));
@@ -4252,7 +4360,7 @@ async function runAISummary(){
     }
 
     function formatLocalTimestamp(value){
-      if (!value) return '-';
+      if (!value) return '—';
       const normalized = String(value).trim().replace(' UTC', 'Z');
       const dt = new Date(normalized);
       if (Number.isNaN(dt.getTime())) return value;
@@ -4280,17 +4388,10 @@ async function runAISummary(){
     }
 
     let jobStatusSnapshot = { portal: null, filer: null };
+    let autoRefreshTimer = null;
     let upgradeStatusSnapshot = null;
     let upgradeVersionState = null;
     let updateCheckTimer = null;
-    let jobStatusTimer = null;
-    let upgradeStatusTimer = null;
-    const lazyLoadState = {
-      thresholds: false,
-      notifications: false,
-      auth: false,
-      upgradeNetwork: false,
-    };
 
     function refreshCurrentView(forceMessage){
       const btn = document.getElementById('globalRefreshBtn');
@@ -4301,6 +4402,13 @@ async function runAISummary(){
       window.setTimeout(() => {
         window.location.reload();
       }, 250);
+    }
+
+    function scheduleAutoRefresh(message){
+      if (autoRefreshTimer) return;
+      const note = document.getElementById('refreshNote');
+      if (note) note.textContent = message || 'Collector finished. Refreshing data...';
+      autoRefreshTimer = window.setTimeout(() => refreshCurrentView(message || 'Refreshing data...'), 900);
     }
 
     function scheduleAboutUpdateChecks(activeTab){
@@ -4319,67 +4427,6 @@ async function runAISummary(){
       }, 15 * 60 * 1000);
     }
 
-    function ensureTabDataLoaded(activeTab){
-      if (activeTab === 'thresholds' || activeTab === 'thresholds_all') {
-        if (!lazyLoadState.thresholds) {
-          lazyLoadState.thresholds = true;
-          loadThresholdCatalog();
-        }
-        return;
-      }
-      if (activeTab === 'notify_settings' || activeTab === 'notify_recipients') {
-        if (!lazyLoadState.notifications) {
-          lazyLoadState.notifications = true;
-          loadNotificationsConfig();
-        }
-        return;
-      }
-      if (activeTab === 'auth_settings') {
-        if (!lazyLoadState.auth) {
-          lazyLoadState.auth = true;
-          loadAuthConfig();
-        }
-        return;
-      }
-      if (activeTab === 'about' && !lazyLoadState.upgradeNetwork) {
-        lazyLoadState.upgradeNetwork = true;
-        loadUpgradeNetworkConfig();
-      }
-    }
-
-    function syncLivePolling(activeTab){
-      const tab = activeTab || currentTab();
-      const wantsJobPolling = tab === 'jobs';
-      const wantsUpgradePolling = tab === 'about' || ['running', 'restarting', 'finishing'].includes(upgradeStatusSnapshot);
-
-      if (jobStatusTimer) {
-        window.clearInterval(jobStatusTimer);
-        jobStatusTimer = null;
-      }
-      if (upgradeStatusTimer) {
-        window.clearInterval(upgradeStatusTimer);
-        upgradeStatusTimer = null;
-      }
-
-      if (wantsJobPolling) {
-        refreshJobStatus();
-        jobStatusTimer = window.setInterval(() => {
-          if (document.visibilityState === 'visible' && currentTab() === 'jobs') {
-            refreshJobStatus();
-          }
-        }, 5000);
-      }
-
-      if (wantsUpgradePolling) {
-        refreshUpgradeStatus();
-        upgradeStatusTimer = window.setInterval(() => {
-          if (document.visibilityState === 'visible' && (currentTab() === 'about' || ['running', 'restarting', 'finishing'].includes(upgradeStatusSnapshot))) {
-            refreshUpgradeStatus();
-          }
-        }, 5000);
-      }
-    }
-
     function applyUpgradeVersionState(data, options){
       const opts = options || {};
       const status = (data && data.status) || 'error';
@@ -4389,7 +4436,6 @@ async function runAISummary(){
       const btn = document.getElementById('runUpgradeBtn');
       const badge = document.getElementById('upgradeBadge');
       const tail = document.getElementById('upgradeTail');
-      const activeUpgradeStatus = ['running', 'restarting', 'finishing'];
       upgradeVersionState = data || null;
 
       if (opts.updateNote !== false && note) {
@@ -4415,11 +4461,11 @@ async function runAISummary(){
         flash.textContent = message;
       }
       if (status === 'up_to_date') {
-        if (badge && !activeUpgradeStatus.includes(upgradeStatusSnapshot)) {
+        if (badge && upgradeStatusSnapshot !== 'running') {
           badge.className = 'ops-badge idle';
           badge.textContent = 'No Upgrade Needed';
         }
-        if (tail && !activeUpgradeStatus.includes(upgradeStatusSnapshot)) {
+        if (tail && upgradeStatusSnapshot !== 'running') {
           tail.textContent = 'No upgrade run. Installed version already matches GitHub main.';
         }
       }
@@ -4517,7 +4563,7 @@ async function runAISummary(){
         }
         if (started) started.textContent = formatLocalTimestamp(data.started_at || '');
         if (finished) finished.textContent = formatLocalTimestamp(data.finished_at || '');
-        if (exitCode) exitCode.textContent = data.last_exit || '-';
+        if (exitCode) exitCode.textContent = data.last_exit || '—';
         if (tailCmd) tailCmd.textContent = data.tail_command || '';
           if (tail) {
             tail.textContent = data.tail || 'No recent log lines.';
@@ -4527,12 +4573,6 @@ async function runAISummary(){
           if (currentStatus === 'running') {
             btn.disabled = true;
             btn.textContent = 'Upgrade Running...';
-          } else if (currentStatus === 'restarting') {
-            btn.disabled = true;
-            btn.textContent = 'Restarting...';
-          } else if (currentStatus === 'finishing') {
-            btn.disabled = true;
-            btn.textContent = 'Finishing...';
           } else if (upgradeVersionState) {
             if (upgradeVersionState.status === 'update_available') {
               btn.disabled = false;
@@ -4546,7 +4586,7 @@ async function runAISummary(){
             }
           }
         }
-        if (['running', 'restarting', 'finishing'].includes(previousStatus) && ['finished', 'failed', 'idle'].includes(currentStatus) && currentTab() === 'about') {
+        if (previousStatus === 'running' && currentStatus !== 'running') {
           const flash = document.getElementById('upgradeFlash');
           if (flash) flash.textContent = currentStatus === 'finished' ? 'Upgrade finished. Refreshing soon...' : 'Upgrade stopped. Refreshing soon...';
           window.setTimeout(() => window.location.reload(), 2500);
@@ -4576,11 +4616,6 @@ async function runAISummary(){
           return;
         }
         if (flash) flash.textContent = 'Starting upgrade...';
-        const btn = document.getElementById('runUpgradeBtn');
-        if (btn) {
-          btn.disabled = true;
-          btn.textContent = 'Starting...';
-        }
         const resp = await fetch('/run_upgrade', {
           method:'POST',
           headers: { 'Content-Type': 'application/json' },
@@ -4604,62 +4639,47 @@ async function runAISummary(){
       try{
         const resp = await fetch('/job_status?_=' + Date.now(), { cache: 'no-store' });
         const data = await resp.json();
-        applyJobStatusData(data);
+        let shouldAutoRefresh = false;
+        ['portal','filer'].forEach(name => {
+          const card = data[name] || {};
+          const previousStatus = jobStatusSnapshot[name];
+          const currentStatus = card.status || 'idle';
+          const badge = document.getElementById('jobBadge_' + name);
+          const started = document.getElementById('jobStarted_' + name);
+          const finished = document.getElementById('jobFinished_' + name);
+          const exitCode = document.getElementById('jobExit_' + name);
+          const tailCmd = document.getElementById('jobTailCmd_' + name);
+          const tail = document.getElementById('jobTail_' + name);
+          const btn = document.getElementById('runBtn_' + name);
+          if (badge){
+            const status = card.status || 'idle';
+            badge.className = 'ops-badge ' + status;
+            badge.textContent = status.charAt(0).toUpperCase() + status.slice(1);
+          }
+          if (started) started.textContent = formatLocalTimestamp(card.started_at || '');
+          if (finished) finished.textContent = formatLocalTimestamp(card.finished_at || '');
+          if (exitCode) exitCode.textContent = card.last_exit || '—';
+          if (tailCmd) tailCmd.textContent = card.tail_command || '';
+          if (tail) {
+            tail.textContent = card.tail || 'No recent log lines.';
+            tail.scrollTop = tail.scrollHeight;
+          }
+          if (btn) btn.disabled = (card.status === 'running');
+          if (previousStatus === 'running' && currentStatus !== 'running') {
+            shouldAutoRefresh = true;
+          }
+          jobStatusSnapshot[name] = currentStatus;
+        });
         const allBtn = document.getElementById('runBtn_all');
         if (allBtn) {
           allBtn.disabled = ['portal','filer'].some(name => (data[name] || {}).status === 'running');
         }
+        if (shouldAutoRefresh) {
+          scheduleAutoRefresh('Collector finished. Refreshing data...');
+        }
       } catch (e) {
         console.error('job status failed', e);
       }
-    }
-
-    function applyJobStatusData(data){
-      ['portal','filer'].forEach(name => {
-        const card = data[name] || {};
-        const currentStatus = card.status || 'idle';
-        const badge = document.getElementById('jobBadge_' + name);
-        const started = document.getElementById('jobStarted_' + name);
-        const finished = document.getElementById('jobFinished_' + name);
-        const exitCode = document.getElementById('jobExit_' + name);
-        const tailCmd = document.getElementById('jobTailCmd_' + name);
-        const tail = document.getElementById('jobTail_' + name);
-        const btn = document.getElementById('runBtn_' + name);
-        if (badge){
-          const status = card.status || 'idle';
-          badge.className = 'ops-badge ' + status;
-          badge.textContent = status.charAt(0).toUpperCase() + status.slice(1);
-        }
-        if (started) started.textContent = formatLocalTimestamp(card.started_at || '');
-        if (finished) finished.textContent = formatLocalTimestamp(card.finished_at || '');
-        if (exitCode) exitCode.textContent = card.last_exit || '-';
-        if (tailCmd) tailCmd.textContent = card.tail_command || '';
-        if (tail) {
-          tail.textContent = card.tail || 'No recent log lines.';
-          tail.scrollTop = tail.scrollHeight;
-        }
-        if (btn) btn.disabled = (card.status === 'running');
-        jobStatusSnapshot[name] = currentStatus;
-      });
-    }
-
-    function setJobLaunchingState(name){
-      const badge = document.getElementById('jobBadge_' + name);
-      const started = document.getElementById('jobStarted_' + name);
-      const finished = document.getElementById('jobFinished_' + name);
-      const exitCode = document.getElementById('jobExit_' + name);
-      const tail = document.getElementById('jobTail_' + name);
-      const btn = document.getElementById('runBtn_' + name);
-      if (badge) {
-        badge.className = 'ops-badge launching';
-        badge.textContent = 'Launching...';
-      }
-      if (started) started.textContent = formatLocalTimestamp(new Date().toISOString());
-      if (finished) finished.textContent = '-';
-      if (exitCode) exitCode.textContent = '-';
-      if (tail) tail.textContent = 'Starting collector...';
-      if (btn) btn.disabled = true;
-      jobStatusSnapshot[name] = 'launching';
     }
 
     async function runCollector(jobName, forcedEnvironmentId){
@@ -4669,9 +4689,6 @@ async function runAISummary(){
         alert('Select a portal environment first.');
         return;
       }
-      targetJobs.forEach(name => setJobLaunchingState(name));
-      const allBtn = document.getElementById('runBtn_all');
-      if (allBtn) allBtn.disabled = true;
       for (const name of targetJobs) {
         try{
           const resp = await fetch('/run_job/' + name, {
@@ -4683,37 +4700,8 @@ async function runAISummary(){
           if (!resp.ok || !data.ok) {
             throw new Error(data.error || 'Collector launch failed');
           }
-          if (jobName === 'all') {
-            const current = {
-              portal: {
-                status: jobStatusSnapshot.portal || 'idle',
-                started_at: '',
-                finished_at: '',
-                last_exit: '',
-                tail_command: '',
-                tail: '',
-              },
-              filer: {
-                status: jobStatusSnapshot.filer || 'idle',
-                started_at: '',
-                finished_at: '',
-                last_exit: '',
-                tail_command: '',
-                tail: '',
-              },
-            };
-            current[name] = data.job || current[name];
-            applyJobStatusData(current);
-          } else {
-            applyJobStatusData({ [name]: data.job || {} });
-          }
-          const allBtn = document.getElementById('runBtn_all');
-          if (allBtn) {
-            allBtn.disabled = ['portal','filer'].some(job => ['launching', 'running'].includes(jobStatusSnapshot[job]));
-          }
         } catch (e) {
           console.error('job launch failed', e);
-          refreshJobStatus();
           alert('Could not start ' + name + ' collector: ' + e.message);
           break;
         }
@@ -4723,7 +4711,7 @@ async function runAISummary(){
 
     let thresholdCatalog = { datasets: [], path: '', recipients: [], alert_state: {}, notification_db_path: '', source_label: '' };
     let notificationConfig = { settings: {}, recipients: [], alert_state: {}, db_path: '' };
-    let authConfig = { settings: { auth_mode: 'none' }, users: [] };
+    let authConfig = { settings: { auth_mode: 'none' }, users: [], ssl: {} };
     let environmentConfig = { items: [], count: 0 };
     let editingRecipientId = null;
     let editingAuthUserId = null;
@@ -4774,7 +4762,7 @@ async function runAISummary(){
     }
 
     function hasThresholdRule(rule){
-      return Boolean(rule && (rule.warn_op || rule.crit_op || rule.warn_days));
+      return Boolean(rule && (rule.warn_op || rule.crit_op));
     }
 
     function datasetThresholdCount(dataset){
@@ -4782,9 +4770,8 @@ async function runAISummary(){
     }
 
     function describeThresholdRule(rule){
-      if (!hasThresholdRule(rule)) return '-';
+      if (!hasThresholdRule(rule)) return '—';
       const parts = [];
-      if (rule.warn_days) parts.push('Warn: within ' + rule.warn_days + ' days');
       if (rule.warn_op) parts.push('Warn: ' + rule.warn_op + ' ' + rule.warn_value);
       if (rule.crit_op) parts.push('Crit: ' + rule.crit_op + ' ' + rule.crit_value);
       return parts.join(' | ');
@@ -4865,13 +4852,9 @@ async function runAISummary(){
         const fieldTd = document.createElement('td');
         fieldTd.textContent = field.name;
         const warnTd = document.createElement('td');
-        if (field.rule?.warn_days) {
-          warnTd.innerHTML = '<code>within ' + field.rule.warn_days + ' days</code>';
-        } else {
-          warnTd.innerHTML = field.rule?.warn_op ? ('<code>' + field.rule.warn_op + ' ' + field.rule.warn_value + '</code>') : '-';
-        }
+        warnTd.innerHTML = field.rule?.warn_op ? ('<code>' + field.rule.warn_op + ' ' + field.rule.warn_value + '</code>') : '—';
         const critTd = document.createElement('td');
-        critTd.innerHTML = field.rule?.crit_op ? ('<code>' + field.rule.crit_op + ' ' + field.rule.crit_value + '</code>') : '-';
+        critTd.innerHTML = field.rule?.crit_op ? ('<code>' + field.rule.crit_op + ' ' + field.rule.crit_value + '</code>') : '—';
         tr.appendChild(fieldTd);
         tr.appendChild(warnTd);
         tr.appendChild(critTd);
@@ -4905,14 +4888,10 @@ async function runAISummary(){
         fieldTd.textContent = field.name;
 
         const warnTd = document.createElement('td');
-        if (field.rule?.warn_days) {
-          warnTd.innerHTML = '<code>within ' + field.rule.warn_days + ' days</code>';
-        } else {
-          warnTd.innerHTML = field.rule?.warn_op ? ('<code>' + field.rule.warn_op + ' ' + field.rule.warn_value + '</code>') : '-';
-        }
+        warnTd.innerHTML = field.rule?.warn_op ? ('<code>' + field.rule.warn_op + ' ' + field.rule.warn_value + '</code>') : '—';
 
         const critTd = document.createElement('td');
-        critTd.innerHTML = field.rule?.crit_op ? ('<code>' + field.rule.crit_op + ' ' + field.rule.crit_value + '</code>') : '-';
+        critTd.innerHTML = field.rule?.crit_op ? ('<code>' + field.rule.crit_op + ' ' + field.rule.crit_value + '</code>') : '—';
 
         const actionsTd = document.createElement('td');
         const actions = document.createElement('div');
@@ -4969,14 +4948,10 @@ async function runAISummary(){
           fieldTd.textContent = field.name;
 
           const warnTd = document.createElement('td');
-          if (field.rule?.warn_days) {
-            warnTd.innerHTML = '<code>within ' + field.rule.warn_days + ' days</code>';
-          } else {
-            warnTd.innerHTML = field.rule?.warn_op ? ('<code>' + field.rule.warn_op + ' ' + field.rule.warn_value + '</code>') : '-';
-          }
+          warnTd.innerHTML = field.rule?.warn_op ? ('<code>' + field.rule.warn_op + ' ' + field.rule.warn_value + '</code>') : '—';
 
           const critTd = document.createElement('td');
-          critTd.innerHTML = field.rule?.crit_op ? ('<code>' + field.rule.crit_op + ' ' + field.rule.crit_value + '</code>') : '-';
+          critTd.innerHTML = field.rule?.crit_op ? ('<code>' + field.rule.crit_op + ' ' + field.rule.crit_value + '</code>') : '—';
 
           const emailTd = document.createElement('td');
           emailTd.innerHTML = field.notify?.enabled
@@ -5369,6 +5344,55 @@ async function runAISummary(){
       });
     }
 
+    function renderSslConfig(){
+      const ssl = authConfig.ssl || {};
+      const setValue = (id, value) => {
+        const el = document.getElementById(id);
+        if (el) el.value = value == null ? '' : String(value);
+      };
+      const setChecked = (id, value) => {
+        const el = document.getElementById(id);
+        if (el) el.checked = Boolean(value);
+      };
+      setChecked('sslEnabled', ssl.enabled);
+      setValue('sslMode', ssl.mode || 'self_signed');
+      setValue('sslCommonName', ssl.common_name || '');
+      setValue('sslSanList', ssl.san_list || '');
+      setValue('sslValidDays', ssl.valid_days || '397');
+      setValue('sslHttpsPort', ssl.https_port || '8443');
+      setChecked('sslRedirectHttp', ssl.redirect_http !== false);
+      setValue('sslKeyPassword', '');
+      setValue('sslCertPem', '');
+      setValue('sslKeyPem', '');
+      setValue('sslCaPem', '');
+      const status = document.getElementById('sslSettingsStatus');
+      if (status) status.textContent = (ssl.material_status || 'Not configured') + '. This tab manages certificate material and intended HTTPS settings for the dashboard.';
+      const meta = ssl.metadata || {};
+      const metaBody = document.getElementById('sslMetaBody');
+      const empty = document.getElementById('sslMetaEmpty');
+      if (metaBody) {
+        metaBody.innerHTML = '';
+        const rows = [
+          ['Status', ssl.material_status || 'Not configured'],
+          ['Subject CN', meta.subject_cn || ''],
+          ['Issuer CN', meta.issuer_cn || ''],
+          ['Not Before', meta.not_before || ''],
+          ['Not After', meta.not_after || ''],
+          ['Days Left', meta.days_left == null ? '' : meta.days_left],
+          ['SANs', (meta.sans || []).join(', ')],
+          ['Certificate Path', ssl.cert_path || ''],
+          ['Private Key Path', ssl.key_path || ''],
+          ['CA Bundle Path', ssl.ca_path || ''],
+        ].filter(item => item[1] !== '');
+        rows.forEach(item => {
+          const tr = document.createElement('tr');
+          tr.innerHTML = '<td><strong>' + item[0] + '</strong></td><td>' + item[1] + '</td>';
+          metaBody.appendChild(tr);
+        });
+        if (empty) empty.style.display = rows.length ? 'none' : '';
+      }
+    }
+
     function clearAuthUserForm(){
       editingAuthUserId = null;
       const username = document.getElementById('authUsername');
@@ -5405,9 +5429,80 @@ async function runAISummary(){
         authConfig = await resp.json();
         document.getElementById('authMode').value = authConfig.settings?.auth_mode || 'none';
         renderAuthUsers();
+        renderSslConfig();
       } catch (e) {
         const status = document.getElementById('authSettingsStatus');
         if (status) status.textContent = 'Could not load access control settings.';
+        const sslStatus = document.getElementById('sslSettingsStatus');
+        if (sslStatus) sslStatus.textContent = 'Could not load SSL settings.';
+      }
+    }
+
+    async function saveSslSettings(){
+      const status = document.getElementById('sslSettingsStatus');
+      setActionButtonsDisabled('sslSettingsActions', true);
+      setActionStatus('sslSettingsFlash', 'Saving SSL settings...', 'working');
+      try {
+        const resp = await fetch('/ssl_settings_save', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            enabled: document.getElementById('sslEnabled').checked,
+            mode: document.getElementById('sslMode').value,
+            common_name: document.getElementById('sslCommonName').value,
+            san_list: document.getElementById('sslSanList').value,
+            valid_days: document.getElementById('sslValidDays').value,
+            https_port: document.getElementById('sslHttpsPort').value,
+            redirect_http: document.getElementById('sslRedirectHttp').checked,
+            cert_pem: document.getElementById('sslCertPem').value,
+            key_pem: document.getElementById('sslKeyPem').value,
+            ca_pem: document.getElementById('sslCaPem').value,
+            key_password: document.getElementById('sslKeyPassword').value,
+          })
+        });
+        const data = await resp.json();
+        if (!resp.ok || !data.ok) throw new Error(data.error || 'Save failed');
+        authConfig.ssl = data.ssl || {};
+        renderSslConfig();
+        if (status) status.textContent = 'SSL settings saved.';
+        setActionStatus('sslSettingsFlash', 'SSL settings saved.', 'success');
+      } catch (e) {
+        if (status) status.textContent = 'Save failed: ' + e.message;
+        setActionStatus('sslSettingsFlash', 'Save failed: ' + e.message, 'error');
+      } finally {
+        setActionButtonsDisabled('sslSettingsActions', false);
+      }
+    }
+
+    async function generateSelfSignedCertificate(){
+      const status = document.getElementById('sslSettingsStatus');
+      setActionButtonsDisabled('sslSettingsActions', true);
+      setActionStatus('sslSettingsFlash', 'Generating self-signed certificate...', 'working');
+      try {
+        const resp = await fetch('/ssl_generate_self_signed', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            enabled: document.getElementById('sslEnabled').checked,
+            mode: document.getElementById('sslMode').value,
+            common_name: document.getElementById('sslCommonName').value,
+            san_list: document.getElementById('sslSanList').value,
+            valid_days: document.getElementById('sslValidDays').value,
+            https_port: document.getElementById('sslHttpsPort').value,
+            redirect_http: document.getElementById('sslRedirectHttp').checked
+          })
+        });
+        const data = await resp.json();
+        if (!resp.ok || !data.ok) throw new Error(data.error || 'Generate failed');
+        authConfig.ssl = data.ssl || {};
+        renderSslConfig();
+        if (status) status.textContent = 'Self-signed certificate generated.';
+        setActionStatus('sslSettingsFlash', 'Self-signed certificate generated.', 'success');
+      } catch (e) {
+        if (status) status.textContent = 'Generate failed: ' + e.message;
+        setActionStatus('sslSettingsFlash', 'Generate failed: ' + e.message, 'error');
+      } finally {
+        setActionButtonsDisabled('sslSettingsActions', false);
       }
     }
 
@@ -5669,11 +5764,11 @@ async function runAISummary(){
       const title = document.getElementById('environmentEditorTitle');
       if (title) title.textContent = 'New Portal Environment';
       const crumb = document.getElementById('environmentEditorCrumb');
-      if (crumb) crumb.innerHTML = 'Portals <span>â€º New Portal Environment</span>';
+      if (crumb) crumb.innerHTML = 'Portals <span>› New Portal Environment</span>';
       const status = document.getElementById('environmentStatus');
       if (status) status.textContent = 'Portal environment form cleared.';
       const hints = {
-        envCteraPasswordHint: 'Use a read-write global administrator if you want the dashboard to pull everything. A read-only global administrator can still pull everything except filer CloudSync DB size and filer CPU/memory shell metrics.',
+        envCteraPasswordHint: 'Use a read-write global administrator if you want filer CloudSync DB size and filer CPU/memory shell metrics. A read-only global administrator still works for standard portal and filer collection, but those filer shell metrics will stay unavailable.',
         envOpenAiKeyHint: 'Optional. Only needed if this environment uses AI Summary.',
         envInitialSshHelp: 'Used one time for bootstrap. After that the dashboard uses the installed SSH key going forward.',
         envInitialSshPasswordHint: 'Enter the bootstrap SSH password only if this mode uses username and password.',
@@ -5752,11 +5847,11 @@ async function runAISummary(){
       const title = document.getElementById('environmentEditorTitle');
       if (title) title.textContent = 'Edit Portal Environment';
       const crumb = document.getElementById('environmentEditorCrumb');
-      if (crumb) crumb.innerHTML = 'Portals <span>â€º Edit Portal Environment</span>';
+      if (crumb) crumb.innerHTML = 'Portals <span>› Edit Portal Environment</span>';
       const status = document.getElementById('environmentStatus');
       if (status) status.textContent = 'Editing environment ' + env.name + '.';
       const hints = {
-        envCteraPasswordHint: env.ctera_password_set ? 'A CTERA password is already saved. Leave blank to keep it. Use a read-write global administrator if you want the dashboard to pull everything. A read-only global administrator can still pull everything except filer CloudSync DB size and filer CPU/memory shell metrics.' : 'No CTERA password saved yet. Use a read-write global administrator if you want the dashboard to pull everything. A read-only global administrator can still pull everything except filer CloudSync DB size and filer CPU/memory shell metrics.',
+        envCteraPasswordHint: env.ctera_password_set ? 'A CTERA password is already saved. Leave blank to keep it. Use a read-write global administrator if you want filer CloudSync DB size and filer CPU/memory shell metrics. A read-only global administrator still works for standard portal and filer collection, but those filer shell metrics will stay unavailable.' : 'No CTERA password saved yet. Use a read-write global administrator if you want filer CloudSync DB size and filer CPU/memory shell metrics. A read-only global administrator still works for standard portal and filer collection, but those filer shell metrics will stay unavailable.',
         envOpenAiKeyHint: env.openai_key_set ? 'An OpenAI key is already saved. Leave blank to keep it.' : 'Optional. Only needed if this environment uses AI Summary.',
         envInitialSshHelp: 'Used one time for bootstrap. After that the dashboard uses the installed SSH key going forward.',
         envInitialSshPasswordHint: env.ssh_password_set ? 'A bootstrap SSH password is already saved. Leave blank to keep it.' : 'Enter the bootstrap SSH password only if this mode uses username and password.',
@@ -5883,7 +5978,6 @@ async function runAISummary(){
     }
 
     async function collectEnvironmentPayload(){
-      const current = currentEditingEnvironment();
       let uploadedKeyContent = '';
       let uploadedKeyName = '';
       const uploadedKey = document.getElementById('envInitialSshKey');
@@ -5926,7 +6020,7 @@ async function runAISummary(){
         enabled: document.getElementById('envEnabled').checked,
         ssh_mode: document.getElementById('envInitialSshMode').value,
         ssh_username: document.getElementById('envInitialSshUsername').value || 'root',
-        ssh_key_path: (current && current.ssh_key_path) ? current.ssh_key_path : '',
+        ssh_key_path: '',
         ssh_password: document.getElementById('envInitialSshPassword').value || '',
         ssh_private_key_name: uploadedKeyName,
         ssh_private_key_content: uploadedKeyContent,
@@ -5952,7 +6046,7 @@ async function runAISummary(){
 
       if (!String(payload.environment_name || '').trim()) return 'Environment name is required.';
       if (!String(payload.portal_fqdn || '').trim()) return 'Portal FQDN or portal IP is required.';
-      if (!String(payload.ctera_username || '').trim()) return 'CTERA Portal Global Administrator is required.';
+      if (!String(payload.ctera_username || '').trim()) return 'CTERA Portal Read-Only Global Administrator is required.';
       if (!String(payload.main_db_ip || '').trim()) return 'MainDB IP is required.';
       if (!String(payload.ctera_password || '').trim() && !hasSavedCteraPassword) return 'CTERA password is required.';
       if (useJumpHost && !String(payload.jump_host || '').trim()) return 'Jump host is required when jump-host access is enabled.';
@@ -6061,12 +6155,12 @@ async function runAISummary(){
         if (titleEl) titleEl.textContent = 'Threshold Editor';
         if (summaryEl) summaryEl.textContent = 'Threshold rules are global. Email checks evaluate each portal environment against its own CSV files.';
         if (rowsEl) rowsEl.textContent = '0';
-        if (typeEl) typeEl.textContent = '-';
+        if (typeEl) typeEl.textContent = '—';
         if (countEl) countEl.textContent = '0';
         if (tagsEl) tagsEl.innerHTML = '';
         return;
       }
-      if (titleEl) titleEl.textContent = dataset.label + ' - ' + field.name;
+      if (titleEl) titleEl.textContent = dataset.label + ' — ' + field.name;
       if (summaryEl) {
         const source = thresholdCatalog.source_label ? ('Alert scope: ' + thresholdCatalog.source_label + '. ') : '';
         summaryEl.textContent = source + 'Threshold rules are global. Email checks run separately against each environment.';
@@ -6224,8 +6318,15 @@ async function runAISummary(){
       clearEnvironmentForm();
       reconcileContextAndActiveTab();
       loadEnvironmentConfig();
+      loadThresholdCatalog();
+      loadNotificationsConfig();
+      loadAuthConfig();
+      loadUpgradeNetworkConfig();
+      refreshJobStatus();
+      refreshUpgradeStatus();
       scheduleAboutUpdateChecks(currentTab());
-      syncLivePolling(currentTab());
+      window.setInterval(refreshJobStatus, 5000);
+      window.setInterval(refreshUpgradeStatus, 5000);
     }
     window.addEventListener('DOMContentLoaded', init);
 
@@ -6252,8 +6353,7 @@ async function runAISummary(){
 <body>
   <script>
     try {
-      const rawContext = localStorage.getItem('fd.environmentContext') || '';
-      document.body.setAttribute('data-initial-context', rawContext === 'admin' || !rawContext ? 'admin' : 'env');
+      document.body.setAttribute('data-initial-context', (localStorage.getItem('fd.environmentContext') || 'admin') === 'admin' ? 'admin' : 'env');
     } catch (e) {
       document.body.setAttribute('data-initial-context', 'admin');
     }
@@ -6386,6 +6486,10 @@ async function runAISummary(){
               <span class="tabbtn-text"><span class="tabicon"><svg viewBox="0 0 24 24"><rect x="3" y="10" width="18" height="11" rx="2"></rect><path d="M7 10V7a5 5 0 0 1 10 0v3"></path><circle cx="12" cy="15.5" r="1"></circle></svg></span>User Auth</span>
               <span class="tabbtn-meta"></span>
             </button>
+            <button class="tabbtn nav-child" data-tab="auth_ssl" onclick="showTab('auth_ssl')">
+              <span class="tabbtn-text"><span class="tabicon"><svg viewBox="0 0 24 24"><path d="M12 3l7 4v5c0 4.5-2.9 7.7-7 9-4.1-1.3-7-4.5-7-9V7l7-4Z"></path><path d="M9 12l2 2 4-4"></path></svg></span>HTTPS / SSL</span>
+              <span class="tabbtn-meta"></span>
+            </button>
           </div>
         </div>
 
@@ -6401,17 +6505,6 @@ async function runAISummary(){
             </button>
           </div>
         </div>
-        </div>
-      </div>
-      <div class="sidebar-footer">
-        <div class="sidebar-version-card" title="{{ portal_build_summary or ('Dashboard ' ~ app_version) }}">
-          {% if portal_image_version %}
-          <div class="sidebar-version-primary">{{ portal_image_version }}</div>
-          <div class="sidebar-version-secondary">Service {{ portal_service_version or '-' }}</div>
-          {% else %}
-          <div class="sidebar-version-primary">{{ app_version }}</div>
-          <div class="sidebar-version-secondary">Dashboard Version</div>
-          {% endif %}
         </div>
       </div>
     </aside>
@@ -6480,7 +6573,7 @@ async function runAISummary(){
             <div class="dash-card-head">
               <div>
                 <h3>{{ card.label }}</h3>
-                <div class="hero-sub"><span data-local-time="{{ card.updated_utc }}">{{ card.updated_utc or '-' }}</span></div>
+                <div class="hero-sub"><span data-local-time="{{ card.updated_utc }}">{{ card.updated_utc or '—' }}</span></div>
               </div>
               <div class="count {{ card.status_class }}">{{ card.status_text }}</div>
             </div>
@@ -6511,7 +6604,7 @@ async function runAISummary(){
           {% for item in freshness_items %}
           <div class="ops-row">
             <strong>{{ item.label }}</strong>
-            <span data-local-time="{{ item.updated_utc }}">{{ item.updated_utc or '-' }}</span>
+            <span data-local-time="{{ item.updated_utc }}">{{ item.updated_utc or '—' }}</span>
           </div>
           {% endfor %}
         </div>
@@ -6644,7 +6737,7 @@ async function runAISummary(){
           </div>
           <div class="threshold-kpi">
             <div class="metric-label">Value Type</div>
-            <div class="metric-value" id="thresholdType">-</div>
+            <div class="metric-value" id="thresholdType">—</div>
           </div>
           <div class="threshold-kpi">
             <div class="metric-label">Observed Values</div>
@@ -6765,8 +6858,8 @@ async function runAISummary(){
         <article class="notify-card">
           <h4>CTERA Access</h4>
           <ul class="about-list">
-            <li>Use a read-write global administrator in Global Admin if you want the dashboard to pull everything. We recommend naming that user <strong>monitoring</strong>.</li>
-            <li>A read-only global administrator can still pull everything except filer CloudSync DB size and filer CPU/memory shell metrics.</li>
+            <li>Make sure you have created a read-only administrator in Global Admin. We recommend naming that user <strong>monitoring</strong>.</li>
+            <li>Know the password for the read-only administrator before starting portal setup.</li>
           </ul>
         </article>
         <article class="notify-card">
@@ -6779,15 +6872,15 @@ async function runAISummary(){
         <article class="notify-card">
           <h4>MainDB SSH Access</h4>
           <ul class="about-list">
-            <li><strong>Root access to MainDB is required.</strong></li>
-            <li>The initial SSH connection can use either a password or a private key, either directly as <strong>root</strong> or through another user that can <strong>sudo</strong> to root.</li>
+            <li>Have a user that can SSH to MainDB using either a password or a private key.</li>
+            <li>That SSH user can be <strong>root</strong>, or another user that can <strong>sudo</strong> to root.</li>
           </ul>
         </article>
         <article class="notify-card">
           <h4>Bootstrap Behavior</h4>
           <ul class="about-list">
             <li>The dashboard uses the initial SSH access mode one time for bootstrap.</li>
-            <li>No matter how that first connection is made, the dashboard installs its SSH key and switches ongoing access to certificate/key-based authentication for later runs.</li>
+            <li>After bootstrap, the dashboard uses the installed SSH key and saved runtime environment for ongoing runs.</li>
           </ul>
         </article>
       </div>
@@ -6814,7 +6907,7 @@ async function runAISummary(){
           <button class="ops-btn" onclick="loadEnvironmentConfig()">Reload</button>
         </div>
       </div>
-      <div class="env-note">Review <strong>Prerequisites</strong> before adding a portal. Then use <strong>New Portal Environment</strong> to add it. Root access to MainDB is required, and the dashboard uses the initial SSH access mode one time to bootstrap access and retrieve what it needs before switching ongoing access to certificate/key-based authentication.</div>
+      <div class="env-note">Review <strong>Prerequisites</strong> before adding a portal. Then use <strong>New Portal Environment</strong> to add it. The dashboard uses the initial SSH access mode one time to bootstrap access and retrieve what it needs, then uses the installed key going forward.</div>
       <div class="threshold-status" id="environmentStatus">Loading portal environments...</div>
       <div id="environmentListEmpty" class="notify-empty">No portal environments saved yet.</div>
       <div class="notify-table-wrap">
@@ -7130,6 +7223,100 @@ async function runAISummary(){
     </div>
   </div>
 
+  <div id="auth_ssl" class="tabpane" style="display:none">
+    <div class="hero-title">
+      <div>
+        <h2>HTTPS / SSL</h2>
+        <div class="hero-sub">Manage dashboard certificate material here. This version stores the certs, validates PEM input, and captures the intended HTTPS port and redirect behavior for the service layer.</div>
+      </div>
+    </div>
+
+    <div class="notify-grid">
+      <aside class="threshold-sidebar">
+        <section class="threshold-card">
+          <h3>HTTPS Mode</h3>
+          <div class="threshold-field">
+            <label class="notify-checkbox" for="sslEnabled">
+              <input id="sslEnabled" type="checkbox">
+              Enable HTTPS configuration
+            </label>
+          </div>
+          <div class="threshold-field">
+            <label for="sslMode">Certificate Source</label>
+            <select id="sslMode" class="threshold-select">
+              <option value="self_signed">Generate self-signed certificate</option>
+              <option value="custom">Paste custom PEM certificate bundle</option>
+            </select>
+          </div>
+          <div class="threshold-field">
+            <label for="sslHttpsPort">HTTPS Port</label>
+            <input id="sslHttpsPort" class="threshold-input" type="number" min="1" max="65535" value="8443">
+          </div>
+          <div class="threshold-field">
+            <label class="notify-checkbox" for="sslRedirectHttp">
+              <input id="sslRedirectHttp" type="checkbox" checked>
+              Redirect HTTP 8080 to HTTPS when the service layer is enabled
+            </label>
+            <div class="notify-helper">Recommended target layout is HTTPS on 8443, with 8080 redirecting once the runtime proxy or listener support is applied.</div>
+          </div>
+        </section>
+
+        <section class="threshold-card">
+          <h3>Stored Certificate</h3>
+          <div class="threshold-list">
+            <table>
+              <tbody id="sslMetaBody"></tbody>
+            </table>
+          </div>
+          <div id="sslMetaEmpty" class="threshold-empty">No certificate material stored yet.</div>
+        </section>
+      </aside>
+
+      <section class="threshold-card">
+        <h3>Certificate Management</h3>
+        <div class="threshold-form-grid">
+          <div class="threshold-field">
+            <label for="sslCommonName">Common Name</label>
+            <input id="sslCommonName" class="threshold-input" type="text" placeholder="monitoring.example.com">
+            <div class="notify-helper">Used for self-signed generation and retained as part of the saved HTTPS profile.</div>
+          </div>
+          <div class="threshold-field">
+            <label for="sslValidDays">Validity Days</label>
+            <input id="sslValidDays" class="threshold-input" type="number" min="1" max="3650" value="397">
+          </div>
+          <div class="threshold-field" style="grid-column:1 / -1;">
+            <label for="sslSanList">Subject Alternative Names</label>
+            <textarea id="sslSanList" class="threshold-input" rows="4" placeholder="monitoring.example.com&#10;monitoring.internal&#10;10.10.10.20"></textarea>
+            <div class="notify-helper">One DNS name or IP per line, or comma-separated. The Common Name is automatically added for self-signed generation if missing.</div>
+          </div>
+          <div class="threshold-field" style="grid-column:1 / -1;">
+            <label for="sslCertPem">Certificate PEM</label>
+            <textarea id="sslCertPem" class="threshold-input" rows="8" placeholder="-----BEGIN CERTIFICATE-----"></textarea>
+          </div>
+          <div class="threshold-field" style="grid-column:1 / -1;">
+            <label for="sslKeyPem">Private Key PEM</label>
+            <textarea id="sslKeyPem" class="threshold-input" rows="8" placeholder="-----BEGIN PRIVATE KEY-----"></textarea>
+          </div>
+          <div class="threshold-field" style="grid-column:1 / -1;">
+            <label for="sslCaPem">CA Bundle PEM</label>
+            <textarea id="sslCaPem" class="threshold-input" rows="6" placeholder="-----BEGIN CERTIFICATE-----"></textarea>
+          </div>
+          <div class="threshold-field">
+            <label for="sslKeyPassword">Private Key Password</label>
+            <input id="sslKeyPassword" class="threshold-input" type="password" placeholder="Optional">
+            <div class="notify-helper">If the custom private key is encrypted, enter the passphrase here so the dashboard can validate and normalize it before storing.</div>
+          </div>
+        </div>
+        <div class="notify-actions" id="sslSettingsActions">
+          <button class="ops-btn primary" onclick="saveSslSettings()">Save SSL Settings</button>
+          <button class="ops-btn" onclick="generateSelfSignedCertificate()">Generate Self-Signed Certificate</button>
+        </div>
+        <div class="action-status" id="sslSettingsFlash"></div>
+        <div class="threshold-status" id="sslSettingsStatus">Loading SSL settings...</div>
+      </section>
+    </div>
+  </div>
+
   <div id="about" class="tabpane" style="display:none">
     <div class="hero-title">
       <div>
@@ -7263,9 +7450,9 @@ async function runAISummary(){
     </div>
     <div class="controls">
       <strong>Tenants</strong>
-        <input id="q_tenants" type="text" placeholder="Search tenants..." oninput="filterTenantTables()" style="min-width:240px; margin-left:8px">
+      <input id="q_tenants" type="text" placeholder="Search tenants…" oninput="filterTenantTables()" style="min-width:240px; margin-left:8px">
     </div>
-    <div class="sub">File: <code>{{ tenants_src }}</code> &nbsp;|&nbsp; Updated: <span class="sub" data-local-time="{{ tenants_mtime }}">{{ tenants_mtime or '-' }}</span> {% if refresh_seconds|int>0 %}<span>- auto {{ refresh_seconds|int }}s</span>{% endif %}</div>
+    <div class="sub">File: <code>{{ tenants_src }}</code> &nbsp;•&nbsp; Updated: <span class="sub" data-local-time="{{ tenants_mtime }}">{{ tenants_mtime or '—' }}</span> {% if refresh_seconds|int>0 %}<span>· auto {{ refresh_seconds|int }}s</span>{% endif %}</div>
 
     <div class="viz-grid tenant-summary">
       <section class="viz-panel">
@@ -7371,7 +7558,7 @@ async function runAISummary(){
       <span class="dot dok" style="margin-left:14px"></span>OK
       <span class="dot dmuted" style="margin-left:14px"></span>Muted
     </div>
-    <div class="sub">File: <code>{{ csv_path }}</code> &nbsp;|&nbsp; Updated: <span class="sub" data-local-time="{{ csv_mtime }}">{{ csv_mtime or '-' }}</span> {% if refresh_seconds|int>0 %}<span>- auto {{ refresh_seconds|int }}s</span>{% endif %}</div>
+    <div class="sub">File: <code>{{ csv_path }}</code> &nbsp;•&nbsp; Updated: <span class="sub" data-local-time="{{ csv_mtime }}">{{ csv_mtime or '—' }}</span> {% if refresh_seconds|int>0 %}<span>· auto {{ refresh_seconds|int }}s</span>{% endif %}</div>
 
     <div class="viz-grid">
       <section class="viz-panel">
@@ -7477,7 +7664,6 @@ async function runAISummary(){
     <div class="subtabs">
       <button class="portalsubbtn" data-portal-sub="portal_overview" onclick="showPortalTab('portal_overview')">Overview</button>
       <button class="portalsubbtn" data-portal-sub="portal_servers" onclick="showPortalTab('portal_servers')">Servers{% if c_servers.bad %}<span class="badge">{{ c_servers.bad }}</span>{% endif %}{% if c_servers.warn %}<span class="tabbadge warn" style="margin-left:6px;">{{ c_servers.warn }}</span>{% endif %}</button>
-      <button class="portalsubbtn" data-portal-sub="portal_certificate" onclick="showPortalTab('portal_certificate')">Certificate{% if c_certificate.bad %}<span class="badge">{{ c_certificate.bad }}</span>{% endif %}{% if c_certificate.warn %}<span class="tabbadge warn" style="margin-left:6px;">{{ c_certificate.warn }}</span>{% endif %}</button>
       <button class="portalsubbtn" data-portal-sub="portal_storage" onclick="showPortalTab('portal_storage')">Storage Nodes{% if c_storage.bad %}<span class="badge">{{ c_storage.bad }}</span>{% endif %}{% if c_storage.warn %}<span class="tabbadge warn" style="margin-left:6px;">{{ c_storage.warn }}</span>{% endif %}</button>
       <button class="portalsubbtn" data-portal-sub="portal_tasks" onclick="showPortalTab('portal_tasks')">Tasks{% if c_tasks.bad %}<span class="badge">{{ c_tasks.bad }}</span>{% endif %}{% if c_tasks.warn %}<span class="tabbadge warn" style="margin-left:6px;">{{ c_tasks.warn }}</span>{% endif %}</button>
       <button class="portalsubbtn" data-portal-sub="portal_licenses" onclick="showPortalTab('portal_licenses')">Licenses{% if c_licenses.bad %}<span class="badge">{{ c_licenses.bad }}</span>{% endif %}{% if c_licenses.warn %}<span class="tabbadge warn" style="margin-left:6px;">{{ c_licenses.warn }}</span>{% endif %}</button>
@@ -7499,32 +7685,24 @@ async function runAISummary(){
           </tbody>
         </table>
       </div>
-        <div class="viz-grid two" style="margin-top:12px;">
-          <section class="viz-panel">
-            <h3>Portal Build</h3>
-          <div class="headline-metrics">
-            <div class="headline-metric"><div class="metric-label">MainDB</div><div class="metric-value" style="font-size:22px">{{ portal_build_host or '-' }}</div></div>
-            <div class="headline-metric"><div class="metric-label">Image Version</div><div class="metric-value" style="font-size:22px">{{ portal_image_version or '-' }}</div></div>
-            <div class="headline-metric"><div class="metric-label">Service Version</div><div class="metric-value" style="font-size:22px">{{ portal_service_version or '-' }}</div></div>
-          </div>
-        </section>
-          <section class="viz-panel">
-            <h3>License Summary</h3>
+      <div class="viz-grid two" style="margin-top:12px;">
+        <section class="viz-panel">
+          <h3>License Summary</h3>
           <div class="headline-metrics">
             <div class="headline-metric"><div class="metric-label">Rows</div><div class="metric-value">{{ licenses_rows|length }}</div></div>
             <div class="headline-metric"><div class="metric-label">Valid</div><div class="metric-value ok">{{ valid_licenses }}</div></div>
             <div class="headline-metric"><div class="metric-label">Expired</div><div class="metric-value {{ 'crit' if expired_licenses else '' }}">{{ expired_licenses }}</div></div>
             <div class="headline-metric"><div class="metric-label">Portal Licenses</div><div class="metric-value">{{ portal_license_rows }}</div></div>
-            </div>
-          </section>
-        </div>
+          </div>
+        </section>
       </div>
+    </div>
 
     <div id="portal_servers" class="portalpane" style="display:none">
       <div class="controls">
         <strong>Servers</strong>
         <input id="q_servers" type="text" placeholder="Search servers?" oninput="filterTableByInput('serversTable','q_servers')" style="min-width:240px; margin-left:8px">
-        <div class="sub">File: <code>{{ portal_servers_src }}</code> &nbsp;|&nbsp; Updated: <span class="sub" data-local-time="{{ portal_servers_mtime }}">{{ portal_servers_mtime or '-' }}</span></div>
+        <div class="sub">File: <code>{{ portal_servers_src }}</code> &nbsp;?&nbsp; Updated: <span class="sub" data-local-time="{{ portal_servers_mtime }}">{{ portal_servers_mtime or '?' }}</span></div>
       </div>
       <div class="table-wrap" style="margin-bottom:12px">
         <table id="serversTable">
@@ -7561,7 +7739,7 @@ async function runAISummary(){
       <div class="controls">
         <strong>Storage Nodes</strong>
         <input id="q_storage" type="text" placeholder="Search storage?" oninput="filterTableByInput('storageTable','q_storage')" style="min-width:240px; margin-left:8px">
-        <div class="sub">File: <code>{{ portal_storage_src }}</code> &nbsp;|&nbsp; Updated: <span class="sub" data-local-time="{{ portal_storage_mtime }}">{{ portal_storage_mtime or '-' }}</span></div>
+        <div class="sub">File: <code>{{ portal_storage_src }}</code> &nbsp;?&nbsp; Updated: <span class="sub" data-local-time="{{ portal_storage_mtime }}">{{ portal_storage_mtime or '?' }}</span></div>
       </div>
       <div class="table-wrap">
         <table id="storageTable">
@@ -7586,7 +7764,7 @@ async function runAISummary(){
       <div class="controls" style="margin-top:12px">
         <strong>Tasks</strong>
         <input id="q_tasks" type="text" placeholder="Search tasks..." oninput="filterTableByInput('tasksTable','q_tasks')" style="min-width:240px; margin-left:8px">
-        <div class="sub">File: <code>{{ portal_tasks_src }}</code> &nbsp;|&nbsp; Updated: <span class="sub" data-local-time="{{ portal_tasks_mtime }}">{{ portal_tasks_mtime or '-' }}</span></div>
+        <div class="sub">File: <code>{{ portal_tasks_src }}</code> &nbsp;?&nbsp; Updated: <span class="sub" data-local-time="{{ portal_tasks_mtime }}">{{ portal_tasks_mtime or '?' }}</span></div>
       </div>
       <div class="table-wrap">
         <table id="tasksTable">
@@ -7605,36 +7783,13 @@ async function runAISummary(){
           </tbody>
         </table>
       </div>
-      </div>
-
-    <div id="portal_certificate" class="portalpane" style="display:none">
-      <div class="controls">
-        <strong>Certificate</strong>
-        <div class="sub">File: <code>{{ portal_certificate_src }}</code> &nbsp;|&nbsp; Updated: <span class="sub" data-local-time="{{ portal_certificate_mtime }}">{{ portal_certificate_mtime or '-' }}</span></div>
-      </div>
-      <div class="table-wrap">
-        <table id="certificateTable">
-          <thead><tr>{% for h in certificate_headers %}<th>{{ h }}</th>{% endfor %}</tr></thead>
-          <tbody>
-            {% for r in certificate_rows %}
-            <tr>
-              {% for h in certificate_headers %}
-                {% set cell = r.get(h, '') %}
-                {% set sev = warn_certificate_cell(h, cell, r) %}
-                <td class="{{ 'sev-critical' if sev == 'bad' else ('sev-warning' if sev == 'warn' else '') }}">{{ display_cell(h, cell) }}</td>
-              {% endfor %}
-            </tr>
-            {% endfor %}
-          </tbody>
-        </table>
-      </div>
     </div>
 
     <div id="portal_licenses" class="portalpane" style="display:none">
       <div class="controls">
         <strong>Licenses</strong>
         <input id="q_licenses" type="text" placeholder="Search licenses?" oninput="filterTableByInput('licensesTable','q_licenses')" style="min-width:240px; margin-left:8px">
-        <div class="sub">File: <code>{{ portal_licenses_src }}</code> &nbsp;|&nbsp; Updated: <span class="sub" data-local-time="{{ portal_licenses_mtime }}">{{ portal_licenses_mtime or '-' }}</span></div>
+        <div class="sub">File: <code>{{ portal_licenses_src }}</code> &nbsp;?&nbsp; Updated: <span class="sub" data-local-time="{{ portal_licenses_mtime }}">{{ portal_licenses_mtime or '?' }}</span></div>
       </div>
       <div class="viz-grid two" style="margin-bottom:12px;">
         <section class="viz-panel">
@@ -7658,8 +7813,7 @@ async function runAISummary(){
                 {% set lower = (cell|string).lower() %}
                 {% set is_expired = h == 'expired' and lower in ['true','1','yes','y','on'] %}
                 {% set is_invalid = h == 'valid' and lower in ['false','0','no','n','off'] %}
-                {% set lic_warn = warn_license_cell(h, cell, r) if warn_license_cell is defined else '' %}
-                <td class="{{ 'sev-critical' if is_expired or is_invalid else ('sev-warning' if lic_warn == 'warn' else '') }}">
+                <td class="{{ 'sev-critical' if is_expired or is_invalid else '' }}">
                   {% if h in ['expired','valid','portal_license','antivirus','varonis','key_manager','dlp','global_file_lock'] and lower in ['true','false','1','0','yes','no','y','n','on','off'] %}
                     {% set b = lower in ['true','1','yes','y','on'] %}
                     <span class="pill {{ 'pill-ok' if b else 'pill-muted' }}">{{ 'Yes' if b else 'No' }}</span>
@@ -7683,7 +7837,7 @@ async function runAISummary(){
       <span class="dot dok" style="margin-left:14px"></span>OK
       <span class="dot dmuted" style="margin-left:14px"></span>Muted
     </div>
-    <div class="sub">Dir: <code>{{ pg_base_dir }}</code> {% if refresh_seconds|int>0 %}- auto {{ refresh_seconds|int }}s{% endif %}</div>
+    <div class="sub">Dir: <code>{{ pg_base_dir }}</code> {% if refresh_seconds|int>0 %}· auto {{ refresh_seconds|int }}s{% endif %}</div>
 
     <div class="viz-grid two">
       <section class="viz-panel">
@@ -7748,7 +7902,7 @@ async function runAISummary(){
     {% for v in pg_views %}
       <div id="pg_{{ v.key }}" class="pgpane" style="display:none">
         <div class="controls">
-          <input id="q_pg_{{ v.key }}" type="text" placeholder="Search {{ v.title }}â€¦" oninput="filterTableByInput('pgTable_{{ v.key }}','q_pg_{{ v.key }}')" style="min-width:280px">
+          <input id="q_pg_{{ v.key }}" type="text" placeholder="Search {{ v.title }}…" oninput="filterTableByInput('pgTable_{{ v.key }}','q_pg_{{ v.key }}')" style="min-width:280px">
           <label for="pgSeverityFilter_{{ v.key }}" class="sub" style="margin-left:8px;">Filter:</label>
           <select id="pgSeverityFilter_{{ v.key }}" onchange="filterPgSeverity('{{ v.key }}')" style="min-width:180px; margin-left:4px;">
             <option value="all">All (no filter)</option>
@@ -7758,13 +7912,16 @@ async function runAISummary(){
             <option value="none">No Critical/Warning</option>
           </select>
         </div>
+        {% if v.key == 'snapshots' %}
+        <div class="sub" style="margin:8px 0 10px 0;">Showing the latest 2 snapshots from MainDB when AWS EBS snapshot data is available.</div>
+        {% endif %}
         <div class="table-wrap">
           <table id="pgTable_{{ v.key }}">
-            <thead><tr>{% for h in v.headers %}<th>{{ display_header(h) }}</th>{% endfor %}</tr></thead>
+            <thead><tr>{% for h in v.display_headers %}<th>{{ display_header(h) }}</th>{% endfor %}</tr></thead>
             <tbody>
               {% for r in v.rows %}
               <tr>
-                {% for h in v.headers %}
+                {% for h in v.display_headers %}
                   {% set cell = r.get(h, '') %}
                   {% set cls = style_pg(v.key, h, cell, r) %}
                   {% set sev = warn_pg(v.key, h, cell, r) %}
@@ -7795,7 +7952,7 @@ async function runAISummary(){
     </div>
 
     <div id="health_overview" class="healthpane" style="display:none">
-      <div class="sub">File: <code>{{ metrics_csv }}</code> &nbsp;|&nbsp; Updated: <span class="sub" data-local-time="{{ metrics_mtime }}">{{ metrics_mtime or '-' }}</span> {% if refresh_seconds|int>0 %}- auto {{ refresh_seconds|int }}s{% endif %}</div>
+      <div class="sub">File: <code>{{ metrics_csv }}</code> &nbsp;?&nbsp; Updated: <span class="sub" data-local-time="{{ metrics_mtime }}">{{ metrics_mtime or '?' }}</span> {% if refresh_seconds|int>0 %}? auto {{ refresh_seconds|int }}s{% endif %}</div>
       <div class="viz-grid two">
         <section class="viz-panel">
           <h3>Average Utilization</h3>
@@ -7846,7 +8003,7 @@ async function runAISummary(){
     </div>
 
     <div id="health_nomad" class="healthpane" style="display:none">
-      <div class="sub">File: <code>{{ nomad_csv }}</code> &nbsp;|&nbsp; Updated: <span class="sub" data-local-time="{{ nomad_mtime }}">{{ nomad_mtime or '-' }}</span></div>
+      <div class="sub">File: <code>{{ nomad_csv }}</code> &nbsp;?&nbsp; Updated: <span class="sub" data-local-time="{{ nomad_mtime }}">{{ nomad_mtime or '?' }}</span></div>
       <div class="viz-grid two">
         <section class="viz-panel">
           <h3>Nomad Consistency</h3>
@@ -7912,7 +8069,7 @@ async function runAISummary(){
     </div>
 
     <div id="health_consul" class="healthpane" style="display:none">
-      <div class="sub">File: <code>{{ consul_csv }}</code> &nbsp;|&nbsp; Updated: <span class="sub" data-local-time="{{ consul_mtime }}">{{ consul_mtime or '-' }}</span></div>
+      <div class="sub">File: <code>{{ consul_csv }}</code> &nbsp;?&nbsp; Updated: <span class="sub" data-local-time="{{ consul_mtime }}">{{ consul_mtime or '?' }}</span></div>
       <div class="viz-grid two">
         <section class="viz-panel">
           <h3>Consul Consistency</h3>
@@ -7978,7 +8135,7 @@ async function runAISummary(){
     </div>
 
     <div id="health_docker" class="healthpane" style="display:none">
-      <div class="sub">File: <code>{{ docker_csv }}</code> &nbsp;|&nbsp; Updated: <span class="sub" data-local-time="{{ docker_mtime }}">{{ docker_mtime or '-' }}</span></div>
+      <div class="sub">File: <code>{{ docker_csv }}</code> &nbsp;?&nbsp; Updated: <span class="sub" data-local-time="{{ docker_mtime }}">{{ docker_mtime or '?' }}</span></div>
       <div class="viz-grid two">
         <section class="viz-panel">
           <h3>Docker Restart Watch</h3>
@@ -8050,9 +8207,9 @@ async function runAISummary(){
     <div class="modal-panel">
       <div class="modal-head">
         <div>
-          <div id="environmentEditorCrumb" class="portal-crumb">Portals <span>â€º New Portal Environment</span></div>
+          <div id="environmentEditorCrumb" class="portal-crumb">Portals <span>› New Portal Environment</span></div>
           <h3 id="environmentEditorTitle">Add Portal Environment</h3>
-          <div class="modal-sub">Use the same core details as the original install flow. Root access to MainDB is required, and the initial SSH access mode is only for the first bootstrap step so the dashboard can install the SSH key, retrieve what it needs from MainDB, and then switch ongoing access to certificate/key-based authentication.</div>
+          <div class="modal-sub">Use the same core details as the original install flow. The initial SSH access mode is only for the first bootstrap step so the dashboard can install the SSH key and retrieve what it needs from MainDB, then use the installed key going forward.</div>
         </div>
         <button class="modal-close" type="button" aria-label="Close" onclick="closeEnvironmentModal()">x</button>
       </div>
@@ -8072,7 +8229,7 @@ async function runAISummary(){
           <div class="threshold-field">
             <label for="envCteraUsername">CTERA Portal Global Administrator</label>
             <input id="envCteraUsername" class="threshold-input" type="text" placeholder="monitoring">
-            <div class="env-secret-hint">Use a read-write global administrator if you want the dashboard to pull everything. A read-only global administrator can still pull everything except filer CloudSync DB size and filer CPU/memory shell metrics.</div>
+            <div class="env-secret-hint">Use a read-write global administrator for filer CloudSync DB size and filer CPU/memory shell metrics. A read-only global administrator still works for standard portal and filer collection.</div>
           </div>
           <div class="threshold-field">
             <label for="envCteraPassword">CTERA Password</label>
@@ -8711,6 +8868,26 @@ def auth_users_delete():
         return jsonify({"ok": False, "error": str(exc)}), 400
 
 
+@app.post("/ssl_settings_save")
+def ssl_settings_save():
+    payload = request.get_json(force=True, silent=True) or {}
+    try:
+        settings = _save_ssl_settings(payload)
+        return jsonify({"ok": True, "ssl": settings})
+    except Exception as exc:
+        return jsonify({"ok": False, "error": str(exc)}), 400
+
+
+@app.post("/ssl_generate_self_signed")
+def ssl_generate_self_signed():
+    payload = request.get_json(force=True, silent=True) or {}
+    try:
+        settings = _generate_self_signed_ssl_material(payload)
+        return jsonify({"ok": True, "ssl": settings})
+    except Exception as exc:
+        return jsonify({"ok": False, "error": str(exc)}), 400
+
+
 @app.post("/notifications_test_email")
 def notifications_test_email():
     payload = request.get_json(force=True, silent=True) or {}
@@ -9154,36 +9331,29 @@ def build_ai_summary_data(env_id=None):
     # PORTAL
     portal_cfg = cfg.get("portal") or {}
     servers_rows, servers_headers = read_csv_rows(portal_cfg.get("servers_csv"))
-    certificate_rows, certificate_headers = read_csv_rows(portal_cfg.get("certificate_csv"))
     storage_rows, storage_headers = read_csv_rows(portal_cfg.get("storage_csv"))
     tasks_rows, tasks_headers = read_csv_rows(portal_cfg.get("tasks_csv"))
     licenses_rows, licenses_headers = read_csv_rows(portal_cfg.get("licenses_csv"))
     tasks_rows = filter_dashboard_tasks(tasks_rows)
 
     warn_server_cell = make_portal_warn_fn(ext, "servers")
-    warn_certificate_cell = make_portal_warn_fn(ext, "certificate")
     warn_storage_cell = make_portal_warn_fn(ext, "storage")
     warn_task_cell = make_portal_warn_fn(ext, "tasks")
 
     c_servers = _count_row_severity(servers_rows, servers_headers, warn_server_cell)
-    c_certificate = _count_row_severity(certificate_rows, certificate_headers, warn_certificate_cell)
     c_storage = _count_row_severity(storage_rows, storage_headers, warn_storage_cell)
     c_tasks = _count_row_severity(tasks_rows, tasks_headers, warn_task_cell)
-    warn_license_cell = make_portal_warn_fn(ext, "licenses")
     c_licenses_bad = 0
-    c_licenses_warn = 0
     for row in licenses_rows:
         expired = str(row.get("expired") or "").strip().lower() in {"true", "1", "yes", "y", "on"}
         valid = str(row.get("valid") or "").strip().lower()
         invalid = valid in {"false", "0", "no", "n", "off"}
         if expired or invalid:
             c_licenses_bad += 1
-        elif warn_license_cell("expiration_date", row.get("expiration_date", ""), row) == "warn":
-            c_licenses_warn += 1
 
     portal_counts = {
         "bad": c_servers["bad"] + c_storage["bad"] + c_tasks["bad"] + c_licenses_bad,
-        "warn": c_servers["warn"] + c_storage["warn"] + c_tasks["warn"] + c_licenses_warn,
+        "warn": c_servers["warn"] + c_storage["warn"] + c_tasks["warn"],
     }
 
     # POSTGRES
@@ -9267,9 +9437,9 @@ Formatting requirements:
 - Start with a small <table> giving a one-row-per-subsystem overview
   (Edge, Portal, Postgres, Servers Health) with columns:
   Subsystem, Critical, Warning, Total. Use the counts from the JSON.
-- After the table, add an <h3>Overall health</h3> heading followed by a <ul> of 4â€“6 <li> bullets.
+- After the table, add an <h3>Overall health</h3> heading followed by a <ul> of 4–6 <li> bullets.
   - Mix high-level statements with a bit of concrete detail.
-  - When helpful, use the counts from the JSON explicitly, e.g. â€œ3 critical edge rows out of 47 devicesâ€ or â€œtable_bloat has 5 critical tablesâ€.
+  - When helpful, use the counts from the JSON explicitly, e.g. “3 critical edge rows out of 47 devices” or “table_bloat has 5 critical tables”.
 - Then add an <h3>Key issues to investigate</h3> heading followed by a <ul>.
   - Include one bullet per subsystem that has non-zero critical or warning rows:
     * Edge devices
@@ -9280,15 +9450,15 @@ Formatting requirements:
     * what is wrong (capacity, performance, data-loss, configuration, etc.),
     * roughly how big the problem is (use the counts),
     * what the operator should look at next.
-- Optionally finish with an <h3>Recommended next actions</h3> heading and a <ul> of 3 short bullets grouped by priority (e.g. â€œImmediate / Today / This weekâ€).
+- Optionally finish with an <h3>Recommended next actions</h3> heading and a <ul> of 3 short bullets grouped by priority (e.g. “Immediate / Today / This week”).
 - Optionally add a final <p class="ai-muted"> note about residual risk (for example, no immediate data-loss risk, or replication looking healthy).
 - Use <span class="ai-critical">Critical</span>, <span class="ai-warning">Warning</span>, and <span class="ai-ok">OK</span> inside bullets where appropriate to visually tag severity.
 - Do NOT include any <html>, <head>, or <body> tags.
-- Do NOT use markdown or backticksâ€”only plain HTML elements.
+- Do NOT use markdown or backticks—only plain HTML elements.
 
 Style:
 - Professional but direct.
-- 1â€“3 sentences per bullet (not just fragments).
+- 1–3 sentences per bullet (not just fragments).
 - Be explicit about overall risk level (high/medium/low) for the estate.
 - Avoid repeating the raw JSON verbatim; summarize it into clear guidance.
 """
@@ -9373,7 +9543,6 @@ def index():
 
     # PORTAL
     servers_rows, servers_headers = read_csv_rows(cfg["portal"]["servers_csv"])
-    certificate_rows, certificate_headers = read_csv_rows((cfg.get("portal") or {}).get("certificate_csv"))
     storage_rows, storage_headers = read_csv_rows(cfg["portal"]["storage_csv"])
     tasks_rows, tasks_headers = read_csv_rows((cfg.get("portal") or {}).get("tasks_csv"))
     licenses_rows, licenses_headers = read_csv_rows((cfg.get("portal") or {}).get("licenses_csv"))
@@ -9408,7 +9577,6 @@ def index():
     licenses_display_headers.extend([h for h in licenses_visible_set if h not in licenses_display_headers])
 
     warn_server_cell = make_portal_warn_fn(ext, "servers")
-    warn_certificate_cell = make_portal_warn_fn(ext, "certificate")
     warn_storage_cell = make_portal_warn_fn(ext, "storage")
     warn_task_cell = make_portal_warn_fn(ext, "tasks")
     style_server_cell = make_portal_style_fn(ext, "servers")
@@ -9417,21 +9585,16 @@ def index():
 
     # aggregate Portal badge counts across the three sections
     c_servers = _count_row_severity(servers_rows, servers_headers, warn_server_cell)
-    c_certificate = _count_row_severity(certificate_rows, certificate_headers, warn_certificate_cell)
     c_storage = _count_row_severity(storage_rows, storage_headers, warn_storage_cell)
     c_tasks = _count_row_severity(tasks_rows, tasks_headers, warn_task_cell)
-    warn_license_cell = make_portal_warn_fn(ext, "licenses")
     licenses_bad = 0
-    licenses_warn = 0
     for row in licenses_rows:
         expired = str(row.get("expired") or "").strip().lower() in {"true", "1", "yes", "y", "on"}
         valid = str(row.get("valid") or "").strip().lower()
         invalid = valid in {"false", "0", "no", "n", "off"}
         if expired or invalid:
             licenses_bad += 1
-        elif warn_license_cell("expiration_date", row.get("expiration_date", ""), row) == "warn":
-            licenses_warn += 1
-    c_licenses = {"bad": licenses_bad, "warn": licenses_warn}
+    c_licenses = {"bad": licenses_bad, "warn": 0}
     valid_licenses = sum(1 for row in licenses_rows if str(row.get("valid") or "").strip().lower() in {"true", "1", "yes", "y", "on"})
     expired_licenses = sum(1 for row in licenses_rows if str(row.get("expired") or "").strip().lower() in {"true", "1", "yes", "y", "on"})
     portal_license_rows = sum(1 for row in licenses_rows if str(row.get("portal_license") or "").strip().lower() in {"true", "1", "yes", "y", "on"})
@@ -9446,7 +9609,7 @@ def index():
         _section_card("Licenses", len(licenses_rows), c_licenses),
     ]
 
-    # POSTGRES â€” build topic views + compute warn counts
+    # POSTGRES — build topic views + compute warn counts
     pg_cfg = cfg.get("postgres") or {}
     base_dir = pg_cfg.get("base_dir")
     topics = pg_cfg.get("topics") or {}
@@ -9478,12 +9641,17 @@ def index():
                 warn_rows += 1
         total_pg_bad += bad_rows
         total_pg_warn += warn_rows
+        display_headers = list(h)
+        if key == "snapshots":
+            preferred = ["Name", "Host", "Role", "LatestSnapshot", "PreviousSnapshot", "SnapshotCount", "Status", "CollectionError"]
+            display_headers = [col for col in preferred if col in h]
         pg_views.append({
             "key": key,
-            "title": ("Replication" if key == "replication_status" else ("Snapshots" if key == "snapshots" else re.sub(r'[_]+', ' ', key).title())),
+            "title": re.sub(r'[_]+', ' ', key).title(),
             "path": path,
             "rows": r,
             "headers": h,
+            "display_headers": display_headers,
             "bad_rows_count": bad_rows,
             "warn_rows_count": warn_rows,
             "bad_cells_count": bad_cells
@@ -9502,29 +9670,6 @@ def index():
     warn_hosts = make_servers_health_warn_fn(ext)
     style_hosts = make_servers_health_style_fn(ext)
     hosts_base_counts = _count_row_severity(hosts_rows, hosts_headers, warn_hosts)
-    def _truthy(value):
-        return str(value or "").strip().lower() in {"true", "1", "yes", "y", "on"}
-    main_db_host_row = next((row for row in hosts_rows if _truthy(row.get("MainDB"))), {}) if hosts_rows else {}
-    portal_build_host = str(main_db_host_row.get("Name") or main_db_host_row.get("Host") or "").strip()
-    portal_image_version = str(main_db_host_row.get("ImageVersion") or "").strip()
-    portal_service_version = str(main_db_host_row.get("ServiceVersion") or "").strip()
-    portal_build_summary_parts = []
-    if portal_image_version:
-        portal_build_summary_parts.append(f"Image {portal_image_version}")
-    if portal_service_version:
-        portal_build_summary_parts.append(f"Service {portal_service_version}")
-    portal_build_summary = " | ".join(portal_build_summary_parts)
-    certificate_row = certificate_rows[0] if certificate_rows else {}
-    certificate_status_label = str(certificate_row.get("Status") or "").strip() or ("No Data" if not certificate_rows else "Unknown")
-    certificate_days_left = str(certificate_row.get("CertDaysLeft") or "").strip()
-    certificate_not_after = str(certificate_row.get("NotAfter") or "").strip()
-    certificate_status_tone = "muted"
-    if certificate_rows:
-        certificate_status_tone = "ok"
-        if warn_certificate_cell("Status", certificate_status_label, certificate_row) == "bad" or warn_certificate_cell("CertDaysLeft", certificate_days_left, certificate_row) == "bad":
-            certificate_status_tone = "crit"
-        elif warn_certificate_cell("Status", certificate_status_label, certificate_row) == "warn" or warn_certificate_cell("CertDaysLeft", certificate_days_left, certificate_row) == "warn":
-            certificate_status_tone = "warn"
     host_gauges = [
         _gauge("Memory", hosts_rows, ["MemUsedPct"]),
         _gauge("Root Disk", hosts_rows, ["RootDiskUsedPct"]),
@@ -9563,7 +9708,6 @@ def index():
     # portal CSV sources (for "File: ...")
     portal_cfg = cfg.get("portal") or {}
     portal_servers_src = portal_cfg.get("servers_csv", "")
-    portal_certificate_src = portal_cfg.get("certificate_csv", "")
     portal_storage_src = portal_cfg.get("storage_csv", "")
     portal_tasks_src = portal_cfg.get("tasks_csv", "")
 
@@ -9578,13 +9722,11 @@ def index():
             return pth
 
     portal_servers_src = _norm_src(portal_servers_src)
-    portal_certificate_src = _norm_src(portal_certificate_src)
     portal_storage_src = _norm_src(portal_storage_src)
     portal_tasks_src = _norm_src(portal_tasks_src)
     portal_licenses_src = _norm_src(portal_cfg.get("licenses_csv", ""))
 
     portal_servers_mtime = _file_mtime_iso(portal_servers_src)
-    portal_certificate_mtime = _file_mtime_iso(portal_certificate_src)
     portal_storage_mtime = _file_mtime_iso(portal_storage_src)
     portal_tasks_mtime = _file_mtime_iso(portal_tasks_src)
     portal_licenses_mtime = _file_mtime_iso(portal_licenses_src)
@@ -9655,21 +9797,15 @@ def index():
         # portal
                 # portal
         servers_rows=servers_rows, servers_headers=servers_headers,
-        certificate_rows=certificate_rows, certificate_headers=certificate_headers,
         storage_rows=storage_rows, storage_headers=storage_headers,
         tasks_rows=tasks_rows, tasks_headers=tasks_headers,
         licenses_rows=licenses_rows, licenses_headers=licenses_headers,
         licenses_display_headers=licenses_display_headers,
-        c_servers=c_servers, c_certificate=c_certificate, c_storage=c_storage, c_tasks=c_tasks, c_licenses=c_licenses,
-        warn_certificate_cell=warn_certificate_cell, warn_license_cell=warn_license_cell,
+        c_servers=c_servers, c_storage=c_storage, c_tasks=c_tasks, c_licenses=c_licenses,
         warn_server_cell=warn_server_cell, warn_storage_cell=warn_storage_cell, warn_task_cell=warn_task_cell,
         style_server_cell=style_server_cell, style_storage_cell=style_storage_cell, style_tasks_cell=style_tasks_cell,
         portal_counts=portal_counts, portal_section_cards=portal_section_cards,
         valid_licenses=valid_licenses, expired_licenses=expired_licenses, portal_license_rows=portal_license_rows,
-        portal_build_host=portal_build_host, portal_image_version=portal_image_version,
-        portal_service_version=portal_service_version, portal_build_summary=portal_build_summary,
-        certificate_status_label=certificate_status_label, certificate_status_tone=certificate_status_tone,
-        certificate_days_left=certificate_days_left, certificate_not_after=certificate_not_after,
         # postgres (sub-tabs)
         pg_base_dir=base_dir, pg_views=pg_views, warn_pg=warn_pg, style_pg=style_pg, pg_counts=pg_counts, pg_topic_chart=pg_topic_chart,
         # servers health
@@ -9683,8 +9819,8 @@ def index():
         docker_csv=docker_csv, docker_mtime=docker_mtime, docker_rows=docker_rows, docker_headers=docker_headers,
         docker_summary=docker_summary, docker_row_class=_docker_row_class,
         # portal sources
-        portal_servers_src=portal_servers_src, portal_certificate_src=portal_certificate_src, portal_storage_src=portal_storage_src, portal_tasks_src=portal_tasks_src, portal_licenses_src=portal_licenses_src,
-        portal_servers_mtime=portal_servers_mtime, portal_certificate_mtime=portal_certificate_mtime, portal_storage_mtime=portal_storage_mtime, portal_tasks_mtime=portal_tasks_mtime, portal_licenses_mtime=portal_licenses_mtime,
+        portal_servers_src=portal_servers_src, portal_storage_src=portal_storage_src, portal_tasks_src=portal_tasks_src, portal_licenses_src=portal_licenses_src,
+        portal_servers_mtime=portal_servers_mtime, portal_storage_mtime=portal_storage_mtime, portal_tasks_mtime=portal_tasks_mtime, portal_licenses_mtime=portal_licenses_mtime,
         # tenants
         tenants_src=tenants_src, tenants_mtime=tenants_mtime,
         tenants_rows=tenants_rows, tenants_headers=tenants_headers, style_tenants=style_tenants,
@@ -9696,5 +9832,4 @@ def index():
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=int(os.environ.get("PORT", "8080")), debug=False)
     #app.run(host="127.0.0.1", port=int(os.environ.get("PORT","8080")), debug=False)
-
 
