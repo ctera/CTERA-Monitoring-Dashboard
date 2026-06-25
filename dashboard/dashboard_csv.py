@@ -1636,7 +1636,8 @@ def _launch_ssl_runtime_apply(settings):
         if not error_text:
             error_text = "SSL helper is not permitted for the dashboard service user."
         raise ValueError(error_text)
-    log_path = os.path.join(LOG_DIR, "ssl-apply.log")
+    os.makedirs(DEFAULT_LOG_DIR, exist_ok=True)
+    log_path = os.path.join(DEFAULT_LOG_DIR, "ssl-apply.log")
     subprocess.Popen(
         [
             "/usr/bin/env",
