@@ -5365,6 +5365,7 @@ async function runAISummary(){
       setValue('sslCertPem', '');
       setValue('sslKeyPem', '');
       setValue('sslCaPem', '');
+      updateSslModeUi();
       const status = document.getElementById('sslSettingsStatus');
       if (status) status.textContent = (ssl.material_status || 'Not configured') + '. This tab manages certificate material and intended HTTPS settings for the dashboard.';
       const meta = ssl.metadata || {};
@@ -5391,6 +5392,21 @@ async function runAISummary(){
         });
         if (empty) empty.style.display = rows.length ? 'none' : '';
       }
+    }
+
+    function updateSslModeUi(){
+      const mode = ((document.getElementById('sslMode') || {}).value || 'self_signed');
+      const isCustom = mode === 'custom';
+      document.querySelectorAll('[data-ssl-mode="custom"]').forEach(el => {
+        el.style.display = isCustom ? '' : 'none';
+      });
+      document.querySelectorAll('[data-ssl-mode="self"]').forEach(el => {
+        el.style.display = isCustom ? 'none' : '';
+      });
+      const saveBtn = document.querySelector('#sslSettingsActions .ops-btn.primary');
+      const generateBtn = document.querySelector('#sslSettingsActions .ops-btn:not(.primary)');
+      if (saveBtn) saveBtn.textContent = isCustom ? 'Save Custom Certificate' : 'Save SSL Settings';
+      if (generateBtn) generateBtn.style.display = isCustom ? 'none' : '';
     }
 
     function clearAuthUserForm(){
@@ -7243,7 +7259,7 @@ async function runAISummary(){
           </div>
           <div class="threshold-field">
             <label for="sslMode">Certificate Source</label>
-            <select id="sslMode" class="threshold-select">
+            <select id="sslMode" class="threshold-select" onchange="updateSslModeUi()">
               <option value="self_signed">Generate self-signed certificate</option>
               <option value="custom">Paste custom PEM certificate bundle</option>
             </select>
@@ -7275,33 +7291,33 @@ async function runAISummary(){
       <section class="threshold-card">
         <h3>Certificate Management</h3>
         <div class="threshold-form-grid">
-          <div class="threshold-field">
+          <div class="threshold-field" data-ssl-mode="self">
             <label for="sslCommonName">Common Name</label>
             <input id="sslCommonName" class="threshold-input" type="text" placeholder="monitoring.example.com">
             <div class="notify-helper">Used for self-signed generation and retained as part of the saved HTTPS profile.</div>
           </div>
-          <div class="threshold-field">
+          <div class="threshold-field" data-ssl-mode="self">
             <label for="sslValidDays">Validity Days</label>
             <input id="sslValidDays" class="threshold-input" type="number" min="1" max="3650" value="397">
           </div>
-          <div class="threshold-field" style="grid-column:1 / -1;">
+          <div class="threshold-field" data-ssl-mode="self" style="grid-column:1 / -1;">
             <label for="sslSanList">Subject Alternative Names</label>
             <textarea id="sslSanList" class="threshold-input" rows="4" placeholder="monitoring.example.com&#10;monitoring.internal&#10;10.10.10.20"></textarea>
             <div class="notify-helper">One DNS name or IP per line, or comma-separated. The Common Name is automatically added for self-signed generation if missing.</div>
           </div>
-          <div class="threshold-field" style="grid-column:1 / -1;">
+          <div class="threshold-field" data-ssl-mode="custom" style="grid-column:1 / -1; display:none;">
             <label for="sslCertPem">Certificate PEM</label>
             <textarea id="sslCertPem" class="threshold-input" rows="8" placeholder="-----BEGIN CERTIFICATE-----"></textarea>
           </div>
-          <div class="threshold-field" style="grid-column:1 / -1;">
+          <div class="threshold-field" data-ssl-mode="custom" style="grid-column:1 / -1; display:none;">
             <label for="sslKeyPem">Private Key PEM</label>
             <textarea id="sslKeyPem" class="threshold-input" rows="8" placeholder="-----BEGIN PRIVATE KEY-----"></textarea>
           </div>
-          <div class="threshold-field" style="grid-column:1 / -1;">
+          <div class="threshold-field" data-ssl-mode="custom" style="grid-column:1 / -1; display:none;">
             <label for="sslCaPem">CA Bundle PEM</label>
             <textarea id="sslCaPem" class="threshold-input" rows="6" placeholder="-----BEGIN CERTIFICATE-----"></textarea>
           </div>
-          <div class="threshold-field">
+          <div class="threshold-field" data-ssl-mode="custom" style="display:none;">
             <label for="sslKeyPassword">Private Key Password</label>
             <input id="sslKeyPassword" class="threshold-input" type="password" placeholder="Optional">
             <div class="notify-helper">If the custom private key is encrypted, enter the passphrase here so the dashboard can validate and normalize it before storing.</div>
