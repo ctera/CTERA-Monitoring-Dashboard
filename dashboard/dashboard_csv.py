@@ -5403,8 +5403,8 @@ async function runAISummary(){
       document.querySelectorAll('[data-ssl-mode="self"]').forEach(el => {
         el.style.display = isCustom ? 'none' : '';
       });
-      const saveBtn = document.querySelector('#sslSettingsActions .ops-btn.primary');
-      const generateBtn = document.querySelector('#sslSettingsActions .ops-btn:not(.primary)');
+      const saveBtn = document.getElementById('sslSaveBtn');
+      const generateBtn = document.getElementById('sslGenerateBtn');
       const flowHint = document.getElementById('sslFlowHint');
       if (saveBtn) saveBtn.textContent = isCustom ? 'Save Custom Certificate' : 'Save HTTPS Options';
       if (generateBtn) {
@@ -7336,8 +7336,8 @@ async function runAISummary(){
           </div>
         </div>
         <div class="notify-actions" id="sslSettingsActions">
-          <button class="ops-btn" onclick="saveSslSettings()">Save HTTPS Options</button>
-          <button class="ops-btn primary" onclick="generateSelfSignedCertificate()">Generate Self-Signed Certificate</button>
+          <button id="sslSaveBtn" class="ops-btn" onclick="saveSslSettings()">Save HTTPS Options</button>
+          <button id="sslGenerateBtn" class="ops-btn primary" onclick="generateSelfSignedCertificate()">Generate Self-Signed Certificate</button>
         </div>
         <div class="notify-helper" id="sslFlowHint" style="margin-top:10px;">For self-signed mode, fill in Common Name, Validity Days, and Subject Alternative Names, then generate the certificate first. Save HTTPS options afterward only if you change port, redirect, or enabled state.</div>
         <div class="action-status" id="sslSettingsFlash"></div>
