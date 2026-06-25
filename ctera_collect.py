@@ -352,10 +352,11 @@ def write_status(self, p_filename, all_tenants):
                 tenant = 'Unknown'
 
             sync_id = safe_attr(info, 'proc.cloudsync.serviceStatus.id')
-            try:
-                selfScanIntervalInHours = info.config.cloudsync.selfScanVerificationIntervalInHours
-            except AttributeError:
-                selfScanIntervalInHours = 'Not Applicable'
+            selfScanIntervalInHours = safe_attr(
+                info,
+                'config.cloudsync.selfScanVerificationIntervalInHours',
+                default='Not Applicable',
+            )
             uploadingFiles = safe_attr(info, 'proc.cloudsync.serviceStatus.uploadingFiles')
             scanningFiles = safe_attr(info, 'proc.cloudsync.serviceStatus.scanningFiles')
             selfVerificationscanningFiles = safe_attr(
@@ -364,20 +365,20 @@ def write_status(self, p_filename, all_tenants):
                 default='Not Applicable',
             )
             CurrentFirmware = safe_attr(info, 'status.device.runningFirmware')
-            try:
-                MetaLogMaxSize = info.config.logging.metalog.maxFileSizeMB
-            except AttributeError:
-                try:
-                    MetaLogMaxSize = info.config.logging.log2File.maxFileSizeMB
-                except AttributeError:
-                    MetaLogMaxSize = 'Not Applicable'
-            try:
-                MetaLogMaxFiles = info.config.logging.metalog.maxfiles
-            except AttributeError:
-                try:
-                    MetaLogMaxFiles = info.config.logging.log2File.maxfiles
-                except AttributeError:
-                    MetaLogMaxFiles = 'Not Applicable'
+            MetaLogMaxSize = safe_attr(info, 'config.logging.metalog.maxFileSizeMB', default=None)
+            if MetaLogMaxSize in (None, 'N/A'):
+                MetaLogMaxSize = safe_attr(
+                    info,
+                    'config.logging.log2File.maxFileSizeMB',
+                    default='Not Applicable',
+                )
+            MetaLogMaxFiles = safe_attr(info, 'config.logging.metalog.maxfiles', default=None)
+            if MetaLogMaxFiles in (None, 'N/A'):
+                MetaLogMaxFiles = safe_attr(
+                    info,
+                    'config.logging.log2File.maxfiles',
+                    default='Not Applicable',
+                )
             try:
                 AuditLogsStatus = cli_safe(self, filer, 'show /config/logging/files/mode')
             except AttributeError:
@@ -399,7 +400,7 @@ def write_status(self, p_filename, all_tenants):
                 ad_mapping = cli_safe(self, filer, 'show /config/fileservices/cifs/idMapping/map')
             except AttributeError:
                 ad_mapping = 'Not Applicable'
-            License = info.config.license if hasattr(info.config, 'license') else 'Not Applicable'
+            License = safe_attr(info, 'config.license', default='Not Applicable')
             SN = safe_attr(info, 'status.device.SerialNumber')
             MAC = first_scalar(safe_attr(info, 'status.device.MacAddress'))
             try:
@@ -408,10 +409,11 @@ def write_status(self, p_filename, all_tenants):
                 DNS2 = info.status.network.ports[0].ip.DNSServer2
             except (AttributeError, IndexError, TypeError):
                 IP1 = DNS1 = DNS2 = 'N/A'
-            try:
-                storageThresholdPercentTrigger = info.config.cloudsync.cloudExtender.storageThresholdPercentTrigger
-            except AttributeError:
-                storageThresholdPercentTrigger = 'Not Applicable'
+            storageThresholdPercentTrigger = safe_attr(
+                info,
+                'config.cloudsync.cloudExtender.storageThresholdPercentTrigger',
+                default='Not Applicable',
+            )
             uptime = safe_attr(info, 'proc.time.uptime')
             try:
                 curr_cpu = info.proc.perfMonitor.current.cpu
@@ -1460,4 +1462,5 @@ def main():
 
 if __name__ == "__main__":
     main()
+
 
