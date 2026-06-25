@@ -654,9 +654,9 @@ apply_ssl_runtime() {
     fi
     install_nginx_if_missing
 
-    local redirect_target="https://\$host"
+    local redirect_target="https://\\\$host"
     if [[ "\${https_port}" != "443" ]]; then
-      redirect_target="https://\$host:\${https_port}"
+      redirect_target="https://\\\$host:\${https_port}"
     fi
 
     cat > "\${NGINX_CONF_FILE}" <<NGINXEOF
@@ -691,7 +691,7 @@ NGINXEOF
 server {
     listen 8080;
     server_name _;
-    return 301 \${redirect_target}\$request_uri;
+    return 301 \${redirect_target}\\\$request_uri;
 }
 NGINXEOF
     fi
