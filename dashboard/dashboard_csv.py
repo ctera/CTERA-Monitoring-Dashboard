@@ -86,7 +86,7 @@ def _normalize_portal_host(value):
 def _validate_portal_login_settings(portal_fqdn, username, password):
     host = _normalize_portal_host(portal_fqdn)
     if not host:
-        raise ValueError("Portal FQDN is required.")
+        raise ValueError("Portal FQDN or portal IP is required.")
     try:
         socket.getaddrinfo(host, 443, type=socket.SOCK_STREAM)
     except socket.gaierror as exc:
@@ -2655,7 +2655,7 @@ def _save_environment(payload):
         ssh_password = str(merged.get("ssh_password") or "")
         ssh_key_path = str(merged.get("ssh_key_path") or "").strip()
     if not portal_fqdn:
-        raise ValueError("Portal FQDN is required.")
+        raise ValueError("Portal FQDN or portal IP is required.")
     if not ctera_username:
         raise ValueError("CTERA Portal Global Administrator is required.")
     if not main_db_ip:
@@ -5951,7 +5951,7 @@ async function runAISummary(){
       const hasSavedSshKey = Boolean(current && current.ssh_key_path);
 
       if (!String(payload.environment_name || '').trim()) return 'Environment name is required.';
-      if (!String(payload.portal_fqdn || '').trim()) return 'Portal FQDN is required.';
+      if (!String(payload.portal_fqdn || '').trim()) return 'Portal FQDN or portal IP is required.';
       if (!String(payload.ctera_username || '').trim()) return 'CTERA Portal Global Administrator is required.';
       if (!String(payload.main_db_ip || '').trim()) return 'MainDB IP is required.';
       if (!String(payload.ctera_password || '').trim() && !hasSavedCteraPassword) return 'CTERA password is required.';
@@ -8065,8 +8065,9 @@ async function runAISummary(){
             <input id="environmentName" class="threshold-input" type="text" placeholder="Production Portal">
           </div>
           <div class="threshold-field">
-            <label for="envPortalFqdn">Portal FQDN</label>
-            <input id="envPortalFqdn" class="threshold-input" type="text" placeholder="files.example.com">
+            <label for="envPortalFqdn">Portal FQDN or Portal IP</label>
+            <input id="envPortalFqdn" class="threshold-input" type="text" placeholder="team.example.com or 10.216.6.8">
+            <div class="env-secret-hint">If the customer has one team portal, enter the team portal FQDN. If they have multiple portals, enter the Tomcat server IP or a configured global.<span style="white-space:nowrap;">FQDN</span> DNS name.</div>
           </div>
           <div class="threshold-field">
             <label for="envCteraUsername">CTERA Portal Global Administrator</label>
