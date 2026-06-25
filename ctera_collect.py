@@ -351,18 +351,19 @@ def write_status(self, p_filename, all_tenants):
             except Exception:
                 tenant = 'Unknown'
 
-            sync_id = info.proc.cloudsync.serviceStatus.id
+            sync_id = safe_attr(info, 'proc.cloudsync.serviceStatus.id')
             try:
                 selfScanIntervalInHours = info.config.cloudsync.selfScanVerificationIntervalInHours
             except AttributeError:
                 selfScanIntervalInHours = 'Not Applicable'
-            uploadingFiles = info.proc.cloudsync.serviceStatus.uploadingFiles
-            scanningFiles = info.proc.cloudsync.serviceStatus.scanningFiles
-            try:
-                selfVerificationscanningFiles = info.proc.cloudsync.serviceStatus.selfVerificationScanningFiles
-            except AttributeError:
-                selfVerificationscanningFiles = 'Not Applicable'
-            CurrentFirmware = info.status.device.runningFirmware
+            uploadingFiles = safe_attr(info, 'proc.cloudsync.serviceStatus.uploadingFiles')
+            scanningFiles = safe_attr(info, 'proc.cloudsync.serviceStatus.scanningFiles')
+            selfVerificationscanningFiles = safe_attr(
+                info,
+                'proc.cloudsync.serviceStatus.selfVerificationScanningFiles',
+                default='Not Applicable',
+            )
+            CurrentFirmware = safe_attr(info, 'status.device.runningFirmware')
             try:
                 MetaLogMaxSize = info.config.logging.metalog.maxFileSizeMB
             except AttributeError:
@@ -1459,3 +1460,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+
