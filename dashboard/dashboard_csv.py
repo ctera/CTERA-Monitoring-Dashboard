@@ -1444,6 +1444,10 @@ def _ssl_state_dir():
     return path
 
 
+def _ssl_runtime_request_path():
+    return os.path.join(_ssl_state_dir(), "runtime.env")
+
+
 def _split_multiline_csv(value):
     items = []
     for part in re.split(r"[\r\n,]+", str(value or "")):
@@ -1589,6 +1593,61 @@ def _load_ssl_settings(include_secret=False):
     if not include_secret:
         out["key_password"] = ""
     return out
+
+
+def _write_ssl_runtime_request(settings):
+    payload = {
+        "SSL_ENABLED": "true" if _bool_setting(settings.get("enabled"), False) else "false",
+        "SSL_MODE": str(settings.get("mode") or "self_signed"),
+        "SSL_HTTPS_PORT": str(settings.get("https_port") or "8443"),
+        "SSL_REDIRECT_HTTP": "true" if _bool_setting(settings.get("redirect_http"), True) else "false",
+        "SSL_CERT_PATH": str(settings.get("cert_path") or ""),
+        "SSL_KEY_PATH": str(settings.get("key_path") or ""),
+        "SSL_CA_PATH": str(settings.get("ca_path") or ""),
+    }
+    path = _ssl_runtime_request_path()
+    with open(path, "w", encoding="utf-8", newline="\n") as handle:
+        for key, value in payload.items():
+            handle.write(f"{key}={shlex.quote(str(value))}\n")
+    try:
+        os.chmod(path, 0o600)
+    except Exception:
+        pass
+    return path
+
+
+def _launch_ssl_runtime_apply(settings):
+    if _bool_setting(settings.get("enabled"), False):
+        cert_path = str(settings.get("cert_path") or "").strip()
+        key_path = str(settings.get("key_path") or "").strip()
+        if not cert_path or not key_path:
+            raise ValueError("HTTPS is enabled, but no certificate has been generated or saved yet.")
+        if not os.path.exists(cert_path) or not os.path.exists(key_path):
+            raise ValueError("HTTPS certificate files are missing on disk.")
+    _write_ssl_runtime_request(settings)
+    access_check = subprocess.run(
+        ["/usr/bin/env", "bash", "-lc", f"sudo -n {shlex.quote(DEFAULT_UPGRADE_HELPER)} --validate-access"],
+        cwd=PROJECT_DIR,
+        capture_output=True,
+        text=True,
+    )
+    if access_check.returncode != 0:
+        error_text = (access_check.stderr or access_check.stdout or "").strip()
+        if not error_text:
+            error_text = "SSL helper is not permitted for the dashboard service user."
+        raise ValueError(error_text)
+    log_path = os.path.join(LOG_DIR, "ssl-apply.log")
+    subprocess.Popen(
+        [
+            "/usr/bin/env",
+            "bash",
+            "-lc",
+            f"sudo {shlex.quote(DEFAULT_UPGRADE_HELPER)} ssl-apply >> {shlex.quote(log_path)} 2>&1",
+        ],
+        cwd=PROJECT_DIR,
+        start_new_session=True,
+    )
+    return {"started": True, "log_path": log_path}
 
 
 def _save_ssl_settings(payload):
@@ -5492,8 +5551,14 @@ async function runAISummary(){
         if (!resp.ok || !data.ok) throw new Error(data.error || 'Save failed');
         authConfig.ssl = data.ssl || {};
         renderSslConfig();
-        if (status) status.textContent = 'SSL settings saved.';
-        setActionStatus('sslSettingsFlash', 'SSL settings saved.', 'success');
+        const applyMsg = data.apply && data.apply.started
+          ? 'SSL settings saved. Applying HTTPS runtime now. This page will refresh shortly.'
+          : 'SSL settings saved.';
+        if (status) status.textContent = applyMsg;
+        setActionStatus('sslSettingsFlash', applyMsg, 'success');
+        if (data.apply && data.apply.started) {
+          window.setTimeout(() => window.location.reload(), 7000);
+        }
       } catch (e) {
         if (status) status.textContent = 'Save failed: ' + e.message;
         setActionStatus('sslSettingsFlash', 'Save failed: ' + e.message, 'error');
@@ -8902,7 +8967,8 @@ def ssl_settings_save():
     payload = request.get_json(force=True, silent=True) or {}
     try:
         settings = _save_ssl_settings(payload)
-        return jsonify({"ok": True, "ssl": settings})
+        apply_result = _launch_ssl_runtime_apply(settings)
+        return jsonify({"ok": True, "ssl": settings, "apply": apply_result})
     except Exception as exc:
         return jsonify({"ok": False, "error": str(exc)}), 400
 
@@ -9859,6 +9925,10 @@ def index():
 
 
 if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=int(os.environ.get("PORT", "8080")), debug=False)
+    app.run(
+        host=os.environ.get("FEATHERDASH_BIND_HOST", "0.0.0.0"),
+        port=int(os.environ.get("PORT", "8080")),
+        debug=False,
+    )
     #app.run(host="127.0.0.1", port=int(os.environ.get("PORT","8080")), debug=False)
 

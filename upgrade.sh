@@ -28,7 +28,6 @@ UPGRADE_SUDOERS="${DEFAULT_UPGRADE_SUDOERS}"
 NONINTERACTIVE=0
 THRESHOLD_STRATEGY="merge"
 PKG_MGR=""
-INSTALL_DIR_EXPLICIT=0
 HELPER_NAME="ctera-secret-helper"
 HELPER_INSTALL_PATH="/usr/local/bin/${HELPER_NAME}"
 HELPER_VERSION="0.1.0"
@@ -63,7 +62,6 @@ while [[ $# -gt 0 ]]; do
   case "$1" in
     --install-dir)
       INSTALL_DIR="${2:-}"
-      INSTALL_DIR_EXPLICIT=1
       shift 2
       ;;
     --config-file)
@@ -155,44 +153,6 @@ section() {
   echo
   echo "==> $1"
 }
-
-detect_existing_install_dir() {
-  local candidate line
-
-  if [[ -f "${DEFAULT_SERVICE_FILE}" ]]; then
-    line="$(grep -E '^WorkingDirectory=' "${DEFAULT_SERVICE_FILE}" 2>/dev/null | head -n 1 || true)"
-    candidate="${line#WorkingDirectory=}"
-    if [[ -n "${candidate}" && -d "${candidate}" ]]; then
-      printf '%s' "${candidate}"
-      return 0
-    fi
-
-    line="$(grep -E '^ExecStart=' "${DEFAULT_SERVICE_FILE}" 2>/dev/null | head -n 1 || true)"
-    candidate="$(printf '%s' "${line}" | sed -E 's#^ExecStart=(.+)/venv/bin/python .*#\1#' || true)"
-    if [[ -n "${candidate}" && -d "${candidate}" ]]; then
-      printf '%s' "${candidate}"
-      return 0
-    fi
-  fi
-
-  for candidate in \
-    "${DEFAULT_INSTALL_DIR}" \
-    "/opt/ctera-monitoring-dashboard" \
-    "/opt/ctera/ctera-monitoring-dashboard"
-  do
-    if [[ -d "${candidate}" ]]; then
-      printf '%s' "${candidate}"
-      return 0
-    fi
-  done
-
-  return 1
-}
-
-AUTO_DETECTED_INSTALL_DIR="$(detect_existing_install_dir || true)"
-if [[ "${INSTALL_DIR_EXPLICIT}" -eq 0 && -n "${AUTO_DETECTED_INSTALL_DIR}" ]]; then
-  INSTALL_DIR="${AUTO_DETECTED_INSTALL_DIR}"
-fi
 
 detect_platform_tools() {
   if command -v apt >/dev/null 2>&1; then
@@ -342,12 +302,12 @@ prompt_helper_source_mode() {
     echo >&2
     echo "Helper install source:" >&2
     if helper_bundled_source >/dev/null 2>&1; then
-      echo "  1) Use bundled helper from this package (Recommended)" >&2
-      echo "  2) Download from GitHub" >&2
+      echo "  1) Use the existing helper on the server (Recommended)" >&2
+      echo "  2) Download a new helper from GitHub" >&2
       echo "  3) Use a local file path" >&2
       printf 'Choose [1/2/3] (default 1): ' >&2
     else
-      echo "  1) Download from GitHub" >&2
+      echo "  1) Download a new helper from GitHub" >&2
       echo "  2) Use a local file path" >&2
       printf 'Choose [1/2] (default 1): ' >&2
     fi
@@ -499,7 +459,7 @@ install_private_helper() {
   helper_source_mode="$(prompt_helper_source_mode)"
   if [[ "${helper_source_mode}" == "bundled" ]]; then
     local_helper_path="$(helper_bundled_source)" || {
-      echo "Bundled helper binary was not found in this package." >&2
+      echo "No helper was found on the server, and no helper binary was found in this package." >&2
       return 1
     }
     install_helper_from_local_path "${local_helper_path}"
@@ -562,6 +522,7 @@ install_private_helper() {
 ensure_scheduler_packages() {
   local missing=0
   command -v sqlite3 >/dev/null 2>&1 || missing=1
+  command -v nginx >/dev/null 2>&1 || missing=1
   if [[ "${missing}" -eq 0 ]]; then
     return 0
   fi
@@ -570,13 +531,13 @@ ensure_scheduler_packages() {
   section "Installing scheduler dependencies"
   case "${PKG_MGR}" in
     apt)
-      install_os_packages sqlite3
+      install_os_packages sqlite3 nginx
       ;;
     dnf|yum)
-      install_os_packages sqlite
+      install_os_packages sqlite nginx
       ;;
     *)
-      echo "Warning: could not determine package manager to install sqlite3 automatically." >&2
+      echo "Warning: could not determine package manager to install sqlite3/nginx automatically." >&2
       ;;
   esac
 }
@@ -619,18 +580,153 @@ STATE_DIR='${INSTALL_DIR}/state'
 STATE_FILE="\${STATE_DIR}/upgrade.state"
 SETTINGS_FILE="\${STATE_DIR}/upgrade_network.env"
 REQUEST_FILE="\${STATE_DIR}/upgrade_request.env"
+SSL_REQUEST_FILE="\${INSTALL_DIR}/state/ssl/runtime.env"
+SSL_LOG_FILE="\${LOG_DIR}/ssl-apply.log"
+NGINX_CONF_FILE='/etc/nginx/conf.d/ctera-monitoring-dashboard.conf'
 LOG_FILE="\${LOG_DIR}/upgrade.log"
 ARCHIVE_URL='https://github.com/ctera/CTERA-Monitoring-Dashboard/archive/refs/heads/main.tar.gz'
-THRESHOLD_STRATEGY="\${1:-merge}"
+ACTION="\${1:-merge}"
 
-if [[ "\${THRESHOLD_STRATEGY}" == "--validate-access" ]]; then
+if [[ "\${ACTION}" == "--validate-access" ]]; then
   exit 0
 fi
 
-case "\${THRESHOLD_STRATEGY}" in
-  merge|replace) ;;
+set_config_key() {
+  local key="\$1"
+  local value="\$2"
+  if grep -qE "^\\\${key}=" "\${CONFIG_FILE}" 2>/dev/null; then
+    sed -i "s|^\\\${key}=.*|\\\${key}=\\\${value}|" "\${CONFIG_FILE}"
+  else
+    printf '%s=%s\n' "\${key}" "\${value}" >> "\${CONFIG_FILE}"
+  fi
+}
+
+open_firewall_port() {
+  local port="\$1"
+  if command -v firewall-cmd >/dev/null 2>&1 && firewall-cmd --state >/dev/null 2>&1; then
+    firewall-cmd --quiet --add-port="\${port}/tcp" || true
+    firewall-cmd --quiet --permanent --add-port="\${port}/tcp" || true
+  elif command -v ufw >/dev/null 2>&1 && ufw status 2>/dev/null | grep -qi '^status: active'; then
+    ufw allow "\${port}/tcp" >/dev/null 2>&1 || true
+  fi
+}
+
+install_nginx_if_missing() {
+  if command -v nginx >/dev/null 2>&1; then
+    return 0
+  fi
+  if command -v apt >/dev/null 2>&1; then
+    apt update
+    apt install -y nginx
+  elif command -v dnf >/dev/null 2>&1; then
+    dnf install -y nginx
+  elif command -v yum >/dev/null 2>&1; then
+    yum install -y nginx
+  else
+    echo "Could not install nginx automatically." >&2
+    exit 1
+  fi
+}
+
+apply_ssl_runtime() {
+  mkdir -p "\$(dirname "\${SSL_LOG_FILE}")" "\$(dirname "\${NGINX_CONF_FILE}")"
+  if [[ -f "\${SSL_REQUEST_FILE}" ]]; then
+    set -a
+    # shellcheck disable=SC1090
+    source "\${SSL_REQUEST_FILE}"
+    set +a
+  else
+    echo "SSL runtime request file not found: \${SSL_REQUEST_FILE}" >&2
+    exit 1
+  fi
+
+  local enabled="\${SSL_ENABLED:-false}"
+  local https_port="\${SSL_HTTPS_PORT:-8443}"
+  local redirect_http="\${SSL_REDIRECT_HTTP:-true}"
+  local cert_path="\${SSL_CERT_PATH:-}"
+  local key_path="\${SSL_KEY_PATH:-}"
+  local ca_path="\${SSL_CA_PATH:-}"
+
+  if [[ "\${enabled}" == "true" ]]; then
+    if [[ ! -f "\${cert_path}" || ! -f "\${key_path}" ]]; then
+      echo "HTTPS is enabled but the certificate files are missing." >&2
+      exit 1
+    fi
+    install_nginx_if_missing
+
+    local redirect_target="https://\\\$host"
+    if [[ "\${https_port}" != "443" ]]; then
+      redirect_target="https://\\\$host:\${https_port}"
+    fi
+
+    cat > "\${NGINX_CONF_FILE}" <<NGINXEOF
+server {
+    listen \${https_port} ssl;
+    server_name _;
+
+    ssl_certificate \${cert_path};
+    ssl_certificate_key \${key_path};
+NGINXEOF
+    if [[ -n "\${ca_path}" && -f "\${ca_path}" ]]; then
+      cat >> "\${NGINX_CONF_FILE}" <<NGINXEOF
+    ssl_trusted_certificate \${ca_path};
+NGINXEOF
+    fi
+    cat >> "\${NGINX_CONF_FILE}" <<'NGINXEOF'
+
+    location / {
+        proxy_pass http://127.0.0.1:8081;
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto https;
+        proxy_set_header X-Forwarded-Host $host;
+    }
+}
+NGINXEOF
+    if [[ "\${redirect_http}" == "true" ]]; then
+      cat >> "\${NGINX_CONF_FILE}" <<NGINXEOF
+
+server {
+    listen 8080;
+    server_name _;
+    return 301 \${redirect_target}\\\$request_uri;
+}
+NGINXEOF
+    fi
+    nginx -t
+    systemctl enable nginx >/dev/null 2>&1 || true
+    systemctl restart nginx
+    set_config_key PORT 8081
+    set_config_key FEATHERDASH_BIND_HOST 127.0.0.1
+    systemctl restart "${PRODUCT_SLUG}"
+    open_firewall_port "\${https_port}"
+    if [[ "\${redirect_http}" == "true" ]]; then
+      open_firewall_port 8080
+    fi
+  else
+    set_config_key PORT 8080
+    set_config_key FEATHERDASH_BIND_HOST 0.0.0.0
+    systemctl restart "${PRODUCT_SLUG}"
+    rm -f "\${NGINX_CONF_FILE}"
+    if command -v nginx >/dev/null 2>&1; then
+      nginx -t >/dev/null 2>&1 || true
+      systemctl restart nginx >/dev/null 2>&1 || true
+    fi
+  fi
+}
+
+case "\${ACTION}" in
+  merge|replace)
+    THRESHOLD_STRATEGY="\${ACTION}"
+    ;;
+  ssl-apply)
+    apply_ssl_runtime >> "\${SSL_LOG_FILE}" 2>&1
+    exit \$?
+    ;;
   *)
-    echo "Unsupported threshold strategy: \${THRESHOLD_STRATEGY}" >&2
+    echo "Unsupported helper action: \${ACTION}" >&2
     exit 2
     ;;
 esac
@@ -742,21 +838,6 @@ if [[ "${NONINTERACTIVE}" -eq 0 ]]; then
   INSTALL_DIR="$(prompt_value "Current installation directory" "${INSTALL_DIR}")"
   BACKUP_ROOT="$(prompt_value "Backup location" "${BACKUP_ROOT}")"
   THRESHOLD_STRATEGY="$(prompt_threshold_strategy)"
-fi
-
-if [[ ! -d "${INSTALL_DIR}" ]]; then
-  if [[ -n "${AUTO_DETECTED_INSTALL_DIR}" && -d "${AUTO_DETECTED_INSTALL_DIR}" ]]; then
-    echo "Requested installation directory does not exist: ${INSTALL_DIR}" >&2
-    echo "Using detected existing installation directory instead: ${AUTO_DETECTED_INSTALL_DIR}" >&2
-    INSTALL_DIR="${AUTO_DETECTED_INSTALL_DIR}"
-  else
-    echo "Installation directory does not exist: ${INSTALL_DIR}" >&2
-    echo "Checked service and known locations such as:" >&2
-    echo "  - ${DEFAULT_INSTALL_DIR}" >&2
-    echo "  - /opt/ctera-monitoring-dashboard" >&2
-    echo "  - /opt/ctera/ctera-monitoring-dashboard" >&2
-    exit 1
-  fi
 fi
 
 if [[ ! -d "${INSTALL_DIR}" ]]; then
