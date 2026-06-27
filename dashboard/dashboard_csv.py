@@ -3750,6 +3750,10 @@ HTML = """
     .sidebar-brand h1 { margin:0; color:#4f46e5; font-size: 22px; line-height:1.05; font-weight:700; }
     .sidebar-group { padding:12px 0; }
     .sidebar-label { padding:0 18px 10px; color:#94a3b8; font-size:11px; font-weight:700; text-transform:uppercase; letter-spacing:.08em; }
+    .sidebar-footer { margin-top:auto; padding:16px 12px 18px; }
+    .sidebar-version-card { border:1px solid rgba(199,210,254,0.18); border-radius:10px; background:rgba(255,255,255,0.03); color:#e5e7eb; padding:10px 12px; min-height:48px; display:flex; flex-direction:column; justify-content:center; gap:2px; }
+    .sidebar-version-primary { color:#dbe4ff; font-size:18px; font-weight:700; line-height:22px; }
+    .sidebar-version-secondary { color:#aeb8d3; font-size:12px; font-weight:600; line-height:16px; }
     .nav-sections { display:grid; gap:2px; }
     .nav-section { border-top:1px solid rgba(148,163,184,0.12); }
     .nav-section:first-child { border-top:none; }
@@ -3910,6 +3914,7 @@ HTML = """
     @media (max-width: 900px) {
       .app-shell { grid-template-columns: 1fr; }
       .sidebar { border-right:none; border-bottom:1px solid rgba(148,163,184,0.18); }
+      .sidebar-footer { padding-top:8px; }
       .content-shell { padding:16px; }
       .topbar { padding:14px 16px; }
       .hero-grid, .overview-grid, .viz-grid, .viz-grid.two, .viz-grid.tenant-summary, .section-cards, .threshold-layout, .threshold-grid, .threshold-form-grid, .threshold-kpis, .notify-grid, .notify-summary-grid { grid-template-columns: 1fr; }
@@ -6627,6 +6632,17 @@ async function runAISummary(){
         </div>
         </div>
       </div>
+      <div class="sidebar-footer">
+        <div class="sidebar-version-card" title="{{ portal_build_summary or ('Dashboard ' ~ app_version) }}">
+          {% if portal_image_version %}
+          <div class="sidebar-version-primary">{{ portal_image_version }}</div>
+          <div class="sidebar-version-secondary">Service {{ portal_service_version or '-' }}</div>
+          {% else %}
+          <div class="sidebar-version-primary">{{ app_version }}</div>
+          <div class="sidebar-version-secondary">Dashboard Version</div>
+          {% endif %}
+        </div>
+      </div>
     </aside>
 
     <main class="main-shell">
@@ -7807,6 +7823,14 @@ async function runAISummary(){
         </table>
       </div>
       <div class="viz-grid two" style="margin-top:12px;">
+        <section class="viz-panel">
+          <h3>Portal Build</h3>
+          <div class="headline-metrics">
+            <div class="headline-metric"><div class="metric-label">MainDB</div><div class="metric-value" style="font-size:22px">{{ portal_build_host or '-' }}</div></div>
+            <div class="headline-metric"><div class="metric-label">Image Version</div><div class="metric-value" style="font-size:22px">{{ portal_image_version or '-' }}</div></div>
+            <div class="headline-metric"><div class="metric-label">Service Version</div><div class="metric-value" style="font-size:22px">{{ portal_service_version or '-' }}</div></div>
+          </div>
+        </section>
         <section class="viz-panel">
           <h3>License Summary</h3>
           <div class="headline-metrics">
@@ -9822,6 +9846,16 @@ def index():
     nomad_status_chart = _cluster_status_chart(nomad_rows, "Status")
     consul_status_chart = _cluster_status_chart(consul_rows, "Status")
     docker_summary = _docker_summary(docker_rows)
+    main_db_host_row = next((row for row in hosts_rows if _is_truthy(row.get("MainDB"))), {}) if hosts_rows else {}
+    portal_build_host = str(main_db_host_row.get("Name") or main_db_host_row.get("Host") or "").strip()
+    portal_image_version = str(main_db_host_row.get("ImageVersion") or "").strip()
+    portal_service_version = str(main_db_host_row.get("ServiceVersion") or "").strip()
+    portal_build_summary_parts = []
+    if portal_image_version:
+        portal_build_summary_parts.append(f"Image {portal_image_version}")
+    if portal_service_version:
+        portal_build_summary_parts.append(f"Service {portal_service_version}")
+    portal_build_summary = " | ".join(portal_build_summary_parts)
     hosts_counts = {
         "bad": hosts_base_counts["bad"] + docker_summary["bad"],
         "warn": hosts_base_counts["warn"] + docker_summary["warn"],
@@ -9928,6 +9962,8 @@ def index():
         style_server_cell=style_server_cell, style_storage_cell=style_storage_cell, style_tasks_cell=style_tasks_cell,
         portal_counts=portal_counts, portal_section_cards=portal_section_cards,
         valid_licenses=valid_licenses, expired_licenses=expired_licenses, portal_license_rows=portal_license_rows,
+        portal_build_host=portal_build_host, portal_image_version=portal_image_version,
+        portal_service_version=portal_service_version, portal_build_summary=portal_build_summary,
         # postgres (sub-tabs)
         pg_base_dir=base_dir, pg_views=pg_views, warn_pg=warn_pg, style_pg=style_pg, pg_counts=pg_counts, pg_topic_chart=pg_topic_chart,
         # servers health
