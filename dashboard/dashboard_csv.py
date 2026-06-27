@@ -2,7 +2,7 @@
 # dashboard_csv.py — Edge + Portal + Postgres (with sub-tabs) + Servers Health
 # VERSION: 2025-11-20 r10 (AI summary styled + bugfix)
 
-import os, csv, re, base64, mimetypes, subprocess, shlex, sqlite3, smtplib, ssl, ipaddress
+import os, csv, re, base64, mimetypes, subprocess, shlex, sqlite3, smtplib, ssl, ipaddress, socket
 import paramiko
 import requests
 from flask import Flask, render_template_string, jsonify, request, session, redirect, url_for
@@ -1616,6 +1616,23 @@ def _write_ssl_runtime_request(settings):
     return path
 
 
+def _port_is_available_for_https(port):
+    if port < 1 or port > 65535:
+        return False
+    test_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    try:
+        test_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        test_socket.bind(("0.0.0.0", port))
+        return True
+    except OSError:
+        return False
+    finally:
+        try:
+            test_socket.close()
+        except Exception:
+            pass
+
+
 def _launch_ssl_runtime_apply(settings):
     if _bool_setting(settings.get("enabled"), False):
         cert_path = str(settings.get("cert_path") or "").strip()
@@ -1670,6 +1687,12 @@ def _save_ssl_settings(payload):
         raise ValueError("HTTPS port must be a valid number.")
     if port < 1 or port > 65535:
         raise ValueError("HTTPS port must be between 1 and 65535.")
+    current_enabled = _bool_setting(current.get("enabled"), False)
+    current_https_port = str(current.get("https_port") or "8443").strip() or "8443"
+    requested_enabled = _bool_setting(merged.get("enabled"), False)
+    if requested_enabled and ((not current_enabled) or current_https_port != merged["https_port"]):
+        if not _port_is_available_for_https(port):
+            raise ValueError(f"HTTPS port {port} is already in use on this server. Choose a different HTTPS port and save again.")
     try:
         days = int(merged["valid_days"])
     except Exception:
