@@ -635,8 +635,8 @@ disable_nginx_default_sites() {
     /etc/nginx/sites-enabled/default \
     /etc/nginx/default.d/default.conf
   do
-    if [[ -f "${candidate}" ]]; then
-      mv -f "${candidate}" "${candidate}.ctera-disabled"
+    if [[ -f "\${candidate}" ]]; then
+      mv -f "\${candidate}" "\${candidate}.ctera-disabled"
     fi
   done
 }
