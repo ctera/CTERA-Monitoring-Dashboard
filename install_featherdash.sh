@@ -575,6 +575,19 @@ install_nginx_if_missing() {
   fi
 }
 
+disable_nginx_default_sites() {
+  local candidate=""
+  for candidate in \
+    /etc/nginx/conf.d/default.conf \
+    /etc/nginx/sites-enabled/default \
+    /etc/nginx/default.d/default.conf
+  do
+    if [[ -f "${candidate}" ]]; then
+      mv -f "${candidate}" "${candidate}.ctera-disabled"
+    fi
+  done
+}
+
 apply_ssl_runtime() {
   mkdir -p "\$(dirname "\${SSL_LOG_FILE}")" "\$(dirname "\${NGINX_CONF_FILE}")"
   if [[ -f "\${SSL_REQUEST_FILE}" ]]; then
@@ -600,6 +613,7 @@ apply_ssl_runtime() {
       exit 1
     fi
     install_nginx_if_missing
+    disable_nginx_default_sites
 
     local redirect_target="https://\\\$host"
     if [[ "\${https_port}" != "443" ]]; then

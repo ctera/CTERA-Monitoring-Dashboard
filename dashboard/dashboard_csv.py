@@ -1616,13 +1616,13 @@ def _write_ssl_runtime_request(settings):
     return path
 
 
-def _port_is_available_for_https(port):
+def _port_is_available_for_bind(port, bind_host="0.0.0.0"):
     if port < 1 or port > 65535:
         return False
     test_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     try:
         test_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-        test_socket.bind(("0.0.0.0", port))
+        test_socket.bind((bind_host, port))
         return True
     except OSError:
         return False
@@ -1691,8 +1691,11 @@ def _save_ssl_settings(payload):
     current_https_port = str(current.get("https_port") or "8443").strip() or "8443"
     requested_enabled = _bool_setting(merged.get("enabled"), False)
     if requested_enabled and ((not current_enabled) or current_https_port != merged["https_port"]):
-        if not _port_is_available_for_https(port):
+        if not _port_is_available_for_bind(port):
             raise ValueError(f"HTTPS port {port} is already in use on this server. Choose a different HTTPS port and save again.")
+    if requested_enabled and not current_enabled:
+        if not _port_is_available_for_bind(8081, bind_host="127.0.0.1"):
+            raise ValueError("Internal HTTPS upstream port 8081 is already in use on this server. Free that port before enabling HTTPS.")
     try:
         days = int(merged["valid_days"])
     except Exception:
