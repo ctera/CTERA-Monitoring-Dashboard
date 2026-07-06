@@ -204,7 +204,7 @@ def get_wraparound_db_list(cur):
            ROUND(100 * age(d.datfrozenxid)::float /
                   (SELECT max_old_xid FROM max_age))::int AS pct_of_max,
            ROUND(100 * age(d.datfrozenxid)::float /
-                  (SELECT autovacuum_freeze_max_age FROM max_age))::int AS pct_of_emergency_autovac
+                  (SELECT autovacuum_freeze_max_age FROM max_age)::float)::int AS pct_of_emergency_autovac
     FROM pg_catalog.pg_database d
     WHERE d.datallowconn
     ORDER BY pct_of_max DESC, age DESC;
@@ -225,7 +225,7 @@ def get_wraparound_top_tables(cur, top_n):
            ROUND(100 * age(c.relfrozenxid)::float /
                   (SELECT max_old_xid FROM max_age))::int AS pct_of_max,
            ROUND(100 * age(c.relfrozenxid)::float /
-                  (SELECT autovacuum_freeze_max_age FROM max_age))::int AS pct_of_emergency_autovac,
+                  (SELECT autovacuum_freeze_max_age FROM max_age)::float)::int AS pct_of_emergency_autovac,
            pg_total_relation_size(c.oid) AS size_bytes
     FROM pg_class c
     JOIN pg_namespace n ON n.oid = c.relnamespace
