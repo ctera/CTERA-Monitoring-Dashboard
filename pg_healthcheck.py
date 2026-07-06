@@ -202,7 +202,9 @@ def get_wraparound_db_list(cur):
            age(d.datfrozenxid) AS age,
            (SELECT autovacuum_freeze_max_age FROM max_age)::int AS autovacuum_freeze_max_age,
            ROUND(100 * age(d.datfrozenxid)::float /
-                  (SELECT max_old_xid FROM max_age))::int AS pct_of_max
+                  (SELECT max_old_xid FROM max_age))::int AS pct_of_max,
+           ROUND(100 * age(d.datfrozenxid)::float /
+                  (SELECT autovacuum_freeze_max_age FROM max_age))::int AS pct_of_emergency_autovac
     FROM pg_catalog.pg_database d
     WHERE d.datallowconn
     ORDER BY pct_of_max DESC, age DESC;
@@ -222,6 +224,8 @@ def get_wraparound_top_tables(cur, top_n):
            (SELECT autovacuum_freeze_max_age FROM max_age)::int AS autovacuum_freeze_max_age,
            ROUND(100 * age(c.relfrozenxid)::float /
                   (SELECT max_old_xid FROM max_age))::int AS pct_of_max,
+           ROUND(100 * age(c.relfrozenxid)::float /
+                  (SELECT autovacuum_freeze_max_age FROM max_age))::int AS pct_of_emergency_autovac,
            pg_total_relation_size(c.oid) AS size_bytes
     FROM pg_class c
     JOIN pg_namespace n ON n.oid = c.relnamespace
@@ -629,10 +633,10 @@ def main():
             "backend_start","xact_start","query_start","runtime","query"
         ] + META_COLS)
         export_csv(f"{base}/wraparound_database.csv", wrap_db, [
-            "datname","age","autovacuum_freeze_max_age","pct_of_max"
+            "datname","age","autovacuum_freeze_max_age","pct_of_max","pct_of_emergency_autovac"
         ] + META_COLS)
         export_csv(f"{base}/wraparound_top_tables.csv", wrap_tbl, [
-            "schema","table","age","autovacuum_freeze_max_age","pct_of_max","size_bytes"
+            "schema","table","age","autovacuum_freeze_max_age","pct_of_max","pct_of_emergency_autovac","size_bytes"
         ] + META_COLS)
         export_csv(f"{base}/wraparound_summary.csv", wrap_sum, [
             "oldest_current_xid","percent_towards_wraparound","percent_towards_emergency_autovac"
@@ -674,9 +678,9 @@ def main():
     print_table(lrq, ["pid","usename","application_name","client_addr","state",
                       "wait_event_type","wait_event","backend_start","xact_start","query_start","runtime","query"])
     print("\n=== Wraparound (DB) ===")
-    print_table(wrap_db, ["datname","age","autovacuum_freeze_max_age","pct_of_max"])
+    print_table(wrap_db, ["datname","age","autovacuum_freeze_max_age","pct_of_max","pct_of_emergency_autovac"])
     print("\n=== Wraparound (Top tables) ===")
-    print_table(wrap_tbl, ["schema","table","age","autovacuum_freeze_max_age","pct_of_max","size_bytes"])
+    print_table(wrap_tbl, ["schema","table","age","autovacuum_freeze_max_age","pct_of_max","pct_of_emergency_autovac","size_bytes"])
     print("\n=== Wraparound summary ===")
     print_table(wrap_sum, ["oldest_current_xid","percent_towards_wraparound","percent_towards_emergency_autovac"])
     print("\n=== Last VACUUM / ANALYZE per table ===")

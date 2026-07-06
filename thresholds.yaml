@@ -109,6 +109,9 @@ postgres:
       pct_of_max:
         warn: { ge: 70 }
         crit: { ge: 85 }
+      pct_of_emergency_autovac:
+        warn: { ge: 80 }
+        crit: { ge: 90 }
 
   wraparound_summary:
     default:
@@ -124,6 +127,9 @@ postgres:
       pct_of_max:
         warn: { ge: 70 }
         crit: { ge: 85 }
+      pct_of_emergency_autovac:
+        warn: { ge: 80 }
+        crit: { ge: 90 }
       size_bytes:
         warn: { gt: 10737418240 }
         crit: { gt: 53687091200 }
