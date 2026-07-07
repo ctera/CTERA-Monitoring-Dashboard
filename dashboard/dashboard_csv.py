@@ -4343,6 +4343,46 @@ HTML = """
     function loadPgActive(){
       try{ return localStorage.getItem('fd.pgActive') || 'pg_overview'; }catch(e){ return 'pg_overview'; }
     }
+    let pgTopicCache = {};
+
+    function renderPgTopicRows(key, data){
+      const table = document.getElementById('pgTable_' + key);
+      if (!table) return;
+      const tbody = table.querySelector('tbody');
+      if (!tbody) return;
+      if (!data || !Array.isArray(data.rows)) {
+        tbody.innerHTML = '<tr><td colspan=\"99\" class=\"sub\">No data returned.</td></tr>';
+        return;
+      }
+      const rowsHtml = data.rows.map(row => {
+        const cells = row.map(cell => `<td class="${cell.className || ''}">${cell.text || ''}</td>`).join('');
+        return `<tr>${cells}</tr>`;
+      }).join('');
+      tbody.innerHTML = rowsHtml || '<tr><td colspan=\"99\" class=\"sub\">No rows.</td></tr>';
+    }
+
+    async function ensurePgTopicLoaded(key){
+      if (!key || key === 'overview') return;
+      if (pgTopicCache[key] === 'loading' || pgTopicCache[key] === 'loaded') return;
+      pgTopicCache[key] = 'loading';
+      const tbody = document.querySelector('#pgTable_' + key + ' tbody');
+      if (tbody) {
+        tbody.innerHTML = '<tr><td colspan="99" class="sub">Loading…</td></tr>';
+      }
+      try {
+        const resp = await fetch('/pg_topic_data?topic=' + encodeURIComponent(key), { cache: 'no-store' });
+        const data = await resp.json();
+        if (!resp.ok || !data.ok) throw new Error(data.error || 'Could not load Postgres topic');
+        renderPgTopicRows(key, data);
+        pgTopicCache[key] = 'loaded';
+      } catch (e) {
+        if (tbody) {
+          tbody.innerHTML = `<tr><td colspan="99" class="sev-critical">Could not load topic: ${e.message}</td></tr>`;
+        }
+        pgTopicCache[key] = 'error';
+      }
+    }
+
     function showPgTab(id){
       document.querySelectorAll('.pgpane').forEach(p => p.style.display = 'none');
       document.getElementById(id).style.display = '';
@@ -4350,6 +4390,9 @@ HTML = """
       const btn = document.querySelector('[data-sub="'+id+'"]');
       if (btn) btn.classList.add('active');
       savePgActive(id);
+      if (id.startsWith('pg_') && id !== 'pg_overview') {
+        ensurePgTopicLoaded(id.slice(3));
+      }
     }
 
     function savePortalActive(sub){
@@ -8103,7 +8146,7 @@ async function runAISummary(){
             {% for v in pg_views %}
             <tr onclick="showPgTab('pg_{{ v.key }}')" style="cursor:pointer">
               <td>{{ v.title }}</td>
-              <td>{{ v.rows|length }}</td>
+              <td>{{ v.row_count }}</td>
               <td>{{ v.bad_rows_count }}</td>
               <td>{{ v.warn_rows_count }}</td>
               <td>{{ v.bad_cells_count }}</td>
@@ -8136,16 +8179,7 @@ async function runAISummary(){
           <table id="pgTable_{{ v.key }}">
             <thead><tr>{% for h in v.display_headers %}<th>{{ display_header(h) }}</th>{% endfor %}</tr></thead>
             <tbody>
-              {% for r in v.rows %}
-              <tr>
-                {% for h in v.display_headers %}
-                  {% set cell = r.get(h, '') %}
-                  {% set cls = style_pg(v.key, h, cell, r) %}
-                  {% set sev = warn_pg(v.key, h, cell, r) %}
-                  <td class="{{ cls }} {{ 'sev-critical' if sev == 'bad' else ('sev-warning' if sev == 'warn' else '') }}">{{ display_cell(h, cell) }}</td>
-                {% endfor %}
-              </tr>
-              {% endfor %}
+              <tr><td colspan="{{ v.display_headers|length or 1 }}" class="sub">Open this tab to load rows.</td></tr>
             </tbody>
           </table>
         </div>
@@ -8979,6 +9013,19 @@ def environments_config():
     return jsonify(_environment_payload())
 
 
+@app.get("/pg_topic_data")
+def pg_topic_data():
+    env_id = _request_environment_id()
+    cfg = load_conf_for_environment(env_id)
+    ext = _load_dashboard_thresholds(cfg)
+    topic_key = str(request.args.get("topic") or "").strip().lower()
+    try:
+        payload = _build_pg_topic_payload(cfg, ext, topic_key)
+        return jsonify({"ok": True, **payload})
+    except Exception as exc:
+        return jsonify({"ok": False, "error": str(exc)}), 400
+
+
 @app.post("/environments_save")
 def environments_save():
     payload = request.get_json(force=True, silent=True) or {}
@@ -9515,12 +9562,111 @@ def _section_card(label, rows_total, counts):
     return {"label": label, "rows": rows_total, "bad": bad, "warn": warn, "ok": ok}
 
 
+def _load_dashboard_thresholds(cfg):
+    ext = {}
+    th_src = cfg.get("thresholds_from") or {}
+    th_path = th_src.get("path") or os.environ.get("FEATHERDASH_THRESHOLDS")
+    if th_path:
+        th_full = th_path if os.path.isabs(th_path) else os.path.join(APP_DIR, th_path)
+        if os.path.exists(th_full):
+            try:
+                with open(th_full, "r", encoding="utf-8") as f:
+                    ext = yaml.safe_load(f) or {}
+            except Exception:
+                ext = {}
+    return ext
+
+
+def _build_pg_views(cfg, ext):
+    pg_cfg = cfg.get("postgres") or {}
+    base_dir = pg_cfg.get("base_dir")
+    topics = pg_cfg.get("topics") or {}
+    warn_pg = make_pg_warn_fn(ext)
+    style_pg = make_pg_style_fn(ext)
+    pg_views = []
+    total_pg_bad = 0
+    total_pg_warn = 0
+    for key, fname in topics.items():
+        path = os.path.join(base_dir, fname) if fname else ""
+        r, h = read_csv_rows(path)
+        row_count = len(r)
+        bad_rows = 0
+        warn_rows = 0
+        bad_cells = 0
+        for row in r:
+            row_bad = False
+            row_warn = False
+            for col in h:
+                val = row.get(col, "")
+                sev = warn_pg(key, col, val, row)
+                if sev == 'bad':
+                    bad_cells += 1
+                    row_bad = True
+                elif sev == 'warn':
+                    row_warn = True
+            if row_bad:
+                bad_rows += 1
+            elif row_warn:
+                warn_rows += 1
+        total_pg_bad += bad_rows
+        total_pg_warn += warn_rows
+        display_headers = [col for col in h if not _is_heavy_debug_column(col)]
+        if not display_headers:
+            display_headers = list(h)
+        if key == "snapshots":
+            preferred = ["Name", "Host", "Role", "LatestSnapshot", "PreviousSnapshot", "SnapshotCount", "Status", "CollectionError"]
+            display_headers = [col for col in preferred if col in h]
+        pg_views.append({
+            "key": key,
+            "title": re.sub(r'[_]+', ' ', key).title(),
+            "path": path,
+            "row_count": row_count,
+            "headers": h,
+            "display_headers": display_headers,
+            "bad_rows_count": bad_rows,
+            "warn_rows_count": warn_rows,
+            "bad_cells_count": bad_cells
+        })
+    return pg_views, {"bad": total_pg_bad, "warn": total_pg_warn}, warn_pg, style_pg
+
+
+def _build_pg_topic_payload(cfg, ext, topic_key):
+    pg_views, _, warn_pg, style_pg = _build_pg_views(cfg, ext)
+    view = next((v for v in pg_views if v.get("key") == topic_key), None)
+    if not view:
+        raise ValueError("Unknown Postgres topic.")
+    r, _ = read_csv_rows(view.get("path"))
+    display_headers = list(view.get("display_headers") or [])
+    if topic_key == "snapshots":
+        r = r[:2]
+    rows = []
+    for row in r:
+        rendered = []
+        for h in display_headers:
+            cell = row.get(h, "")
+            cls = style_pg(topic_key, h, cell, row)
+            sev = warn_pg(topic_key, h, cell, row)
+            rendered.append({
+                "text": display_cell(h, cell),
+                "className": f"{cls} {'sev-critical' if sev == 'bad' else ('sev-warning' if sev == 'warn' else '')}".strip(),
+            })
+        rows.append(rendered)
+    return {
+        "key": topic_key,
+        "title": view.get("title", ""),
+        "headers": display_headers,
+        "rows": rows,
+        "row_count": int(view.get("row_count", 0) or 0),
+        "is_snapshots": topic_key == "snapshots",
+    }
+
+
 def _pg_chart(pg_views):
     items = []
     for view in pg_views:
         bad = int(view.get("bad_rows_count", 0) or 0)
         warn = int(view.get("warn_rows_count", 0) or 0)
-        total = max(len(view.get("rows", [])), 1)
+        total = max(int(view.get("row_count", len(view.get("rows", []))) or 0), 1)
         impacted = bad + warn
         items.append({
             "label": view.get("title", ""),
@@ -9536,17 +9682,7 @@ def build_ai_summary_data(env_id=None):
     cfg = load_conf_for_environment(env_id)
 
     # load thresholds.yaml (same logic as index)
-    ext = {}
-    th_src = cfg.get("thresholds_from") or {}
-    th_path = th_src.get("path") or os.environ.get("FEATHERDASH_THRESHOLDS")
-    if th_path:
-        th_full = th_path if os.path.isabs(th_path) else os.path.join(APP_DIR, th_path)
-        if os.path.exists(th_full):
-            try:
-                with open(th_full, "r") as f:
-                    ext = yaml.safe_load(f) or {}
-            except Exception:
-                ext = {}
+    ext = _load_dashboard_thresholds(cfg)
 
     # EDGE
     rows, headers = read_csv_rows(cfg["csv_path"])
@@ -9722,17 +9858,7 @@ def index():
     clip_check, max_cell_px = make_clip_check(cfg.get("ui") or {})
 
     # load external thresholds
-    ext = {}
-    th_src = cfg.get("thresholds_from") or {}
-    th_path = th_src.get("path") or os.environ.get("FEATHERDASH_THRESHOLDS")
-    if th_path:
-        th_full = th_path if os.path.isabs(th_path) else os.path.join(APP_DIR, th_path)
-        if os.path.exists(th_full):
-            try:
-                with open(th_full, "r") as f:
-                    ext = yaml.safe_load(f) or {}
-            except Exception:
-                ext = {}
+    ext = _load_dashboard_thresholds(cfg)
 
     # TENANTS
     tenants_src = cfg.get("tenants_csv") or ""
@@ -9838,62 +9964,7 @@ def index():
     # POSTGRES — build topic views + compute warn counts
     pg_cfg = cfg.get("postgres") or {}
     base_dir = pg_cfg.get("base_dir")
-    topics = pg_cfg.get("topics") or {}
-    warn_pg = make_pg_warn_fn(ext)
-    style_pg = make_pg_style_fn(ext)
-    pg_views = []
-    total_pg_bad = 0
-    total_pg_warn = 0
-    for key, fname in topics.items():
-        path = os.path.join(base_dir, fname) if fname else ""
-        r, h = read_csv_rows(path)
-        row_count = len(r)
-        bad_rows = 0
-        warn_rows = 0
-        bad_cells = 0
-        for row in r:
-            row_bad = False
-            row_warn = False
-            for col in h:
-                val = row.get(col, "")
-                sev = warn_pg(key, col, val, row)
-                if sev == 'bad':
-                    bad_cells += 1
-                    row_bad = True
-                elif sev == 'warn':
-                    row_warn = True
-            if row_bad:
-                bad_rows += 1
-            elif row_warn:
-                warn_rows += 1
-        total_pg_bad += bad_rows
-        total_pg_warn += warn_rows
-        display_headers = [col for col in h if not _is_heavy_debug_column(col)]
-        if not display_headers:
-            display_headers = list(h)
-        render_rows = r
-        if key == "snapshots":
-            preferred = ["Name", "Host", "Role", "LatestSnapshot", "PreviousSnapshot", "SnapshotCount", "Status", "CollectionError"]
-            display_headers = [col for col in preferred if col in h]
-            render_rows = r[:2]
-        if display_headers:
-            render_rows = [
-                {col: row.get(col, "") for col in display_headers}
-                for row in render_rows
-            ]
-        pg_views.append({
-            "key": key,
-            "title": re.sub(r'[_]+', ' ', key).title(),
-            "path": path,
-            "rows": render_rows,
-            "row_count": row_count,
-            "headers": h,
-            "display_headers": display_headers,
-            "bad_rows_count": bad_rows,
-            "warn_rows_count": warn_rows,
-            "bad_cells_count": bad_cells
-        })
-    pg_counts = {"bad": total_pg_bad, "warn": total_pg_warn}
+    pg_views, pg_counts, warn_pg, style_pg = _build_pg_views(cfg, ext)
     pg_topic_chart = _pg_chart(pg_views)
 
     # SERVERS HEALTH
@@ -9979,7 +10050,7 @@ def index():
     portal_licenses_mtime = _file_mtime_iso(portal_licenses_src)
 
     portal_rows_total = len(servers_rows) + len(storage_rows) + len(tasks_rows) + len(licenses_rows)
-    pg_rows_total = sum(int(v.get("row_count", len(v.get("rows", []))) or 0) for v in pg_views)
+    pg_rows_total = sum(int(v.get("row_count", 0) or 0) for v in pg_views)
     overview_cards = [
         _overview_card("Tenants", "tenants", len(tenants_rows), tenants_counts, tenants_mtime),
         _overview_card("Edge Filers", "edge", len(rows), edge_counts, csv_mtime),
