@@ -16,9 +16,9 @@ import csv
 import hashlib
 import os
 import shlex
+import socket
 import time
 import json
-import re
 
 import paramiko
 import psycopg2
@@ -91,9 +91,42 @@ def load_pkey(path, passphrase=None):
 
 def ssh_exec_text(client: paramiko.SSHClient, cmd: str, timeout: int = 10) -> str:
     stdin, stdout, stderr = client.exec_command(cmd, timeout=timeout)
-    out = stdout.read().decode("utf-8", errors="replace")
-    err = stderr.read().decode("utf-8", errors="replace")
-    rc = stdout.channel.recv_exit_status()
+    channel = stdout.channel
+    channel.settimeout(1.0)
+    deadline = time.monotonic() + max(5, int(timeout))
+    out_chunks = []
+    err_chunks = []
+
+    while True:
+        made_progress = False
+        try:
+            while channel.recv_ready():
+                out_chunks.append(channel.recv(65536))
+                made_progress = True
+            while channel.recv_stderr_ready():
+                err_chunks.append(channel.recv_stderr(65536))
+                made_progress = True
+        except socket.timeout:
+            pass
+
+        if channel.exit_status_ready() and not channel.recv_ready() and not channel.recv_stderr_ready():
+            break
+
+        if time.monotonic() >= deadline:
+            try:
+                channel.close()
+            except Exception:
+                pass
+            raise TimeoutError(f"SSH command timed out after {timeout}s: {cmd}")
+
+        if made_progress:
+            deadline = time.monotonic() + max(5, int(timeout))
+        else:
+            time.sleep(0.1)
+
+    rc = channel.recv_exit_status()
+    out = b"".join(out_chunks).decode("utf-8", errors="replace")
+    err = b"".join(err_chunks).decode("utf-8", errors="replace")
     if rc != 0:
         detail = err.strip() or out.strip() or f"exit status {rc}"
         raise RuntimeError(detail)
@@ -196,54 +229,6 @@ def compute_view_hash(rows, keys):
         canonical.append("|".join(str(row.get(key, "")).strip() for key in keys))
     canonical.sort()
     return hashlib.sha1("\n".join(canonical).encode("utf-8")).hexdigest()[:12] if canonical else ""
-
-
-def parse_portal_manage_versions(text):
-    image_version = ""
-    service_version = ""
-    for line in (text or "").splitlines():
-        if "Image version" not in line and "Service version" not in line:
-            continue
-        m = re.search(r"Image version\s+([^\s|]+)", line)
-        if m:
-            image_version = m.group(1).strip()
-        m = re.search(r"Service version\s+([^\s|]+)", line)
-        if m:
-            service_version = m.group(1).strip()
-        if image_version or service_version:
-            break
-    return image_version, service_version
-
-
-def parse_replication_status(text):
-    payload = json.loads((text or "").strip() or "{}")
-    if not isinstance(payload, dict):
-        raise ValueError("replication_status did not return a JSON object")
-
-    def section(name):
-        value = payload.get(name) or {}
-        if not isinstance(value, dict):
-            value = {}
-        return {
-            "status": str(value.get("status") or "").strip(),
-            "lastSuccess": str(value.get("lastSuccess") or "").strip(),
-        }
-
-    streaming = section("streaming_replication")
-    base_backup = section("base_backup")
-    xlog_archive = section("xlog_archive")
-    statuses = [streaming["status"], base_backup["status"], xlog_archive["status"]]
-    overall = "OK" if statuses and all(str(item).lower() == "ok" for item in statuses if item != "") else "ERROR"
-    return {
-        "StreamingReplicationStatus": streaming["status"],
-        "StreamingReplicationLastSuccess": streaming["lastSuccess"],
-        "BaseBackupStatus": base_backup["status"],
-        "BaseBackupLastSuccess": base_backup["lastSuccess"],
-        "XlogArchiveStatus": xlog_archive["status"],
-        "XlogArchiveLastSuccess": xlog_archive["lastSuccess"],
-        "OverallStatus": overall,
-        "RawJson": json.dumps(payload, separators=(",", ":")),
-    }
 
 
 def parse_nomad_nodes(text):
@@ -487,104 +472,6 @@ for p in $candidates; do [ -e "$p" ] && list="$list $p"; done
     }
 
 
-def gather_portal_manage_versions(exec_text):
-    cmd = r"""
-if command -v portal-manage.sh >/dev/null 2>&1; then
-  portal-manage.sh status 2>/dev/null | sed -n '1p'
-elif [ -x /usr/local/bin/portal-manage.sh ]; then
-  /usr/local/bin/portal-manage.sh status 2>/dev/null | sed -n '1p'
-else
-  echo ''
-fi
-"""
-    text = exec_text(cmd)
-    image_version, service_version = parse_portal_manage_versions(text)
-    return {
-        "ImageVersion": image_version,
-        "ServiceVersion": service_version,
-    }
-
-
-def gather_replication_status(exec_text):
-    cmd = r"""
-if command -v portal.sh >/dev/null 2>&1; then
-  portal.sh replication_status 2>/dev/null
-elif [ -x /usr/local/bin/portal.sh ]; then
-  /usr/local/bin/portal.sh replication_status 2>/dev/null
-else
-  echo ''
-fi
-"""
-    text = exec_text(cmd)
-    if not str(text or "").strip():
-        raise RuntimeError("portal.sh replication_status returned no output")
-    return parse_replication_status(text)
-
-
-def parse_storage_snapshot_status(text):
-    snapshot_names = []
-    in_snapshots = False
-    for raw_line in (text or "").splitlines():
-        line = raw_line.strip()
-        if not line:
-            continue
-        if "EBS Volume Snapshots" in line:
-            in_snapshots = True
-            continue
-        if not in_snapshots:
-            continue
-        if line.lower().startswith("available snapshots"):
-            continue
-        match = re.match(r"^\d+\.\s*(.+?)\s*$", line)
-        if match:
-            snapshot_names.append(match.group(1).strip())
-    if not in_snapshots:
-        return {
-            "Status": "NotAvailable",
-            "SnapshotCount": 0,
-            "LatestSnapshot": "",
-            "PreviousSnapshot": "",
-            "CollectionError": "",
-        }
-    latest = snapshot_names[-1] if snapshot_names else ""
-    previous = snapshot_names[-2] if len(snapshot_names) >= 2 else ""
-    return {
-        "Status": "OK",
-        "SnapshotCount": len(snapshot_names),
-        "LatestSnapshot": latest,
-        "PreviousSnapshot": previous,
-        "CollectionError": "",
-    }
-
-
-def gather_storage_snapshots(exec_text):
-    cmd = r"""
-if command -v portal-storage-util.sh >/dev/null 2>&1; then
-  portal-storage-util.sh status 2>/dev/null
-elif [ -x /usr/local/bin/portal-storage-util.sh ]; then
-  /usr/local/bin/portal-storage-util.sh status 2>/dev/null
-else
-  echo ''
-fi
-"""
-    text = exec_text(cmd)
-    parsed = parse_storage_snapshot_status(text)
-    parsed["RawOutput"] = str(text or "").strip()
-    return parsed
-
-
-def host_has_replication_role(exec_text):
-    cmd = r"""
-if [ -f /etc/ctera/.server_roles ]; then
-  cat /etc/ctera/.server_roles 2>/dev/null
-else
-  echo ''
-fi
-"""
-    text = str(exec_text(cmd) or "").strip().lower()
-    return "replication" in text
-
-
 # ---------------------------
 # Postgres fetch (with Name join)
 # ---------------------------
@@ -617,7 +504,10 @@ def connect_ssh(host, user, port=22, pkey=None, password=None, timeout=10):
         pkey=pkey,
         password=(None if pkey else password),
         allow_agent=False, look_for_keys=False,
-        timeout=timeout
+        timeout=timeout,
+        banner_timeout=timeout,
+        auth_timeout=timeout,
+        channel_timeout=timeout,
     )
     return client
 
@@ -726,8 +616,6 @@ def main():
     ap.add_argument("--nomad-out", default=None, help="Optional CSV output path for Nomad node status snapshots")
     ap.add_argument("--consul-out", default=None, help="Optional CSV output path for Consul member snapshots")
     ap.add_argument("--docker-out", default=None, help="Optional CSV output path for Docker container snapshots")
-    ap.add_argument("--replication-out", default=None, help="Optional CSV output path for portal replication status snapshots")
-    ap.add_argument("--snapshots-out", default=None, help="Optional CSV output path for portal storage snapshot status")
 
     args = ap.parse_args()
 
@@ -747,9 +635,6 @@ def main():
     nomad_rows_out = []
     consul_rows_out = []
     docker_rows_out = []
-    replication_rows_out = []
-    snapshot_rows_out = []
-    replication_db_found = False
     previous_docker_counts = load_previous_docker_counts(args.docker_out) if args.docker_out else {}
 
     # Prepare SSH auth
@@ -867,6 +752,7 @@ def main():
 
         client = None
         try:
+            print(f"Collecting server metrics for {meta['Name'] or meta['Host']} ({meta['Host']})", flush=True)
             exec_fn = None
             if jump_client and args.via_main_db_host and not s.get("main_db"):
                 exec_fn = lambda cmd, h=host: target_exec_text_via_main_db(
@@ -879,7 +765,7 @@ def main():
                     target_sudo=args.sudo,
                     jump_run_as_user=args.jump_run_as_user,
                     timeout=args.ssh_timeout,
-                    main_db_port=args.via_main_db_port
+                    main_db_port=args.via_main_db_port,
                 )
                 m = gather_metrics(None, exec_text=exec_fn)
             elif jump_client and args.via_main_db_host and s.get("main_db"):
@@ -891,7 +777,7 @@ def main():
                     target_sudo=args.sudo,
                     jump_run_as_user=args.jump_run_as_user,
                     timeout=args.ssh_timeout,
-                    main_db_port=args.via_main_db_port
+                    main_db_port=args.via_main_db_port,
                 )
                 m = gather_metrics(None, exec_text=exec_fn)
             elif jump_client and not s.get("main_db"):
@@ -915,98 +801,6 @@ def main():
                 m = gather_metrics(client, exec_text=exec_fn)
                 client.close()
 
-            portal_versions = {"ImageVersion": "", "ServiceVersion": ""}
-            if meta["MainDB"]:
-                try:
-                    portal_versions = gather_portal_manage_versions(exec_fn)
-                except Exception:
-                    portal_versions = {"ImageVersion": "", "ServiceVersion": ""}
-
-            if meta["MainDB"]:
-                try:
-                    replication = gather_replication_status(exec_fn)
-                    replication_rows_out.append({
-                        "Name": meta["Name"],
-                        "Host": meta["Host"],
-                        "UID": meta["UID"],
-                        "Role": "MainDB" if meta["MainDB"] else "Replication DB",
-                        "StreamingReplicationStatus": replication["StreamingReplicationStatus"],
-                        "StreamingReplicationLastSuccess": replication["StreamingReplicationLastSuccess"],
-                        "BaseBackupStatus": replication["BaseBackupStatus"],
-                        "BaseBackupLastSuccess": replication["BaseBackupLastSuccess"],
-                        "XlogArchiveStatus": replication["XlogArchiveStatus"],
-                        "XlogArchiveLastSuccess": replication["XlogArchiveLastSuccess"],
-                        "OverallStatus": replication["OverallStatus"],
-                        "CollectionError": "",
-                        "RawJson": replication["RawJson"],
-                    })
-                except Exception as exc:
-                    replication_rows_out.append({
-                        "Name": meta["Name"],
-                        "Host": meta["Host"],
-                        "UID": meta["UID"],
-                        "Role": "MainDB" if meta["MainDB"] else "Replication DB",
-                        "StreamingReplicationStatus": "",
-                        "StreamingReplicationLastSuccess": "",
-                        "BaseBackupStatus": "",
-                        "BaseBackupLastSuccess": "",
-                        "XlogArchiveStatus": "",
-                        "XlogArchiveLastSuccess": "",
-                        "OverallStatus": "ERROR",
-                        "CollectionError": str(exc),
-                        "RawJson": "",
-                    })
-                try:
-                    snapshots = gather_storage_snapshots(exec_fn)
-                    if snapshots["Status"] != "NotAvailable":
-                        snapshot_rows_out.append({
-                            "Name": meta["Name"],
-                            "Host": meta["Host"],
-                            "UID": meta["UID"],
-                            "Role": "MainDB",
-                            "LatestSnapshot": snapshots["LatestSnapshot"],
-                            "PreviousSnapshot": snapshots["PreviousSnapshot"],
-                            "SnapshotCount": snapshots["SnapshotCount"],
-                            "Status": snapshots["Status"],
-                            "CollectionError": snapshots["CollectionError"],
-                            "RawOutput": snapshots["RawOutput"],
-                        })
-                except Exception as exc:
-                    snapshot_rows_out.append({
-                        "Name": meta["Name"],
-                        "Host": meta["Host"],
-                        "UID": meta["UID"],
-                        "Role": "MainDB",
-                        "LatestSnapshot": "",
-                        "PreviousSnapshot": "",
-                        "SnapshotCount": "",
-                        "Status": "ERROR",
-                        "CollectionError": str(exc),
-                        "RawOutput": "",
-                    })
-            elif not replication_db_found:
-                try:
-                    if host_has_replication_role(exec_fn):
-                        replication = gather_replication_status(exec_fn)
-                        replication_rows_out.append({
-                            "Name": meta["Name"],
-                            "Host": meta["Host"],
-                            "UID": meta["UID"],
-                            "Role": "Replication DB",
-                            "StreamingReplicationStatus": replication["StreamingReplicationStatus"],
-                            "StreamingReplicationLastSuccess": replication["StreamingReplicationLastSuccess"],
-                            "BaseBackupStatus": replication["BaseBackupStatus"],
-                            "BaseBackupLastSuccess": replication["BaseBackupLastSuccess"],
-                            "XlogArchiveStatus": replication["XlogArchiveStatus"],
-                            "XlogArchiveLastSuccess": replication["XlogArchiveLastSuccess"],
-                            "OverallStatus": replication["OverallStatus"],
-                            "CollectionError": "",
-                            "RawJson": replication["RawJson"],
-                        })
-                        replication_db_found = True
-                except Exception:
-                    pass
-
             row = {
                 "Name": meta["Name"],
                 "Host": meta["Host"],
@@ -1015,8 +809,6 @@ def main():
                 "Connected": meta["Connected"],
                 "MainDB": meta["MainDB"],
                 "RunningVersion": meta["RunningVersion"],
-                "ImageVersion": portal_versions["ImageVersion"],
-                "ServiceVersion": portal_versions["ServiceVersion"],
                 "PublicIP": meta["PublicIP"],
 
                 "UptimeSeconds": m["UptimeSeconds"],
@@ -1046,6 +838,7 @@ def main():
                 "CPUIDLEPct":     fmt_pct(m["CPUIDLEPct"]),
             }
             rows_out.append(row)
+            print(f"Collected server metrics for {meta['Name'] or meta['Host']} ({meta['Host']})", flush=True)
             meta["HostUptimeSeconds"] = m["UptimeSeconds"]
             cluster_nomad_rows, cluster_consul_rows = gather_cluster_rows(meta, exec_fn)
             nomad_rows_out.extend(cluster_nomad_rows)
@@ -1059,6 +852,7 @@ def main():
                     client.close()
             except Exception:
                 pass
+            print(f"Server metrics failed for {meta['Name'] or meta['Host']} ({meta['Host']}): {e}", flush=True)
             row = {
                 "Name": meta["Name"],
                 "Host": meta["Host"],
@@ -1067,39 +861,9 @@ def main():
                 "Connected": meta["Connected"],
                 "MainDB": meta["MainDB"],
                 "RunningVersion": meta["RunningVersion"],
-                "ImageVersion": "",
-                "ServiceVersion": "",
                 "PublicIP": meta["PublicIP"],
             }
             rows_out.append(row)
-            if meta["MainDB"]:
-                replication_rows_out.append({
-                    "Name": meta["Name"],
-                    "Host": meta["Host"],
-                    "UID": meta["UID"],
-                    "Role": "MainDB",
-                    "StreamingReplicationStatus": "",
-                    "StreamingReplicationLastSuccess": "",
-                    "BaseBackupStatus": "",
-                    "BaseBackupLastSuccess": "",
-                    "XlogArchiveStatus": "",
-                    "XlogArchiveLastSuccess": "",
-                    "OverallStatus": "ERROR",
-                    "CollectionError": str(e),
-                    "RawJson": "",
-                })
-                snapshot_rows_out.append({
-                    "Name": meta["Name"],
-                    "Host": meta["Host"],
-                    "UID": meta["UID"],
-                    "Role": "MainDB",
-                    "LatestSnapshot": "",
-                    "PreviousSnapshot": "",
-                    "SnapshotCount": "",
-                    "Status": "ERROR",
-                    "CollectionError": str(e),
-                    "RawOutput": "",
-                })
             nomad_rows_out.append({
                 "SourceName": meta["Name"],
                 "SourceHost": meta["Host"],
@@ -1157,7 +921,7 @@ def main():
 
     # Write CSV
     headers = [
-        "Name","Host","Status","UID","Connected","MainDB","RunningVersion","ImageVersion","ServiceVersion","PublicIP",
+        "Name","Host","Status","UID","Connected","MainDB","RunningVersion","PublicIP",
         "UptimeSeconds","Load1","Load5","Load15",
         "MemTotalGB","MemUsedGB","MemUsedPct",
         "RootDiskSizeGB","RootDiskUsedGB","RootDiskUsedPct",
@@ -1218,38 +982,6 @@ def main():
                 w.writerow({h: r.get(h, "") for h in docker_headers})
         os.replace(tmp, args.docker_out)
 
-    if args.replication_out:
-        replication_headers = [
-            "Name","Host","UID","Role",
-            "StreamingReplicationStatus","StreamingReplicationLastSuccess",
-            "BaseBackupStatus","BaseBackupLastSuccess",
-            "XlogArchiveStatus","XlogArchiveLastSuccess",
-            "OverallStatus","CollectionError","RawJson"
-        ]
-        tmp = args.replication_out + ".tmp"
-        os.makedirs(os.path.dirname(args.replication_out), exist_ok=True)
-        with open(tmp, "w", newline="", encoding="utf-8") as f:
-            w = csv.DictWriter(f, fieldnames=replication_headers)
-            w.writeheader()
-            for r in replication_rows_out:
-                w.writerow({h: r.get(h, "") for h in replication_headers})
-        os.replace(tmp, args.replication_out)
-
-    if args.snapshots_out:
-        snapshot_headers = [
-            "Name","Host","UID","Role",
-            "LatestSnapshot","PreviousSnapshot","SnapshotCount",
-            "Status","CollectionError","RawOutput"
-        ]
-        tmp = args.snapshots_out + ".tmp"
-        os.makedirs(os.path.dirname(args.snapshots_out), exist_ok=True)
-        with open(tmp, "w", newline="", encoding="utf-8") as f:
-            w = csv.DictWriter(f, fieldnames=snapshot_headers)
-            w.writeheader()
-            for r in snapshot_rows_out:
-                w.writerow({h: r.get(h, "") for h in snapshot_headers})
-        os.replace(tmp, args.snapshots_out)
-
     if jump_client:
         jump_client.close()
 
@@ -1257,6 +989,4 @@ def main():
 
 if __name__ == "__main__":
     main()
-
-
 
