@@ -4457,7 +4457,7 @@ HTML = """
         tbody.innerHTML = '<tr><td colspan="99" class="sub">Loading…</td></tr>';
       }
       try {
-        const resp = await fetch('/pg_topic_data?topic=' + encodeURIComponent(key), { cache: 'no-store' });
+        const resp = await fetch(apiUrl('/pg_topic_data?topic=' + encodeURIComponent(key)), { cache: 'no-store' });
         const data = await resp.json();
         if (!resp.ok || !data.ok) throw new Error(data.error || 'Could not load Postgres topic');
         renderPgTopicRows(key, data);
