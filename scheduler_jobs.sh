@@ -41,6 +41,11 @@ if [[ ! -f "${DB_PATH}" ]]; then
   exit 0
 fi
 
+if [[ "${FEATHERDASH_SCHEDULER_PAUSED:-false}" =~ ^(1|true|yes|on)$ ]]; then
+  log "Scheduler paused by FEATHERDASH_SCHEDULER_PAUSED. Skipping automatic jobs."
+  exit 0
+fi
+
 sanitize_minutes() {
   local value="${1:-}"
   if [[ "${value}" =~ ^[0-9]+$ ]] && [[ "${value}" -gt 0 ]]; then
@@ -104,6 +109,12 @@ run_due_job() {
   fi
   mark_run "${job_name}" "${env_id}"
 }
+
+paused_setting="$(sqlite3 -tabs "${DB_PATH}" "SELECT COALESCE((SELECT setting_value FROM app_settings WHERE setting_key = 'scheduler_paused' LIMIT 1),'false');" 2>/dev/null || echo false)"
+if [[ "${paused_setting}" =~ ^(1|true|yes|on)$ ]]; then
+  log "Scheduler paused in app settings. Skipping automatic jobs."
+  exit 0
+fi
 
 sql="SELECT id, environment_name, COALESCE(portal_schedule_minutes,60), COALESCE(filer_schedule_minutes,60) FROM environments WHERE enabled = 1 ORDER BY lower(environment_name), id;"
 rows="$(sqlite3 -tabs "${DB_PATH}" "${sql}")"

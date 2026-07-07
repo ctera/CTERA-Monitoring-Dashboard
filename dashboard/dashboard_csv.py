@@ -1449,6 +1449,7 @@ _EMAIL_SETTING_DEFAULTS = {
 
 _AUTH_SETTING_DEFAULTS = {
     "auth_mode": "none",
+    "scheduler_paused": "false",
 }
 
 _SSL_SETTING_DEFAULTS = {
@@ -1965,6 +1966,7 @@ def _load_app_settings():
     for row in rows:
         out[row["setting_key"]] = row["setting_value"]
     out["auth_mode"] = str(out.get("auth_mode") or "none")
+    out["scheduler_paused"] = _bool_setting(out.get("scheduler_paused"), False)
     return out
 
 
@@ -1973,6 +1975,8 @@ def _save_app_settings(payload):
     current["auth_mode"] = str(payload.get("auth_mode") or current.get("auth_mode") or "none").strip() or "none"
     if current["auth_mode"] not in {"none", "local"}:
         raise ValueError("Unsupported auth mode.")
+    if "scheduler_paused" in payload:
+        current["scheduler_paused"] = "true" if _bool_setting(payload.get("scheduler_paused"), False) else "false"
     with _notifications_conn() as conn:
         for key, value in current.items():
             conn.execute(
@@ -1985,6 +1989,21 @@ def _save_app_settings(payload):
             )
         conn.commit()
     return _load_app_settings()
+
+
+def _save_scheduler_settings(payload):
+    paused = _bool_setting(payload.get("scheduler_paused"), False)
+    with _notifications_conn() as conn:
+        conn.execute(
+            """
+            INSERT INTO app_settings(setting_key, setting_value)
+            VALUES (?, ?)
+            ON CONFLICT(setting_key) DO UPDATE SET setting_value = excluded.setting_value
+            """,
+            ("scheduler_paused", "true" if paused else "false"),
+        )
+        conn.commit()
+    return {"scheduler_paused": paused}
 
 
 def _list_local_users():
@@ -3086,6 +3105,7 @@ def _environment_payload():
     return {
         "items": _list_environments(include_secret=False),
         "count": len(_list_environments(include_secret=False)),
+        "scheduler_paused": bool(_load_app_settings().get("scheduler_paused")),
     }
 
 
@@ -4958,7 +4978,7 @@ async function runAISummary(){
     let thresholdCatalog = { datasets: [], path: '', recipients: [], alert_state: {}, notification_db_path: '', source_label: '' };
     let notificationConfig = { settings: {}, recipients: [], alert_state: {}, db_path: '' };
     let authConfig = { settings: { auth_mode: 'none' }, users: [], ssl: {} };
-    let environmentConfig = { items: [], count: 0 };
+    let environmentConfig = { items: [], count: 0, scheduler_paused: false };
     let editingRecipientId = null;
     let editingAuthUserId = null;
     let editingEnvironmentId = null;
@@ -6245,6 +6265,16 @@ async function runAISummary(){
       });
     }
 
+    function renderSchedulerControls(){
+      const stateEl = document.getElementById('schedulerPauseState');
+      const btnEl = document.getElementById('schedulerPauseBtn');
+      if (!stateEl || !btnEl) return;
+      const paused = Boolean(environmentConfig.scheduler_paused);
+      stateEl.textContent = paused ? 'Automatic collectors paused' : 'Automatic collectors active';
+      stateEl.className = paused ? 'pill pill-warn' : 'pill pill-ok';
+      btnEl.textContent = paused ? 'Resume Automatic Collectors' : 'Pause Automatic Collectors';
+    }
+
     async function loadEnvironmentConfig(){
       const status = document.getElementById('environmentStatus');
       try {
@@ -6252,12 +6282,46 @@ async function runAISummary(){
         environmentConfig = await resp.json();
         renderEnvironmentSelector();
         renderEnvironmentList();
+        renderSchedulerControls();
         reconcileContextAndActiveTab();
       } catch (e) {
         renderEnvironmentSelector();
+        renderSchedulerControls();
         reconcileContextAndActiveTab();
         if (status) status.textContent = 'Could not load portal environments.';
         console.error('environment config failed', e);
+      }
+    }
+
+    async function toggleSchedulerPause(){
+      const status = document.getElementById('environmentStatus');
+      const paused = !Boolean(environmentConfig.scheduler_paused);
+      setActionButtonsDisabled('environmentActions', true);
+      setActionStatus('environmentFlash', paused ? 'Pausing automatic collectors...' : 'Resuming automatic collectors...', 'working');
+      try {
+        const resp = await fetch('/scheduler_settings_save', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ scheduler_paused: paused })
+        });
+        const data = await resp.json();
+        if (!resp.ok || !data.ok) throw new Error(data.error || 'Scheduler update failed');
+        environmentConfig.items = data.items || environmentConfig.items || [];
+        environmentConfig.count = data.count || environmentConfig.items.length;
+        environmentConfig.scheduler_paused = Boolean(data.scheduler && data.scheduler.scheduler_paused);
+        renderEnvironmentSelector();
+        renderEnvironmentList();
+        renderSchedulerControls();
+        const msg = environmentConfig.scheduler_paused
+          ? 'Automatic collectors paused. Manual runs and bootstrap are still available.'
+          : 'Automatic collectors resumed.';
+        if (status) status.textContent = msg;
+        setActionStatus('environmentFlash', msg, 'success');
+      } catch (e) {
+        if (status) status.textContent = 'Scheduler update failed: ' + e.message;
+        setActionStatus('environmentFlash', 'Scheduler update failed: ' + e.message, 'error');
+      } finally {
+        setActionButtonsDisabled('environmentActions', false);
       }
     }
 
@@ -7203,8 +7267,13 @@ async function runAISummary(){
         <div class="notify-actions">
           <button class="ops-btn" onclick="showTab('admin_prereq')">Review Prerequisites</button>
           <button class="ops-btn primary" onclick="openEnvironmentModal('new')">New Portal Environment</button>
+          <button id="schedulerPauseBtn" class="ops-btn" onclick="toggleSchedulerPause()">Pause Automatic Collectors</button>
           <button class="ops-btn" onclick="loadEnvironmentConfig()">Reload</button>
         </div>
+      </div>
+      <div style="display:flex; align-items:center; gap:10px; flex-wrap:wrap; margin:0 0 12px 0;">
+        <span id="schedulerPauseState" class="pill pill-ok">Automatic collectors active</span>
+        <span class="threshold-summary">When paused, cron will skip all automatic portal and filer jobs. Manual runs and bootstrap still work.</span>
       </div>
       <div class="env-note">Review <strong>Prerequisites</strong> before adding a portal. Then use <strong>New Portal Environment</strong> to add it. The dashboard uses the initial SSH access mode one time to bootstrap access and retrieve what it needs, then uses the installed key going forward.</div>
       <div class="threshold-status" id="environmentStatus">Loading portal environments...</div>
@@ -9164,6 +9233,17 @@ def auth_settings_save():
     try:
         settings = _save_app_settings(payload)
         return jsonify({"ok": True, "settings": settings})
+    except Exception as exc:
+        return jsonify({"ok": False, "error": str(exc)}), 400
+
+
+@app.post("/scheduler_settings_save")
+def scheduler_settings_save():
+    payload = request.get_json(force=True, silent=True) or {}
+    try:
+        settings = _save_scheduler_settings(payload)
+        env_payload = _environment_payload()
+        return jsonify({"ok": True, "scheduler": settings, **env_payload})
     except Exception as exc:
         return jsonify({"ok": False, "error": str(exc)}), 400
 
