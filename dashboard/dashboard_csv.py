@@ -9838,6 +9838,7 @@ def index():
     for key, fname in topics.items():
         path = os.path.join(base_dir, fname) if fname else ""
         r, h = read_csv_rows(path)
+        row_count = len(r)
         bad_rows = 0
         warn_rows = 0
         bad_cells = 0
@@ -9859,14 +9860,22 @@ def index():
         total_pg_bad += bad_rows
         total_pg_warn += warn_rows
         display_headers = list(h)
+        render_rows = r
         if key == "snapshots":
             preferred = ["Name", "Host", "Role", "LatestSnapshot", "PreviousSnapshot", "SnapshotCount", "Status", "CollectionError"]
             display_headers = [col for col in preferred if col in h]
+            render_rows = r[:2]
+        if display_headers:
+            render_rows = [
+                {col: row.get(col, "") for col in display_headers}
+                for row in render_rows
+            ]
         pg_views.append({
             "key": key,
             "title": re.sub(r'[_]+', ' ', key).title(),
             "path": path,
-            "rows": r,
+            "rows": render_rows,
+            "row_count": row_count,
             "headers": h,
             "display_headers": display_headers,
             "bad_rows_count": bad_rows,
@@ -9959,7 +9968,7 @@ def index():
     portal_licenses_mtime = _file_mtime_iso(portal_licenses_src)
 
     portal_rows_total = len(servers_rows) + len(storage_rows) + len(tasks_rows) + len(licenses_rows)
-    pg_rows_total = sum(len(v.get("rows", [])) for v in pg_views)
+    pg_rows_total = sum(int(v.get("row_count", len(v.get("rows", []))) or 0) for v in pg_views)
     overview_cards = [
         _overview_card("Tenants", "tenants", len(tenants_rows), tenants_counts, tenants_mtime),
         _overview_card("Edge Filers", "edge", len(rows), edge_counts, csv_mtime),
