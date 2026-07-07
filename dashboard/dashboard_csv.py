@@ -10114,7 +10114,7 @@ def index():
     # POSTGRES — build topic views + compute warn counts
     pg_cfg = cfg.get("postgres") or {}
     base_dir = pg_cfg.get("base_dir")
-    pg_views, pg_counts, warn_pg, style_pg = _build_pg_views(cfg, ext, include_severity=False)
+        pg_views, pg_counts, warn_pg, style_pg = _build_pg_views(cfg, ext, include_severity=True)
     pg_topic_chart = _pg_chart(pg_views)
 
     # SERVERS HEALTH
