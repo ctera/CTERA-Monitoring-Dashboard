@@ -2,7 +2,7 @@
 # dashboard_csv.py — Edge + Portal + Postgres (with sub-tabs) + Servers Health
 # VERSION: 2025-11-20 r10 (AI summary styled + bugfix)
 
-import os, csv, re, base64, mimetypes, subprocess, shlex, sqlite3, smtplib, ssl, ipaddress, socket
+import os, csv, re, base64, mimetypes, subprocess, shlex, sqlite3, smtplib, ssl, ipaddress, socket, tempfile
 import paramiko
 import requests
 from flask import Flask, render_template_string, jsonify, request, session, redirect, url_for
@@ -597,8 +597,10 @@ def _log_path(job_name):
 
 def _write_state(job_name, values):
     path = _job_state_path(job_name)
-    tmp = path + ".tmp"
-    with open(tmp, "w", encoding="utf-8") as f:
+    state_dir = os.path.dirname(path)
+    os.makedirs(state_dir, exist_ok=True)
+    fd, tmp = tempfile.mkstemp(prefix=f"{job_name}.state.", suffix=".tmp", dir=state_dir)
+    with os.fdopen(fd, "w", encoding="utf-8") as f:
         for key, value in values.items():
             f.write(f"{key}={value}\n")
     os.replace(tmp, path)
