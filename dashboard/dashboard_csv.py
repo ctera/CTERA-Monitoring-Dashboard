@@ -860,6 +860,20 @@ def read_csv_rows(csv_path):
     return rows, headers
 
 
+def read_csv_headers_and_count(csv_path):
+    headers = []
+    row_count = 0
+    if not csv_path or not os.path.exists(csv_path):
+        return headers, row_count
+    with open(csv_path, newline='', encoding='utf-8', errors='ignore') as f:
+        reader = csv.DictReader(f)
+        raw_headers = reader.fieldnames or []
+        headers = [_clean_header(h) for h in raw_headers]
+        for _ in reader:
+            row_count += 1
+    return headers, row_count
+
+
 def derive_fields(rows, headers, cfg):
     if cfg.get("derive_cpu_mem") and "Current Performance" in headers:
         cpu_key = "CPU_Current"
@@ -9577,7 +9591,7 @@ def _load_dashboard_thresholds(cfg):
     return ext
 
 
-def _build_pg_views(cfg, ext):
+def _build_pg_views(cfg, ext, include_severity=False):
     pg_cfg = cfg.get("postgres") or {}
     base_dir = pg_cfg.get("base_dir")
     topics = pg_cfg.get("topics") or {}
@@ -9588,26 +9602,29 @@ def _build_pg_views(cfg, ext):
     total_pg_warn = 0
     for key, fname in topics.items():
         path = os.path.join(base_dir, fname) if fname else ""
-        r, h = read_csv_rows(path)
-        row_count = len(r)
         bad_rows = 0
         warn_rows = 0
         bad_cells = 0
-        for row in r:
-            row_bad = False
-            row_warn = False
-            for col in h:
-                val = row.get(col, "")
-                sev = warn_pg(key, col, val, row)
-                if sev == 'bad':
-                    bad_cells += 1
-                    row_bad = True
-                elif sev == 'warn':
-                    row_warn = True
-            if row_bad:
-                bad_rows += 1
-            elif row_warn:
-                warn_rows += 1
+        if include_severity:
+            r, h = read_csv_rows(path)
+            row_count = len(r)
+            for row in r:
+                row_bad = False
+                row_warn = False
+                for col in h:
+                    val = row.get(col, "")
+                    sev = warn_pg(key, col, val, row)
+                    if sev == 'bad':
+                        bad_cells += 1
+                        row_bad = True
+                    elif sev == 'warn':
+                        row_warn = True
+                if row_bad:
+                    bad_rows += 1
+                elif row_warn:
+                    warn_rows += 1
+        else:
+            h, row_count = read_csv_headers_and_count(path)
         total_pg_bad += bad_rows
         total_pg_warn += warn_rows
         display_headers = [col for col in h if not _is_heavy_debug_column(col)]
@@ -9631,7 +9648,7 @@ def _build_pg_views(cfg, ext):
 
 
 def _build_pg_topic_payload(cfg, ext, topic_key):
-    pg_views, _, warn_pg, style_pg = _build_pg_views(cfg, ext)
+    pg_views, _, warn_pg, style_pg = _build_pg_views(cfg, ext, include_severity=False)
     view = next((v for v in pg_views if v.get("key") == topic_key), None)
     if not view:
         raise ValueError("Unknown Postgres topic.")
@@ -9964,7 +9981,7 @@ def index():
     # POSTGRES — build topic views + compute warn counts
     pg_cfg = cfg.get("postgres") or {}
     base_dir = pg_cfg.get("base_dir")
-    pg_views, pg_counts, warn_pg, style_pg = _build_pg_views(cfg, ext)
+    pg_views, pg_counts, warn_pg, style_pg = _build_pg_views(cfg, ext, include_severity=False)
     pg_topic_chart = _pg_chart(pg_views)
 
     # SERVERS HEALTH
