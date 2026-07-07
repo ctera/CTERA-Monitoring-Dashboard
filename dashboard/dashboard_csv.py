@@ -620,11 +620,30 @@ def _read_state(job_name):
     return out
 
 
-def _tail_text(path, max_lines=12):
+def _tail_text(path, max_lines=12, chunk_size=4096):
     try:
-        with open(path, "r", encoding="utf-8", errors="ignore") as f:
-            lines = f.readlines()
-        return "".join(lines[-max_lines:]).strip()
+        if max_lines <= 0:
+            return ""
+        with open(path, "rb") as f:
+            f.seek(0, os.SEEK_END)
+            file_size = f.tell()
+            if file_size <= 0:
+                return ""
+            remaining = file_size
+            chunks = []
+            newline_target = max_lines + 1
+            newline_count = 0
+            while remaining > 0 and newline_count < newline_target:
+                read_size = min(chunk_size, remaining)
+                remaining -= read_size
+                f.seek(remaining)
+                chunk = f.read(read_size)
+                chunks.append(chunk)
+                newline_count += chunk.count(b"\n")
+            data = b"".join(reversed(chunks))
+        text = data.decode("utf-8", errors="ignore")
+        lines = text.splitlines()
+        return "\n".join(lines[-max_lines:]).strip()
     except Exception:
         return ""
 
