@@ -2627,6 +2627,8 @@ def _jump_to_target_exec(jump_client, target_host, target_user, command, *, targ
     ssh_parts = [
         "ssh",
         "-o", "BatchMode=yes",
+        "-o", "PreferredAuthentications=publickey",
+        "-o", "PasswordAuthentication=no",
         "-o", "StrictHostKeyChecking=no",
         "-o", "UserKnownHostsFile=/dev/null",
         "-o", f"ConnectTimeout={timeout}",
@@ -2634,17 +2636,17 @@ def _jump_to_target_exec(jump_client, target_host, target_user, command, *, targ
         inner,
     ]
     ssh_cmd = " ".join(_shell_quote(part) for part in ssh_parts)
+    if jump_run_as_user and str(jump_run_as_user).strip() not in {"", "root"}:
+        try:
+            wrapped = _wrap_jump_run_as_user(ssh_cmd, jump_run_as_user)
+            return _exec_ssh_command(jump_client, wrapped)
+        except Exception as wrapped_exc:
+            raise ValueError(
+                f"Could not use the jump host's existing SSH access to reach MainDB as user '{target_user}'. {wrapped_exc}"
+            ) from wrapped_exc
     try:
         return _exec_ssh_command(jump_client, ssh_cmd)
     except Exception as exc:
-        if jump_run_as_user and str(jump_run_as_user).strip() not in {"", "root"}:
-            try:
-                wrapped = _wrap_jump_run_as_user(ssh_cmd, jump_run_as_user)
-                return _exec_ssh_command(jump_client, wrapped)
-            except Exception as wrapped_exc:
-                raise ValueError(
-                    f"Could not use the jump host's existing SSH access to reach MainDB as user '{target_user}'. {wrapped_exc}"
-                ) from wrapped_exc
         raise ValueError(
             f"Could not use the jump host's existing SSH access to reach MainDB as user '{target_user}'. {exc}"
         ) from exc

@@ -134,15 +134,7 @@ if [[ "${JUMP_HOST_ENABLED}" =~ ^(1|true|yes|on)$ ]]; then
     REMOTE_TUNNEL_PID="$(
       ssh -S "${JUMP_SOCKET}" "${JUMP_TARGET}" "bash -lc '
         log=${REMOTE_BOOTSTRAP_LOG@Q}
-        inner_ssh=$(cat <<EOF
-ssh -o BatchMode=yes -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
-          -p ${SERVER_SSH_PORT} \
-          -N \
-          -L 127.0.0.1:${REMOTE_PGPORT}:127.0.0.1:${PGPORT} \
-          -L 127.0.0.1:${REMOTE_MAINDB_SSH_PORT}:127.0.0.1:${SERVER_SSH_PORT} \
-          ${MAINDB_JUMP_USERNAME}@${PGHOST}
-EOF
-)
+        inner_ssh=\"ssh -o BatchMode=yes -o PreferredAuthentications=publickey -o PasswordAuthentication=no -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -p ${SERVER_SSH_PORT@Q} -N -L 127.0.0.1:${REMOTE_PGPORT}:127.0.0.1:${PGPORT} -L 127.0.0.1:${REMOTE_MAINDB_SSH_PORT}:127.0.0.1:${SERVER_SSH_PORT} ${MAINDB_JUMP_USERNAME}@${PGHOST}\"
         if [ ${MAINDB_JUMP_USERNAME@Q} = root ]; then
           nohup bash -lc \"\$inner_ssh\" >\"\$log\" 2>&1 < /dev/null &
         elif command -v sudo >/dev/null 2>&1; then
