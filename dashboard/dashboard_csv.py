@@ -2601,7 +2601,22 @@ def _install_runtime_public_key(client, private_key_path):
         raise ValueError(f"Could not install the dashboard SSH key on MainDB. {exc}") from exc
 
 
-def _jump_to_target_exec(jump_client, target_host, target_user, command, *, target_sudo=False, timeout=20):
+def _wrap_jump_run_as_user(command, run_as_user):
+    run_as_user = str(run_as_user or "").strip()
+    if not run_as_user or run_as_user == "root":
+        return command
+    return (
+        "if [ \"$(id -un)\" = {user} ]; then {cmd}; "
+        "elif command -v sudo >/dev/null 2>&1; then sudo -n -u {user} bash -lc {quoted}; "
+        "else su - {user} -c {quoted}; fi"
+    ).format(
+        user=_shell_quote(run_as_user),
+        cmd=command,
+        quoted=_shell_quote(command),
+    )
+
+
+def _jump_to_target_exec(jump_client, target_host, target_user, command, *, target_sudo=False, timeout=20, jump_run_as_user=None):
     inner = command
     if target_sudo:
         inner = "if [ \"$(id -u)\" -eq 0 ]; then bash -lc {cmd}; else sudo -n bash -lc {cmd}; fi".format(
@@ -2622,12 +2637,20 @@ def _jump_to_target_exec(jump_client, target_host, target_user, command, *, targ
     try:
         return _exec_ssh_command(jump_client, ssh_cmd)
     except Exception as exc:
+        if jump_run_as_user and str(jump_run_as_user).strip() not in {"", "root"}:
+            try:
+                wrapped = _wrap_jump_run_as_user(ssh_cmd, jump_run_as_user)
+                return _exec_ssh_command(jump_client, wrapped)
+            except Exception as wrapped_exc:
+                raise ValueError(
+                    f"Could not use the jump host's existing SSH access to reach MainDB as user '{target_user}'. {wrapped_exc}"
+                ) from wrapped_exc
         raise ValueError(
             f"Could not use the jump host's existing SSH access to reach MainDB as user '{target_user}'. {exc}"
         ) from exc
 
 
-def _install_runtime_public_key_via_jump(jump_client, target_host, target_user, private_key_path, *, target_sudo=False):
+def _install_runtime_public_key_via_jump(jump_client, target_host, target_user, private_key_path, *, target_sudo=False, jump_run_as_user=None):
     pub_path = private_key_path + ".pub"
     with open(pub_path, "r", encoding="utf-8") as handle:
         pub_key = handle.read().strip()
@@ -2636,7 +2659,14 @@ def _install_runtime_public_key_via_jump(jump_client, target_host, target_user, 
         f"grep -qxF {_shell_quote(pub_key)} ~/.ssh/authorized_keys 2>/dev/null || echo {_shell_quote(pub_key)} >> ~/.ssh/authorized_keys"
     )
     try:
-        _jump_to_target_exec(jump_client, target_host, target_user, remote_cmd, target_sudo=target_sudo)
+        _jump_to_target_exec(
+            jump_client,
+            target_host,
+            target_user,
+            remote_cmd,
+            target_sudo=target_sudo,
+            jump_run_as_user=jump_run_as_user,
+        )
     except Exception as exc:
         raise ValueError(f"Could not install the dashboard SSH key on MainDB via the jump host. {exc}") from exc
 
@@ -2676,6 +2706,7 @@ def _reveal_postgres_password_via_jump(jump_client, env, target_user):
             target_user,
             reveal_cmd,
             target_sudo=use_sudo,
+            jump_run_as_user=target_user,
         )
     except Exception as exc:
         raise ValueError(f"Could not retrieve the Postgres password from MainDB via the jump host. {exc}") from exc
@@ -2750,6 +2781,7 @@ def _bootstrap_environment_runtime(env_id):
                     target_user,
                     runtime_key_path,
                     target_sudo=(target_user != "root"),
+                    jump_run_as_user=target_user,
                 )
                 env["ssh_key_path"] = runtime_key_path
                 env["ssh_username"] = target_user

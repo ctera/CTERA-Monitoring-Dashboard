@@ -13,9 +13,6 @@ timestamp_log() {
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 FEATHERDASH_CONFIG="${FEATHERDASH_CONFIG:-/etc/ctera-monitoring-dashboard.env}"
-FEATHERDASH_STATE_DIR="${FEATHERDASH_STATE_DIR:-${SCRIPT_DIR}/state}"
-JOB_STATE_PATH="${FEATHERDASH_STATE_DIR}/portal.state"
-JOB_STARTED_AT="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 
 cd "${SCRIPT_DIR}"
 
@@ -26,37 +23,6 @@ set +a
 FEATHERDASH_ENV_LABEL="${FEATHERDASH_ENV_NAME:-${CTERA_HOST:-portal}}"
 
 exec > >(timestamp_log) 2>&1
-
-mkdir -p "${FEATHERDASH_STATE_DIR}"
-
-write_job_state() {
-  local status="$1"
-  local finished_at="$2"
-  local last_exit="$3"
-  local pid_value="${4:-}"
-  local tmp="${JOB_STATE_PATH}.tmp"
-  cat > "${tmp}" <<EOF
-status=${status}
-started_at=${JOB_STARTED_AT}
-finished_at=${finished_at}
-last_exit=${last_exit}
-pid=${pid_value}
-EOF
-  mv "${tmp}" "${JOB_STATE_PATH}"
-}
-
-finish_job_state() {
-  local rc=$?
-  local final_status="finished"
-  if [[ "${rc}" -ne 0 ]]; then
-    final_status="failed"
-  fi
-  write_job_state "${final_status}" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "${rc}" ""
-  return "${rc}"
-}
-
-write_job_state "running" "" "" "$$"
-trap finish_job_state EXIT
 
 echo "Starting portal_jobs.sh"
 
@@ -70,6 +36,7 @@ PGPORT="${PGPORT:-5432}"
 PGDATABASE="${PGDATABASE:-postgres}"
 PGUSER="${PGUSER:-postgres}"
 SERVER_SSH_USER="${SERVER_SSH_USER:-root}"
+SERVER_SSH_PORT="${SERVER_SSH_PORT:-22}"
 SERVER_METRICS_MODE="${SERVER_METRICS_MODE:-jump}"
 SERVER_METRICS_TARGET_USER="${SERVER_METRICS_TARGET_USER:-ctera}"
 SERVER_METRICS_JUMP_HOST="${SERVER_METRICS_JUMP_HOST:-${PGHOST}}"
@@ -79,6 +46,7 @@ SERVER_METRICS_SUDO="${SERVER_METRICS_SUDO:-true}"
 JUMP_HOST_ENABLED="${JUMP_HOST_ENABLED:-false}"
 JUMP_HOST="${JUMP_HOST:-}"
 JUMP_SSH_USER="${JUMP_SSH_USER:-root}"
+JUMP_SSH_PORT="${JUMP_SSH_PORT:-22}"
 MAINDB_VIA_JUMP_PRECONFIGURED="${MAINDB_VIA_JUMP_PRECONFIGURED:-false}"
 MAINDB_JUMP_USERNAME="${MAINDB_JUMP_USERNAME:-${SERVER_SSH_USER}}"
 FEATHERDASH_DATA_DIR="${FEATHERDASH_DATA_DIR:-/var/lib/ctera-monitoring-dashboard/data}"
@@ -166,12 +134,22 @@ if [[ "${JUMP_HOST_ENABLED}" =~ ^(1|true|yes|on)$ ]]; then
     REMOTE_TUNNEL_PID="$(
       ssh -S "${JUMP_SOCKET}" "${JUMP_TARGET}" "bash -lc '
         log=${REMOTE_BOOTSTRAP_LOG@Q}
-        nohup ssh -o BatchMode=yes -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
+        inner_ssh=$(cat <<EOF
+ssh -o BatchMode=yes -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
           -p ${SERVER_SSH_PORT} \
           -N \
           -L 127.0.0.1:${REMOTE_PGPORT}:127.0.0.1:${PGPORT} \
           -L 127.0.0.1:${REMOTE_MAINDB_SSH_PORT}:127.0.0.1:${SERVER_SSH_PORT} \
-          ${MAINDB_JUMP_USERNAME}@${PGHOST} >\"\$log\" 2>&1 < /dev/null &
+          ${MAINDB_JUMP_USERNAME}@${PGHOST}
+EOF
+)
+        if [ ${MAINDB_JUMP_USERNAME@Q} = root ]; then
+          nohup bash -lc \"\$inner_ssh\" >\"\$log\" 2>&1 < /dev/null &
+        elif command -v sudo >/dev/null 2>&1; then
+          nohup sudo -n -u ${MAINDB_JUMP_USERNAME@Q} bash -lc \"\$inner_ssh\" >\"\$log\" 2>&1 < /dev/null &
+        else
+          nohup su - ${MAINDB_JUMP_USERNAME@Q} -c \"\$inner_ssh\" >\"\$log\" 2>&1 < /dev/null &
+        fi
         pid=\$!
         for _ in \$(seq 1 20); do
           if command -v ss >/dev/null 2>&1; then
@@ -227,14 +205,10 @@ if [[ "${JUMP_HOST_ENABLED}" =~ ^(1|true|yes|on)$ ]]; then
 fi
 
 rm -f "${FEATHERDASH_DATA_DIR}/storage.csv"
-LOCAL_PGHOST="${LOCAL_PGHOST}" LOCAL_PGPORT="${LOCAL_PGPORT}" \
 python ctera_collect.py -H "${CTERA_HOST}" -u "${CTERA_USERNAME}" -p "${CTERA_PASSWORD}" --mode storage --global-admin -o "${FEATHERDASH_DATA_DIR}/storage.csv"
 
 rm -f "${FEATHERDASH_DATA_DIR}/servers.csv"
 python ctera_collect.py -H "${CTERA_HOST}" -u "${CTERA_USERNAME}" -p "${CTERA_PASSWORD}" --mode servers --global-admin -o "${FEATHERDASH_DATA_DIR}/servers.csv"
-
-rm -f "${FEATHERDASH_DATA_DIR}/certificate.csv"
-python ctera_collect.py -H "${CTERA_HOST}" -u "${CTERA_USERNAME}" -p "${CTERA_PASSWORD}" --mode certificate --global-admin -o "${FEATHERDASH_DATA_DIR}/certificate.csv"
 
 rm -f "${FEATHERDASH_DATA_DIR}/tasks.csv"
 python ctera_collect.py -H "${CTERA_HOST}" -u "${CTERA_USERNAME}" -p "${CTERA_PASSWORD}" --mode tasks --global-admin -o "${FEATHERDASH_DATA_DIR}/tasks.csv"
@@ -254,8 +228,6 @@ if [[ -n "${ROOT_KEY:-}" && -r "${ROOT_KEY}" ]]; then
     --nomad-out "${FEATHERDASH_DATA_DIR}/nomad_nodes.csv"
     --consul-out "${FEATHERDASH_DATA_DIR}/consul_members.csv"
     --docker-out "${FEATHERDASH_DATA_DIR}/docker_containers.csv"
-    --replication-out "${FEATHERDASH_DB_DIR}/replication_status.csv"
-    --snapshots-out "${FEATHERDASH_DB_DIR}/snapshots.csv"
   )
   if [[ "${SERVER_METRICS_MODE}" == "jump" ]]; then
     if [[ "${JUMP_HOST_ENABLED}" =~ ^(1|true|yes|on)$ && "${MAINDB_VIA_JUMP_PRECONFIGURED}" =~ ^(1|true|yes|on)$ ]]; then
@@ -293,16 +265,8 @@ if [[ -n "${ROOT_KEY:-}" && -r "${ROOT_KEY}" ]]; then
 else
   echo "Skipping server_metrics.csv: ROOT_KEY is not set or not readable (${ROOT_KEY:-unset}). Configure ROOT_KEY in ${FEATHERDASH_CONFIG} to enable SSH server metrics." >&2
   cat > "${FEATHERDASH_DATA_DIR}/server_metrics.csv" <<EOF
-Name,Host,Status,UID,Connected,MainDB,RunningVersion,ImageVersion,ServiceVersion,PublicIP,UptimeSeconds,Load1,Load5,Load15,MemTotalGB,MemUsedGB,MemUsedPct,RootDiskSizeGB,RootDiskUsedGB,RootDiskUsedPct,DataPoolSizeGB,DataPoolUsedGB,DataPoolUsedPct,DBArchivePoolSizeGB,DBArchivePoolUsedGB,DBArchivePoolUsedPct,CPUUserPct,CPUSystemPct,CPUIOWaitPct,CPUIDLEPct
+Name,Host,Status,UID,Connected,MainDB,RunningVersion,PublicIP,UptimeSeconds,Load1,Load5,Load15,MemTotalGB,MemUsedGB,MemUsedPct,RootDiskSizeGB,RootDiskUsedGB,RootDiskUsedPct,DataPoolSizeGB,DataPoolUsedGB,DataPoolUsedPct,DBArchivePoolSizeGB,DBArchivePoolUsedGB,DBArchivePoolUsedPct,CPUUserPct,CPUSystemPct,CPUIOWaitPct,CPUIDLEPct
 SSH key missing,,ROOT_KEY is not set or not readable: ${ROOT_KEY:-unset},,,,,,,,,,,,,,,,,,,,,,,,,
-EOF
-  cat > "${FEATHERDASH_DB_DIR}/replication_status.csv" <<EOF
-Name,Host,UID,Role,StreamingReplicationStatus,StreamingReplicationLastSuccess,BaseBackupStatus,BaseBackupLastSuccess,XlogArchiveStatus,XlogArchiveLastSuccess,OverallStatus,CollectionError,RawJson
-SSH key missing,,,MainDB,,,,,,,ERROR,ROOT_KEY is not set or not readable: ${ROOT_KEY:-unset},
-EOF
-  cat > "${FEATHERDASH_DB_DIR}/snapshots.csv" <<EOF
-Name,Host,UID,Role,LatestSnapshot,PreviousSnapshot,SnapshotCount,Status,CollectionError,RawOutput
-SSH key missing,,,MainDB,,,,ERROR,ROOT_KEY is not set or not readable: ${ROOT_KEY:-unset},
 EOF
   cat > "${FEATHERDASH_DATA_DIR}/docker_containers.csv" <<EOF
 SourceName,SourceHost,SourceUID,HostUptimeSeconds,RecentlyBooted,GraceState,ContainerID,ContainerName,Image,State,Health,RestartCount,RestartDelta,RestartPolicy,StartedAt,FinishedAt,StatusText,CollectionError
@@ -323,5 +287,3 @@ if command -v curl >/dev/null 2>&1; then
 fi
 
 echo "Completed portal_jobs.sh"
-
-
