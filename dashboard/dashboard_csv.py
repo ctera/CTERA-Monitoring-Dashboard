@@ -9,7 +9,7 @@ from flask import Flask, render_template_string, jsonify, request, session, redi
 import yaml
 from datetime import datetime, timedelta
 import json
-from collections import Counter
+from collections import Counter, OrderedDict
 from email.message import EmailMessage
 from werkzeug.security import generate_password_hash
 from werkzeug.security import check_password_hash
@@ -38,6 +38,9 @@ UPGRADE_NETWORK_SETTINGS_FILE = os.environ.get("FEATHERDASH_UPGRADE_NETWORK_SETT
 UPGRADE_REQUEST_SETTINGS_FILE = os.environ.get("FEATHERDASH_UPGRADE_REQUEST_SETTINGS_FILE", os.path.join(DEFAULT_STATE_DIR, "upgrade_request.env"))
 DEFAULT_HIDDEN_TASK_NAMES = {"csrequestsprocessor", "csrrequestsprocessor"}
 JOB_NAMES = ("portal", "filer")
+CSV_READ_CACHE_MAX = 64
+_CSV_READ_CACHE = OrderedDict()
+_YAML_FILE_CACHE = {}
 
 
 def _data_path(filename):
@@ -1825,9 +1828,11 @@ def _ensure_notifications_db(conn=None):
                 ctera_username TEXT NOT NULL DEFAULT '',
                 ctera_password TEXT NOT NULL DEFAULT '',
                 main_db_ip TEXT NOT NULL DEFAULT '',
+                main_db_ssh_port TEXT NOT NULL DEFAULT '22',
                 jump_host_enabled INTEGER NOT NULL DEFAULT 0,
                 main_db_via_jump_preconfigured INTEGER NOT NULL DEFAULT 0,
                 jump_host TEXT NOT NULL DEFAULT '',
+                jump_ssh_port TEXT NOT NULL DEFAULT '22',
                 main_db_jump_username TEXT NOT NULL DEFAULT '',
                 jump_ssh_mode TEXT NOT NULL DEFAULT 'root_password',
                 jump_ssh_username TEXT NOT NULL DEFAULT 'root',
@@ -1864,9 +1869,11 @@ def _ensure_notifications_db(conn=None):
         )
         cols = {row["name"] for row in conn.execute("PRAGMA table_info(environments)").fetchall()}
         environment_additions = [
+            ("main_db_ssh_port", "TEXT NOT NULL DEFAULT '22'"),
             ("jump_host_enabled", "INTEGER NOT NULL DEFAULT 0"),
             ("main_db_via_jump_preconfigured", "INTEGER NOT NULL DEFAULT 0"),
             ("jump_host", "TEXT NOT NULL DEFAULT ''"),
+            ("jump_ssh_port", "TEXT NOT NULL DEFAULT '22'"),
             ("main_db_jump_username", "TEXT NOT NULL DEFAULT ''"),
             ("jump_ssh_mode", "TEXT NOT NULL DEFAULT 'root_password'"),
             ("jump_ssh_username", "TEXT NOT NULL DEFAULT 'root'"),
@@ -2226,8 +2233,8 @@ def _list_environments(include_secret=False):
         rows = conn.execute(
             """
             SELECT id, environment_name, portal_fqdn, portal_ip, ctera_username, ctera_password,
-                   jump_host_enabled, main_db_via_jump_preconfigured, jump_host, main_db_jump_username, jump_ssh_mode, jump_ssh_username, jump_ssh_key_path, jump_ssh_password,
-                   main_db_ip, ssh_mode, ssh_username, ssh_key_path, ssh_password, sudo_required,
+                   jump_host_enabled, main_db_via_jump_preconfigured, jump_host, jump_ssh_port, main_db_jump_username, jump_ssh_mode, jump_ssh_username, jump_ssh_key_path, jump_ssh_password,
+                   main_db_ip, main_db_ssh_port, ssh_mode, ssh_username, ssh_key_path, ssh_password, sudo_required,
                    pg_host, pg_port, pg_database, pg_user, pg_password, openai_key,
                    portal_schedule_minutes, filer_schedule_minutes, enabled, created_at, updated_at
             FROM environments
@@ -2247,6 +2254,7 @@ def _list_environments(include_secret=False):
             "jump_host_enabled": bool(row["jump_host_enabled"]),
             "main_db_via_jump_preconfigured": bool(row["main_db_via_jump_preconfigured"]),
             "jump_host": row["jump_host"],
+            "jump_ssh_port": str(row["jump_ssh_port"] or "22"),
             "main_db_jump_username": row["main_db_jump_username"],
             "jump_ssh_mode": row["jump_ssh_mode"],
             "jump_ssh_username": row["jump_ssh_username"],
@@ -2254,6 +2262,7 @@ def _list_environments(include_secret=False):
             "jump_ssh_password": row["jump_ssh_password"] if include_secret else "",
             "jump_ssh_password_set": bool(row["jump_ssh_password"]),
             "main_db_ip": row["main_db_ip"],
+            "main_db_ssh_port": str(row["main_db_ssh_port"] or "22"),
             "ssh_mode": row["ssh_mode"],
             "ssh_username": row["ssh_username"],
             "ssh_key_path": row["ssh_key_path"],
@@ -2350,11 +2359,20 @@ def _load_paramiko_key(path):
     raise ValueError(f"Could not load the uploaded initial SSH private key '{path}': {last_error}")
 
 
-def _connect_paramiko_host(host, username, mode, password="", key_path="", label="host", sock=None):
+def _safe_ssh_port(value, default=22):
+    try:
+        port = int(str(value or default).strip() or default)
+    except Exception:
+        return int(default)
+    return port if 1 <= port <= 65535 else int(default)
+
+
+def _connect_paramiko_host(host, username, mode, password="", key_path="", label="host", sock=None, port=22):
     client = paramiko.SSHClient()
     client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
     kwargs = {
         "hostname": host,
+        "port": _safe_ssh_port(port, 22),
         "username": username,
         "timeout": 15,
         "banner_timeout": 15,
@@ -2394,6 +2412,7 @@ def _connect_paramiko_host(host, username, mode, password="", key_path="", label
 
 def _connect_bootstrap_ssh(env):
     host = str(env.get("main_db_ip") or "").strip()
+    host_port = _safe_ssh_port(env.get("main_db_ssh_port"), 22)
     username = str(env.get("ssh_username") or "root").strip() or "root"
     mode = str(env.get("ssh_mode") or "root_password").strip()
     password = str(env.get("ssh_password") or "")
@@ -2404,6 +2423,7 @@ def _connect_bootstrap_ssh(env):
     jump_client = None
     if jump_enabled:
         jump_host = str(env.get("jump_host") or "").strip()
+        jump_port = _safe_ssh_port(env.get("jump_ssh_port"), 22)
         jump_user = str(env.get("jump_ssh_username") or "root").strip() or "root"
         jump_mode = str(env.get("jump_ssh_mode") or "root_password").strip()
         jump_password = str(env.get("jump_ssh_password") or "")
@@ -2417,11 +2437,12 @@ def _connect_bootstrap_ssh(env):
             password=jump_password,
             key_path=jump_key_path,
             label="jump host",
+            port=jump_port,
         )
         try:
             channel = jump_client.get_transport().open_channel(
                 "direct-tcpip",
-                (host, 22),
+                (host, host_port),
                 ("127.0.0.1", 0),
             )
         except Exception as exc:
@@ -2436,6 +2457,7 @@ def _connect_bootstrap_ssh(env):
                 key_path=key_path,
                 label="MainDB",
                 sock=channel,
+                port=host_port,
             )
         except Exception:
             try:
@@ -2452,6 +2474,7 @@ def _connect_bootstrap_ssh(env):
         password=password,
         key_path=key_path,
         label="MainDB",
+        port=host_port,
     )
     return {"main": main_client, "jump": None}
 
@@ -2658,6 +2681,7 @@ def _bootstrap_environment_runtime(env_id):
         return env
     if preconfigured_jump:
         jump_host = str(env.get("jump_host") or "").strip()
+        jump_port = _safe_ssh_port(env.get("jump_ssh_port"), 22)
         jump_user = str(env.get("jump_ssh_username") or "root").strip() or "root"
         jump_mode = str(env.get("jump_ssh_mode") or "root_password").strip()
         jump_password = str(env.get("jump_ssh_password") or "")
@@ -2670,6 +2694,7 @@ def _bootstrap_environment_runtime(env_id):
             password=jump_password,
             key_path=jump_key_path,
             label="jump host",
+            port=jump_port,
         )
         try:
             if needs_jump_key_install:
@@ -2758,8 +2783,10 @@ def _write_runtime_env_file(env):
     pg_host = str(env.get("pg_host") or env.get("main_db_ip") or "").strip()
     root_key = str(env.get("ssh_key_path") or "").strip()
     ssh_user = str(env.get("ssh_username") or "root").strip() or "root"
+    main_db_ssh_port = str(env.get("main_db_ssh_port") or "22").strip() or "22"
     jump_enabled = bool(env.get("jump_host_enabled"))
     jump_host = str(env.get("jump_host") or "").strip()
+    jump_ssh_port = str(env.get("jump_ssh_port") or "22").strip() or "22"
     jump_user = str(env.get("jump_ssh_username") or "root").strip() or "root"
     lines = [
         f"FEATHERDASH_ENV_NAME={_env_quote_line(env.get('name') or env.get('environment_name') or '')}",
@@ -2773,9 +2800,11 @@ def _write_runtime_env_file(env):
         "PGUSER='postgres'",
         f"PGPASSWORD={_env_quote_line(env.get('pg_password') or '')}",
         f"SERVER_SSH_USER={_env_quote_line(ssh_user)}",
+        f"SERVER_SSH_PORT={_env_quote_line(main_db_ssh_port)}",
         f"ROOT_KEY={_env_quote_line(root_key)}",
         f"JUMP_HOST_ENABLED={_env_quote_line('true' if jump_enabled else 'false')}",
         f"JUMP_HOST={_env_quote_line(jump_host)}",
+        f"JUMP_SSH_PORT={_env_quote_line(jump_ssh_port)}",
         f"JUMP_SSH_USER={_env_quote_line(jump_user)}",
         f"MAINDB_VIA_JUMP_PRECONFIGURED={_env_quote_line('true' if env.get('main_db_via_jump_preconfigured') else 'false')}",
         f"MAINDB_JUMP_USERNAME={_env_quote_line(env.get('main_db_jump_username') or ssh_user)}",
@@ -2818,8 +2847,8 @@ def _save_environment(payload):
     now = _now_utc_iso()
     merged = dict(current or {})
     fields = [
-        "portal_fqdn", "portal_ip", "ctera_username", "main_db_ip",
-        "jump_host", "main_db_jump_username", "jump_ssh_mode", "jump_ssh_username", "jump_ssh_key_path",
+        "portal_fqdn", "portal_ip", "ctera_username", "main_db_ip", "main_db_ssh_port",
+        "jump_host", "jump_ssh_port", "main_db_jump_username", "jump_ssh_mode", "jump_ssh_username", "jump_ssh_key_path",
         "ssh_mode", "ssh_username", "ssh_key_path",
         "pg_host", "pg_port", "pg_database", "pg_user", "portal_schedule_minutes", "filer_schedule_minutes"
     ]
@@ -2831,6 +2860,8 @@ def _save_environment(payload):
     merged["jump_host_enabled"] = 1 if _bool_setting(payload.get("jump_host_enabled"), bool(current.get("jump_host_enabled")) if current else False) else 0
     merged["main_db_via_jump_preconfigured"] = 1 if _bool_setting(payload.get("main_db_via_jump_preconfigured"), bool(current.get("main_db_via_jump_preconfigured")) if current else False) else 0
     merged["enabled"] = 1 if _bool_setting(payload.get("enabled"), bool(current.get("enabled")) if current else True) else 0
+    merged["main_db_ssh_port"] = str(merged.get("main_db_ssh_port") or "22").strip() or "22"
+    merged["jump_ssh_port"] = str(merged.get("jump_ssh_port") or "22").strip() or "22"
     key_content = str(payload.get("ssh_private_key_content") or "")
     key_name = str(payload.get("ssh_private_key_name") or "")
     if key_content.strip():
@@ -2850,9 +2881,11 @@ def _save_environment(payload):
     portal_fqdn = str(merged.get("portal_fqdn") or "").strip()
     ctera_username = str(merged.get("ctera_username") or "").strip()
     main_db_ip = str(merged.get("main_db_ip") or "").strip()
+    main_db_ssh_port = _safe_ssh_port(merged.get("main_db_ssh_port"), 22)
     jump_enabled = bool(merged.get("jump_host_enabled"))
     main_db_via_jump_preconfigured = bool(merged.get("main_db_via_jump_preconfigured"))
     jump_host = str(merged.get("jump_host") or "").strip()
+    jump_ssh_port = _safe_ssh_port(merged.get("jump_ssh_port"), 22)
     main_db_jump_username = str(merged.get("main_db_jump_username") or "").strip()
     jump_ssh_mode = str(merged.get("jump_ssh_mode") or "root_password").strip() or "root_password"
     jump_ssh_username = str(merged.get("jump_ssh_username") or "root").strip()
@@ -2882,11 +2915,15 @@ def _save_environment(payload):
         raise ValueError("CTERA Portal Read-Only Global Administrator is required.")
     if not main_db_ip:
         raise ValueError("MainDB IP is required.")
+    if str(main_db_ssh_port) != str(merged.get("main_db_ssh_port") or "").strip():
+        raise ValueError("MainDB SSH port must be between 1 and 65535.")
     if not ctera_password.strip():
         raise ValueError("CTERA password is required.")
     if jump_enabled:
         if not jump_host:
             raise ValueError("Jump host is required when jump-host access is enabled.")
+        if str(jump_ssh_port) != str(merged.get("jump_ssh_port") or "").strip():
+            raise ValueError("Jump-host SSH port must be between 1 and 65535.")
         if not jump_ssh_username:
             raise ValueError("Jump-host SSH username is required.")
         if main_db_via_jump_preconfigured and not (main_db_jump_username or jump_ssh_username):
@@ -2910,7 +2947,7 @@ def _save_environment(payload):
                 """
                 UPDATE environments
                 SET environment_name = ?, portal_fqdn = ?, portal_ip = ?, ctera_username = ?, ctera_password = ?,
-                    main_db_ip = ?, jump_host_enabled = ?, main_db_via_jump_preconfigured = ?, jump_host = ?, main_db_jump_username = ?, jump_ssh_mode = ?, jump_ssh_username = ?, jump_ssh_key_path = ?, jump_ssh_password = ?,
+                    main_db_ip = ?, main_db_ssh_port = ?, jump_host_enabled = ?, main_db_via_jump_preconfigured = ?, jump_host = ?, jump_ssh_port = ?, main_db_jump_username = ?, jump_ssh_mode = ?, jump_ssh_username = ?, jump_ssh_key_path = ?, jump_ssh_password = ?,
                     ssh_mode = ?, ssh_username = ?, ssh_key_path = ?, ssh_password = ?, sudo_required = ?,
                     pg_host = ?, pg_port = ?, pg_database = ?, pg_user = ?, pg_password = ?, openai_key = ?,
                     portal_schedule_minutes = ?, filer_schedule_minutes = ?, enabled = ?, updated_at = ?
@@ -2919,7 +2956,7 @@ def _save_environment(payload):
                 (
                     merged["environment_name"], str(merged.get("portal_fqdn") or ""), str(merged.get("portal_ip") or ""),
                     str(merged.get("ctera_username") or ""), str(merged.get("ctera_password") or ""),
-                    str(merged.get("main_db_ip") or ""), merged["jump_host_enabled"], merged["main_db_via_jump_preconfigured"], str(merged.get("jump_host") or ""), str(merged.get("main_db_jump_username") or ""),
+                    str(merged.get("main_db_ip") or ""), str(main_db_ssh_port), merged["jump_host_enabled"], merged["main_db_via_jump_preconfigured"], str(merged.get("jump_host") or ""), str(jump_ssh_port), str(merged.get("main_db_jump_username") or ""),
                     str(merged.get("jump_ssh_mode") or "root_password"), str(merged.get("jump_ssh_username") or "root"),
                     str(merged.get("jump_ssh_key_path") or ""), str(merged.get("jump_ssh_password") or ""),
                     str(merged.get("ssh_mode") or "root_password"),
@@ -2935,17 +2972,17 @@ def _save_environment(payload):
             conn.execute(
                 """
                 INSERT INTO environments(
-                    environment_name, portal_fqdn, portal_ip, ctera_username, ctera_password, main_db_ip,
-                    jump_host_enabled, main_db_via_jump_preconfigured, jump_host, main_db_jump_username, jump_ssh_mode, jump_ssh_username, jump_ssh_key_path, jump_ssh_password,
+                    environment_name, portal_fqdn, portal_ip, ctera_username, ctera_password, main_db_ip, main_db_ssh_port,
+                    jump_host_enabled, main_db_via_jump_preconfigured, jump_host, jump_ssh_port, main_db_jump_username, jump_ssh_mode, jump_ssh_username, jump_ssh_key_path, jump_ssh_password,
                     ssh_mode, ssh_username, ssh_key_path, ssh_password, sudo_required,
                     pg_host, pg_port, pg_database, pg_user, pg_password, openai_key,
                     portal_schedule_minutes, filer_schedule_minutes, enabled, created_at, updated_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     merged["environment_name"], str(merged.get("portal_fqdn") or ""), str(merged.get("portal_ip") or ""),
                     str(merged.get("ctera_username") or ""), str(merged.get("ctera_password") or ""),
-                    str(merged.get("main_db_ip") or ""), merged["jump_host_enabled"], merged["main_db_via_jump_preconfigured"], str(merged.get("jump_host") or ""), str(merged.get("main_db_jump_username") or ""),
+                    str(merged.get("main_db_ip") or ""), str(main_db_ssh_port), merged["jump_host_enabled"], merged["main_db_via_jump_preconfigured"], str(merged.get("jump_host") or ""), str(jump_ssh_port), str(merged.get("main_db_jump_username") or ""),
                     str(merged.get("jump_ssh_mode") or "root_password"), str(merged.get("jump_ssh_username") or "root"),
                     str(merged.get("jump_ssh_key_path") or ""), str(merged.get("jump_ssh_password") or ""),
                     str(merged.get("ssh_mode") or "root_password"),
@@ -5858,10 +5895,12 @@ async function runAISummary(){
         envUseJumpHost: false,
         envMainDbViaJumpConfigured: false,
         envJumpHost: '',
+        envJumpSshPort: '22',
         envMainDbJumpUsername: '',
         envJumpSshMode: 'root_password',
         envJumpSshUsername: 'root',
         envMainDbIp: '',
+        envMainDbSshPort: '22',
         envInitialSshMode: 'root_password',
         envOpenAiKey: '',
         envPortalSchedule: '60',
@@ -5941,10 +5980,12 @@ async function runAISummary(){
         envUseJumpHost: Boolean(env.jump_host_enabled),
         envMainDbViaJumpConfigured: Boolean(env.main_db_via_jump_preconfigured),
         envJumpHost: env.jump_host || '',
+        envJumpSshPort: String(env.jump_ssh_port || 22),
         envMainDbJumpUsername: env.main_db_jump_username || env.ssh_username || env.jump_ssh_username || 'root',
         envJumpSshMode: env.jump_ssh_mode || 'root_password',
         envJumpSshUsername: env.jump_ssh_username || 'root',
         envMainDbIp: env.main_db_ip || '',
+        envMainDbSshPort: String(env.main_db_ssh_port || 22),
         envInitialSshMode: env.ssh_mode || 'root_password',
         envOpenAiKey: '',
         envPortalSchedule: String(env.portal_schedule_minutes || 60),
@@ -6127,6 +6168,7 @@ async function runAISummary(){
         jump_host_enabled: document.getElementById('envUseJumpHost').checked,
         main_db_via_jump_preconfigured: document.getElementById('envMainDbViaJumpConfigured').checked,
         jump_host: document.getElementById('envJumpHost').value,
+        jump_ssh_port: document.getElementById('envJumpSshPort').value || '22',
         main_db_jump_username: document.getElementById('envMainDbJumpUsername').value || '',
         jump_ssh_mode: document.getElementById('envJumpSshMode').value,
         jump_ssh_username: document.getElementById('envJumpSshUsername').value || 'root',
@@ -6134,6 +6176,7 @@ async function runAISummary(){
         jump_ssh_private_key_name: uploadedJumpKeyName,
         jump_ssh_private_key_content: uploadedJumpKeyContent,
         main_db_ip: document.getElementById('envMainDbIp').value,
+        main_db_ssh_port: document.getElementById('envMainDbSshPort').value || '22',
         pg_host: document.getElementById('envMainDbIp').value,
         pg_port: '5432',
         pg_database: 'postgres',
@@ -6173,8 +6216,10 @@ async function runAISummary(){
       if (!String(payload.portal_fqdn || '').trim()) return 'Portal FQDN or portal IP is required.';
       if (!String(payload.ctera_username || '').trim()) return 'CTERA Portal Read-Only Global Administrator is required.';
       if (!String(payload.main_db_ip || '').trim()) return 'MainDB IP is required.';
+      if (!/^\d+$/.test(String(payload.main_db_ssh_port || '').trim()) || Number(payload.main_db_ssh_port) < 1 || Number(payload.main_db_ssh_port) > 65535) return 'MainDB SSH port must be between 1 and 65535.';
       if (!String(payload.ctera_password || '').trim() && !hasSavedCteraPassword) return 'CTERA password is required.';
       if (useJumpHost && !String(payload.jump_host || '').trim()) return 'Jump host is required when jump-host access is enabled.';
+      if (useJumpHost && (!/^\d+$/.test(String(payload.jump_ssh_port || '').trim()) || Number(payload.jump_ssh_port) < 1 || Number(payload.jump_ssh_port) > 65535)) return 'Jump-host SSH port must be between 1 and 65535.';
       if (useJumpHost && !String(payload.jump_ssh_username || '').trim()) return 'Jump-host SSH username is required.';
       if (useJumpHost && jumpNeedsPassword && !String(payload.jump_ssh_password || '').trim() && !hasSavedJumpPassword) return 'Jump-host SSH password is required for this jump-host access mode.';
       if (useJumpHost && jumpNeedsKey && !String(payload.jump_ssh_private_key_content || '').trim() && !hasSavedJumpKey) return 'Upload a jump-host private key for this jump-host access mode.';
@@ -8401,6 +8446,10 @@ async function runAISummary(){
                 <input id="envJumpHost" class="threshold-input" type="text" placeholder="10.10.10.10">
               </div>
               <div class="threshold-field">
+                <label for="envJumpSshPort">Jump Host SSH Port</label>
+                <input id="envJumpSshPort" class="threshold-input" type="number" min="1" max="65535" step="1" placeholder="22" value="22">
+              </div>
+              <div class="threshold-field">
                 <label for="envJumpSshMode">Jump Host SSH Access Mode</label>
                 <select id="envJumpSshMode" class="threshold-select" onchange="renderJumpSshFields()">
                   <option value="root_password">Root username and password</option>
@@ -8429,6 +8478,10 @@ async function runAISummary(){
           <div class="threshold-field">
             <label for="envMainDbIp">MainDB IP</label>
             <input id="envMainDbIp" class="threshold-input" type="text" placeholder="10.10.10.20">
+          </div>
+          <div class="threshold-field">
+            <label for="envMainDbSshPort">MainDB SSH Port</label>
+            <input id="envMainDbSshPort" class="threshold-input" type="number" min="1" max="65535" step="1" placeholder="22" value="22">
           </div>
           <div class="threshold-field" id="envMainDbJumpUsernameWrap" style="display:none;">
             <label for="envMainDbJumpUsername">MainDB SSH Username From Jump Host</label>

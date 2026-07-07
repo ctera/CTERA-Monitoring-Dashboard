@@ -647,7 +647,7 @@ def jump_exec_text(jump_client, host, target_user, cmd, *, target_sudo=False, ju
     return ssh_exec_text(jump_client, ssh_cmd, timeout=timeout + 10)
 
 
-def main_db_exec_text_via_jump(jump_client, main_db_host, main_db_user, cmd, *, target_sudo=False, jump_run_as_user=None, timeout=20):
+def main_db_exec_text_via_jump(jump_client, main_db_host, main_db_user, cmd, *, target_sudo=False, jump_run_as_user=None, timeout=20, main_db_port=22):
     inner = as_root_command(cmd, use_sudo=target_sudo)
     ssh_parts = [
         "ssh",
@@ -656,6 +656,7 @@ def main_db_exec_text_via_jump(jump_client, main_db_host, main_db_user, cmd, *, 
         "-o", "StrictHostKeyChecking=no",
         "-o", "UserKnownHostsFile=/dev/null",
         "-o", f"ConnectTimeout={timeout}",
+        "-p", str(main_db_port),
         f"{main_db_user}@{main_db_host}",
         inner,
     ]
@@ -665,7 +666,7 @@ def main_db_exec_text_via_jump(jump_client, main_db_host, main_db_user, cmd, *, 
     return ssh_exec_text(jump_client, ssh_cmd, timeout=timeout + 10)
 
 
-def target_exec_text_via_main_db(jump_client, main_db_host, main_db_user, target_host, target_user, cmd, *, target_sudo=False, jump_run_as_user=None, timeout=20):
+def target_exec_text_via_main_db(jump_client, main_db_host, main_db_user, target_host, target_user, cmd, *, target_sudo=False, jump_run_as_user=None, timeout=20, main_db_port=22):
     target_inner = as_root_command(cmd, use_sudo=target_sudo)
     target_ssh_parts = [
         "ssh",
@@ -686,6 +687,7 @@ def target_exec_text_via_main_db(jump_client, main_db_host, main_db_user, target
         target_sudo=False,
         jump_run_as_user=jump_run_as_user,
         timeout=timeout,
+        main_db_port=main_db_port,
     )
 
 
@@ -718,6 +720,7 @@ def main():
     ap.add_argument("--jump-passphrase", default=None, help="Passphrase for the jump host private key")
     ap.add_argument("--jump-run-as-user", default=None, help="Run onward ssh from jump host as this local user, usually ctera")
     ap.add_argument("--via-main-db-host", default=None, help="When jump-host access to MainDB is already configured, SSH onward to this MainDB host from the jump host")
+    ap.add_argument("--via-main-db-port", type=int, default=22, help="SSH port to use when the jump host connects onward to MainDB")
     ap.add_argument("--via-main-db-user", default=None, help="SSH username to use from the jump host when connecting onward to MainDB")
     ap.add_argument("--out", required=True, help="Output CSV path")
     ap.add_argument("--nomad-out", default=None, help="Optional CSV output path for Nomad node status snapshots")
@@ -875,7 +878,8 @@ def main():
                     cmd,
                     target_sudo=args.sudo,
                     jump_run_as_user=args.jump_run_as_user,
-                    timeout=args.ssh_timeout
+                    timeout=args.ssh_timeout,
+                    main_db_port=args.via_main_db_port
                 )
                 m = gather_metrics(None, exec_text=exec_fn)
             elif jump_client and args.via_main_db_host and s.get("main_db"):
@@ -886,7 +890,8 @@ def main():
                     cmd,
                     target_sudo=args.sudo,
                     jump_run_as_user=args.jump_run_as_user,
-                    timeout=args.ssh_timeout
+                    timeout=args.ssh_timeout,
+                    main_db_port=args.via_main_db_port
                 )
                 m = gather_metrics(None, exec_text=exec_fn)
             elif jump_client and not s.get("main_db"):
@@ -1252,4 +1257,6 @@ def main():
 
 if __name__ == "__main__":
     main()
+
+
 

@@ -158,6 +158,7 @@ if [[ "${JUMP_HOST_ENABLED}" =~ ^(1|true|yes|on)$ ]]; then
       -o StrictHostKeyChecking=no \
       -o UserKnownHostsFile=/dev/null \
       -o IdentitiesOnly=yes \
+      -p "${JUMP_SSH_PORT}" \
       -i "${ROOT_KEY}" \
       "${JUMP_TARGET}"
 
@@ -166,9 +167,10 @@ if [[ "${JUMP_HOST_ENABLED}" =~ ^(1|true|yes|on)$ ]]; then
       ssh -S "${JUMP_SOCKET}" "${JUMP_TARGET}" "bash -lc '
         log=${REMOTE_BOOTSTRAP_LOG@Q}
         nohup ssh -o BatchMode=yes -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
+          -p ${SERVER_SSH_PORT} \
           -N \
           -L 127.0.0.1:${REMOTE_PGPORT}:127.0.0.1:${PGPORT} \
-          -L 127.0.0.1:${REMOTE_MAINDB_SSH_PORT}:127.0.0.1:22 \
+          -L 127.0.0.1:${REMOTE_MAINDB_SSH_PORT}:127.0.0.1:${SERVER_SSH_PORT} \
           ${MAINDB_JUMP_USERNAME}@${PGHOST} >\"\$log\" 2>&1 < /dev/null &
         pid=\$!
         for _ in \$(seq 1 20); do
@@ -197,6 +199,7 @@ if [[ "${JUMP_HOST_ENABLED}" =~ ^(1|true|yes|on)$ ]]; then
       -o StrictHostKeyChecking=no \
       -o UserKnownHostsFile=/dev/null \
       -o IdentitiesOnly=yes \
+      -p "${JUMP_SSH_PORT}" \
       -i "${ROOT_KEY}" \
       -L "127.0.0.1:${LOCAL_PGPORT}:127.0.0.1:${REMOTE_PGPORT}" \
       -L "127.0.0.1:${LOCAL_MAINDB_SSH_PORT}:127.0.0.1:${REMOTE_MAINDB_SSH_PORT}" \
@@ -204,7 +207,7 @@ if [[ "${JUMP_HOST_ENABLED}" =~ ^(1|true|yes|on)$ ]]; then
   else
     TUNNEL_SOCKET="/tmp/ctera-monitoring-dashboard-${RANDOM}-${RANDOM}.sock"
     TUNNEL_TARGET="${SERVER_SSH_USER}@${PGHOST}"
-    PROXY_CMD="ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o IdentitiesOnly=yes -i ${ROOT_KEY} -W %h:%p ${JUMP_SSH_USER}@${JUMP_HOST}"
+    PROXY_CMD="ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o IdentitiesOnly=yes -i ${ROOT_KEY} -p ${JUMP_SSH_PORT} -W %h:%p ${JUMP_SSH_USER}@${JUMP_HOST}"
     ssh -M -S "${TUNNEL_SOCKET}" -fnNT \
       -o BatchMode=yes \
       -o ExitOnForwardFailure=yes \
@@ -212,9 +215,10 @@ if [[ "${JUMP_HOST_ENABLED}" =~ ^(1|true|yes|on)$ ]]; then
       -o UserKnownHostsFile=/dev/null \
       -o IdentitiesOnly=yes \
       -o ProxyCommand="${PROXY_CMD}" \
+      -p "${SERVER_SSH_PORT}" \
       -i "${ROOT_KEY}" \
       -L "127.0.0.1:${LOCAL_PGPORT}:127.0.0.1:${PGPORT}" \
-      -L "127.0.0.1:${LOCAL_MAINDB_SSH_PORT}:127.0.0.1:22" \
+      -L "127.0.0.1:${LOCAL_MAINDB_SSH_PORT}:127.0.0.1:${SERVER_SSH_PORT}" \
       "${TUNNEL_TARGET}"
   fi
   LOCAL_PGHOST="127.0.0.1"
@@ -259,10 +263,11 @@ if [[ -n "${ROOT_KEY:-}" && -r "${ROOT_KEY}" ]]; then
         --user "${SERVER_METRICS_TARGET_USER}"
         --key "${ROOT_KEY}"
         --jump-host "${JUMP_HOST}"
-        --jump-port 22
+        --jump-port "${JUMP_SSH_PORT}"
         --jump-user "${JUMP_SSH_USER}"
         --jump-key "${ROOT_KEY}"
         --via-main-db-host "${PGHOST}"
+        --via-main-db-port "${SERVER_SSH_PORT}"
         --via-main-db-user "${MAINDB_JUMP_USERNAME}"
       )
     else
@@ -279,7 +284,7 @@ if [[ -n "${ROOT_KEY:-}" && -r "${ROOT_KEY}" ]]; then
       SSH_METRICS_ARGS+=(--jump-run-as-user "${SERVER_METRICS_JUMP_RUN_AS_USER}")
     fi
   else
-    SSH_METRICS_ARGS+=(--user "${SERVER_SSH_USER}" --key "${ROOT_KEY}")
+    SSH_METRICS_ARGS+=(--user "${SERVER_SSH_USER}" --port "${SERVER_SSH_PORT}" --key "${ROOT_KEY}")
   fi
   if [[ "${SERVER_METRICS_SUDO}" =~ ^(1|true|yes|on)$ ]]; then
     SSH_METRICS_ARGS+=(--sudo)
@@ -318,3 +323,5 @@ if command -v curl >/dev/null 2>&1; then
 fi
 
 echo "Completed portal_jobs.sh"
+
+
