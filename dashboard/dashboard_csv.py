@@ -710,7 +710,23 @@ def _launch_job(job_name, environment_id=None):
         return current, False
     if not environment_id or str(environment_id) == "admin":
         raise ValueError("Select a portal environment before running collectors.")
-    env = _bootstrap_environment_runtime(environment_id)
+    env = _get_environment(environment_id, include_secret=True)
+    if not env:
+        raise ValueError("Select a saved portal environment first.")
+    ssh_key_path = str(env.get("ssh_key_path") or "").strip()
+    jump_enabled = bool(env.get("jump_host_enabled"))
+    jump_key_path = str(env.get("jump_ssh_key_path") or "").strip()
+    pg_password = str(env.get("pg_password") or "").strip()
+    if not ssh_key_path or not os.path.exists(ssh_key_path) or not pg_password:
+        raise ValueError(
+            "This environment is saved but not bootstrapped yet. "
+            "Use 'Save and Run Bootstrap' first so the dashboard can install its SSH key and capture the database password."
+        )
+    if jump_enabled and (not jump_key_path or not os.path.exists(jump_key_path)):
+        raise ValueError(
+            "This jump-host environment is missing its saved runtime SSH key. "
+            "Run 'Save and Run Bootstrap' again to finish bootstrap before starting collectors."
+        )
     runtime_env_file = _write_runtime_env_file(env)
 
     script = os.path.join(PROJECT_DIR, f"{job_name}_jobs.sh")
