@@ -835,6 +835,15 @@ def _clean_header(header):
     return h
 
 
+def _is_heavy_debug_column(header):
+    name = str(header or "").strip().lower()
+    if not name:
+        return False
+    if name in {"rawoutput", "rawjson", "rawjsonson", "rawresponse", "rawpayload"}:
+        return True
+    return ("raw" in name and "row" not in name) or ("json" in name and name not in {"pg_json_stats"})
+
+
 def read_csv_rows(csv_path):
     rows, headers = [], []
     if not csv_path or not os.path.exists(csv_path):
@@ -9859,7 +9868,9 @@ def index():
                 warn_rows += 1
         total_pg_bad += bad_rows
         total_pg_warn += warn_rows
-        display_headers = list(h)
+        display_headers = [col for col in h if not _is_heavy_debug_column(col)]
+        if not display_headers:
+            display_headers = list(h)
         render_rows = r
         if key == "snapshots":
             preferred = ["Name", "Host", "Role", "LatestSnapshot", "PreviousSnapshot", "SnapshotCount", "Status", "CollectionError"]
