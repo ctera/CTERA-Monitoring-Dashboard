@@ -287,10 +287,8 @@ prompt_helper_source_mode() {
   fi
 
   if helper_bundled_source >/dev/null 2>&1; then
-    if [[ "${NONINTERACTIVE}" -eq 1 ]]; then
-      printf '%s' "bundled"
-      return 0
-    fi
+    printf '%s' "bundled"
+    return 0
   fi
 
   if [[ "${NONINTERACTIVE}" -eq 1 ]]; then
