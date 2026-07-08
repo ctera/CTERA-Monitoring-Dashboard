@@ -472,6 +472,21 @@ for p in $candidates; do [ -e "$p" ] && list="$list $p"; done
     }
 
 
+def parse_portal_manage_versions(text):
+    image_version = ""
+    service_version = ""
+    for line in str(text or "").splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        match = re.search(r"Image version\s+([^\s|]+)\s*\|\s*Service version\s+([^\s|]+)", line, re.IGNORECASE)
+        if match:
+            image_version = str(match.group(1) or "").strip()
+            service_version = str(match.group(2) or "").strip()
+            break
+    return image_version, service_version
+
+
 # ---------------------------
 # Postgres fetch (with Name join)
 # ---------------------------
@@ -747,6 +762,8 @@ def main():
             "Connected": s.get("connected"),
             "MainDB": s.get("main_db"),
             "RunningVersion": s.get("running_version"),
+            "ImageVersion": "",
+            "ServiceVersion": "",
             "PublicIP": s.get("public_ipaddr") or "",
         }
 
@@ -801,6 +818,15 @@ def main():
                 m = gather_metrics(client, exec_text=exec_fn)
                 client.close()
 
+            if meta["MainDB"]:
+                try:
+                    version_text = exec_fn("portal-manage.sh status 2>/dev/null || portal.sh status 2>/dev/null || true")
+                    image_version, service_version = parse_portal_manage_versions(version_text)
+                    meta["ImageVersion"] = image_version
+                    meta["ServiceVersion"] = service_version
+                except Exception:
+                    pass
+
             row = {
                 "Name": meta["Name"],
                 "Host": meta["Host"],
@@ -809,6 +835,8 @@ def main():
                 "Connected": meta["Connected"],
                 "MainDB": meta["MainDB"],
                 "RunningVersion": meta["RunningVersion"],
+                "ImageVersion": meta["ImageVersion"],
+                "ServiceVersion": meta["ServiceVersion"],
                 "PublicIP": meta["PublicIP"],
 
                 "UptimeSeconds": m["UptimeSeconds"],
@@ -861,6 +889,8 @@ def main():
                 "Connected": meta["Connected"],
                 "MainDB": meta["MainDB"],
                 "RunningVersion": meta["RunningVersion"],
+                "ImageVersion": meta["ImageVersion"],
+                "ServiceVersion": meta["ServiceVersion"],
                 "PublicIP": meta["PublicIP"],
             }
             rows_out.append(row)
@@ -921,7 +951,7 @@ def main():
 
     # Write CSV
     headers = [
-        "Name","Host","Status","UID","Connected","MainDB","RunningVersion","PublicIP",
+        "Name","Host","Status","UID","Connected","MainDB","RunningVersion","ImageVersion","ServiceVersion","PublicIP",
         "UptimeSeconds","Load1","Load5","Load15",
         "MemTotalGB","MemUsedGB","MemUsedPct",
         "RootDiskSizeGB","RootDiskUsedGB","RootDiskUsedPct",

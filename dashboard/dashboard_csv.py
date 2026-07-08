@@ -6881,13 +6881,13 @@ async function runAISummary(){
         </div>
       </div>
       <div class="sidebar-footer">
-        <div class="sidebar-version-card sidebar-version-card-monitoring" title="{{ portal_build_summary or 'Portal Version' }}">
+        <div class="sidebar-version-card sidebar-version-card-monitoring" title="{{ portal_image_version or 'Portal Image Version' }}">
           {% if portal_image_version %}
           <div class="sidebar-version-primary">{{ portal_image_version }}</div>
-          <div class="sidebar-version-secondary">Service {{ portal_service_version or '-' }}</div>
+          <div class="sidebar-version-secondary">Portal Image Version</div>
           {% else %}
           <div class="sidebar-version-primary">-</div>
-          <div class="sidebar-version-secondary">Portal Version</div>
+          <div class="sidebar-version-secondary">Portal Image Version</div>
           {% endif %}
         </div>
         <div class="sidebar-version-card sidebar-version-card-admin" title="{{ 'Dashboard ' ~ app_version }}">
@@ -10166,7 +10166,7 @@ def index():
     docker_summary = _docker_summary(docker_rows)
     main_db_host_row = next((row for row in hosts_rows if _is_truthy(row.get("MainDB"))), {}) if hosts_rows else {}
     portal_build_host = str(main_db_host_row.get("Name") or main_db_host_row.get("Host") or "").strip()
-    portal_image_version = str(main_db_host_row.get("ImageVersion") or main_db_host_row.get("RunningVersion") or "").strip()
+    portal_image_version = str(main_db_host_row.get("ImageVersion") or "").strip()
     portal_service_version = str(main_db_host_row.get("ServiceVersion") or "").strip()
     portal_build_summary_parts = []
     if portal_image_version:
