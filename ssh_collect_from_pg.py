@@ -487,6 +487,37 @@ def parse_portal_manage_versions(text):
     return image_version, service_version
 
 
+def collect_portal_build_versions(exec_fn):
+    version_text = exec_fn(
+        """
+export PATH="$PATH:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+for candidate in \
+  portal-manage.sh \
+  /usr/local/bin/portal-manage.sh \
+  /usr/bin/portal-manage.sh \
+  /opt/ctera/bin/portal-manage.sh \
+  portal.sh \
+  /usr/local/bin/portal.sh \
+  /usr/bin/portal.sh \
+  /opt/ctera/bin/portal.sh
+do
+  if command -v "$candidate" >/dev/null 2>&1; then
+    resolved="$(command -v "$candidate")"
+    "$resolved" status 2>/dev/null && exit 0
+  fi
+  if [ -x "$candidate" ]; then
+    "$candidate" status 2>/dev/null && exit 0
+  fi
+done
+true
+""".strip()
+    )
+    image_version, service_version = parse_portal_manage_versions(version_text)
+    if image_version or service_version:
+        return image_version, service_version
+    raise RuntimeError("portal-manage/portal status returned no parsable version line")
+
+
 # ---------------------------
 # Postgres fetch (with Name join)
 # ---------------------------
@@ -820,12 +851,14 @@ def main():
 
             if meta["MainDB"]:
                 try:
-                    version_text = exec_fn("portal-manage.sh status 2>/dev/null || portal.sh status 2>/dev/null || true")
-                    image_version, service_version = parse_portal_manage_versions(version_text)
+                    image_version, service_version = collect_portal_build_versions(exec_fn)
                     meta["ImageVersion"] = image_version
                     meta["ServiceVersion"] = service_version
-                except Exception:
-                    pass
+                except Exception as exc:
+                    print(
+                        f"Warning: Could not collect portal build versions for {meta['Name'] or meta['Host']} ({meta['Host']}): {exc}",
+                        flush=True,
+                    )
 
             row = {
                 "Name": meta["Name"],
