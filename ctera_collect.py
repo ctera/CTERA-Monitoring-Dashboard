@@ -12,6 +12,7 @@
 # - Tasks are gathered per server via admin.servers.tasks.background(<server_name>).
 
 import argparse
+import asyncio
 import ast
 import csv
 import json
@@ -78,6 +79,17 @@ def _to_iso(v):
 # One shared pool is fine; these are short tasks
 _EXECUTOR = ThreadPoolExecutor(max_workers=8)
 
+def _ensure_asyncio_event_loop():
+    try:
+        asyncio.get_running_loop()
+        return
+    except RuntimeError:
+        pass
+    try:
+        asyncio.get_event_loop()
+    except RuntimeError:
+        asyncio.set_event_loop(asyncio.new_event_loop())
+
 def _with_timeout(timeout_sec, label, fn):
     fut = _EXECUTOR.submit(fn)
     try:
@@ -96,6 +108,7 @@ def _reauth(sess):
         logging.warning("Re-auth failed: original login credentials are not available.")
         return False
     try:
+        _ensure_asyncio_event_loop()
         sess.login(user, password)
         if global_admin:
             sess.portals.browse_global_admin()
@@ -1416,6 +1429,7 @@ def main():
     Session = GlobalAdmin if args.global_admin else ServicesPortal
     sess = Session(args.host)
     try:
+        _ensure_asyncio_event_loop()
         sess.login(args.user, args.password)
         sess._featherdash_user = args.user
         sess._featherdash_password = args.password
@@ -1462,5 +1476,4 @@ def main():
 
 if __name__ == "__main__":
     main()
-
 
