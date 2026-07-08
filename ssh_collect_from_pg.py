@@ -19,6 +19,7 @@ import shlex
 import socket
 import time
 import json
+import re
 
 import paramiko
 import psycopg2
