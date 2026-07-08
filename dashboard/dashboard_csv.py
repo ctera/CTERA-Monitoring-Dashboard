@@ -3911,6 +3911,8 @@ HTML = """
     .nav-section.context-hidden { display:none; }
     body[data-initial-context="admin"] .nav-section[data-context="monitoring"] { display:none; }
     body[data-initial-context="env"] .nav-section[data-context="administration"] { display:none; }
+    body[data-initial-context="admin"] .sidebar-version-card-monitoring { display:none; }
+    body[data-initial-context="env"] .sidebar-version-card-admin { display:none; }
     .nav-group-btn { display:flex; align-items:center; justify-content:space-between; gap:10px; width:100%; border:none; background:transparent; color:#d5d8e6; padding:13px 16px; cursor:pointer; font-family:inherit; font-size:14px; font-weight:400; line-height:20px; text-align:left; transition:background .18s ease, color .18s ease; }
     .nav-group-btn:hover { background:rgba(88,96,234,0.10); color:#ffffff; }
     .nav-section.expanded .nav-group-btn { background:rgba(255,255,255,0.03); color:#f8fafc; box-shadow:inset 0 -1px 0 rgba(255,255,255,0.04); }
@@ -6879,14 +6881,18 @@ async function runAISummary(){
         </div>
       </div>
       <div class="sidebar-footer">
-        <div class="sidebar-version-card" title="{{ portal_build_summary or ('Dashboard ' ~ app_version) }}">
+        <div class="sidebar-version-card sidebar-version-card-monitoring" title="{{ portal_build_summary or 'Portal Version' }}">
           {% if portal_image_version %}
           <div class="sidebar-version-primary">{{ portal_image_version }}</div>
           <div class="sidebar-version-secondary">Service {{ portal_service_version or '-' }}</div>
           {% else %}
+          <div class="sidebar-version-primary">-</div>
+          <div class="sidebar-version-secondary">Portal Version</div>
+          {% endif %}
+        </div>
+        <div class="sidebar-version-card sidebar-version-card-admin" title="{{ 'Dashboard ' ~ app_version }}">
           <div class="sidebar-version-primary">{{ app_version }}</div>
           <div class="sidebar-version-secondary">Dashboard Version</div>
-          {% endif %}
         </div>
       </div>
     </aside>
