@@ -850,16 +850,15 @@ def main():
                 m = gather_metrics(client, exec_text=exec_fn)
                 client.close()
 
-            if meta["MainDB"]:
-                try:
-                    image_version, service_version = collect_portal_build_versions(exec_fn)
-                    meta["ImageVersion"] = image_version
-                    meta["ServiceVersion"] = service_version
-                except Exception as exc:
-                    print(
-                        f"Warning: Could not collect portal build versions for {meta['Name'] or meta['Host']} ({meta['Host']}): {exc}",
-                        flush=True,
-                    )
+            try:
+                image_version, service_version = collect_portal_build_versions(exec_fn)
+                meta["ImageVersion"] = image_version
+                meta["ServiceVersion"] = service_version
+            except Exception as exc:
+                print(
+                    f"Warning: Could not collect portal build versions for {meta['Name'] or meta['Host']} ({meta['Host']}): {exc}",
+                    flush=True,
+                )
 
             row = {
                 "Name": meta["Name"],
