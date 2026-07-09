@@ -41,6 +41,7 @@ JOB_NAMES = ("portal", "filer")
 CSV_READ_CACHE_MAX = 64
 _CSV_READ_CACHE = OrderedDict()
 _YAML_FILE_CACHE = {}
+DEFAULT_DOCKER_EXITED_MAX_AGE_DAYS = int(os.environ.get("FEATHERDASH_DOCKER_EXITED_MAX_AGE_DAYS", "30"))
 
 
 def _data_path(filename):
@@ -8539,6 +8540,12 @@ async function runAISummary(){
 
     <div id="health_docker" class="healthpane" style="display:none">
       <div class="sub">File: <code>{{ docker_csv }}</code> &nbsp;?&nbsp; Updated: <span class="sub" data-local-time="{{ docker_mtime }}">{{ docker_mtime or '?' }}</span></div>
+      <div class="sub">
+        Showing running containers plus recent or service-like exits.
+        {% if docker_hidden_count %}
+        Hidden stale exited containers: {{ docker_hidden_count }} of {{ docker_all_total }} total.
+        {% endif %}
+      </div>
       <div class="viz-grid two">
         <section class="viz-panel">
           <h3>Docker Restart Watch</h3>
@@ -9632,6 +9639,36 @@ def _docker_row_class(row, header, warn_fn=None):
     return ""
 
 
+def _docker_should_show_in_health_view(row, stale_days=DEFAULT_DOCKER_EXITED_MAX_AGE_DAYS):
+    if str(row.get("CollectionError") or "").strip():
+        return True
+    state = str(row.get("State") or "").strip().lower()
+    if state not in {"exited", "dead", "removing"}:
+        return True
+    restart_policy = str(row.get("RestartPolicy") or "").strip().lower()
+    if restart_policy in {"always", "unless-stopped", "on-failure"}:
+        return True
+    finished_at = str(row.get("FinishedAt") or "").strip()
+    if not finished_at or finished_at.startswith("0001-01-01T00:00:00"):
+        return True
+    try:
+        finished = datetime.fromisoformat(finished_at.replace("Z", "+00:00")).replace(tzinfo=None)
+    except Exception:
+        return True
+    return (datetime.utcnow() - finished) <= timedelta(days=max(int(stale_days or 0), 0))
+
+
+def _filter_docker_rows_for_health_view(rows, stale_days=DEFAULT_DOCKER_EXITED_MAX_AGE_DAYS):
+    visible = []
+    hidden = 0
+    for row in rows:
+        if _docker_should_show_in_health_view(row, stale_days=stale_days):
+            visible.append(row)
+        else:
+            hidden += 1
+    return visible, hidden
+
+
 def _docker_counts(rows, headers, warn_fn):
     return _count_row_severity(rows, headers, warn_fn)
 
@@ -10135,7 +10172,8 @@ def index():
     docker_mtime = _file_mtime_iso(docker_csv)
     nomad_rows, nomad_headers = read_csv_rows(nomad_csv)
     consul_rows, consul_headers = read_csv_rows(consul_csv)
-    docker_rows, docker_headers = read_csv_rows(docker_csv)
+    docker_all_rows, docker_headers = read_csv_rows(docker_csv)
+    docker_rows, docker_hidden_count = _filter_docker_rows_for_health_view(docker_all_rows)
     nomad_summary = _cluster_consistency_summary(nomad_rows, "NodeID", ok_values={"ready"})
     consul_summary = _cluster_consistency_summary(consul_rows, "Node", ok_values={"alive"})
     nomad_status_chart = _cluster_status_chart(nomad_rows, "Status")
@@ -10270,6 +10308,7 @@ def index():
         consul_csv=consul_csv, consul_mtime=consul_mtime, consul_rows=consul_rows, consul_headers=consul_headers,
         consul_summary=consul_summary, consul_status_chart=consul_status_chart,
         docker_csv=docker_csv, docker_mtime=docker_mtime, docker_rows=docker_rows, docker_headers=docker_headers,
+        docker_all_total=len(docker_all_rows), docker_hidden_count=docker_hidden_count,
         docker_summary=docker_summary, docker_row_class=_docker_row_class, warn_docker=warn_docker,
         # portal sources
         portal_servers_src=portal_servers_src, portal_storage_src=portal_storage_src, portal_tasks_src=portal_tasks_src, portal_licenses_src=portal_licenses_src,
