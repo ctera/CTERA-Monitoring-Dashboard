@@ -4415,6 +4415,9 @@ HTML = """
       if (id === 'edge') {
         syncEdgeScrollerSetup();
       }
+      if (id === 'pg' && document.getElementById('pg')) {
+        showPgTab(loadPgActive());
+      }
       scheduleAboutUpdateChecks(id);
     }
 
@@ -4434,6 +4437,10 @@ HTML = """
     }
     let pgTopicCache = {};
 
+    function pgCacheKey(key){
+      return effectiveEnvironmentContext() + '::' + String(key || '');
+    }
+
     function renderPgTopicRows(key, data){
       const table = document.getElementById('pgTable_' + key);
       if (!table) return;
@@ -4452,8 +4459,9 @@ HTML = """
 
     async function ensurePgTopicLoaded(key){
       if (!key || key === 'overview') return;
-      if (pgTopicCache[key] === 'loading' || pgTopicCache[key] === 'loaded') return;
-      pgTopicCache[key] = 'loading';
+      const cacheKey = pgCacheKey(key);
+      if (pgTopicCache[cacheKey] === 'loading' || pgTopicCache[cacheKey] === 'loaded') return;
+      pgTopicCache[cacheKey] = 'loading';
       const tbody = document.querySelector('#pgTable_' + key + ' tbody');
       if (tbody) {
         tbody.innerHTML = '<tr><td colspan="99" class="sub">Loading…</td></tr>';
@@ -4463,12 +4471,12 @@ HTML = """
         const data = await resp.json();
         if (!resp.ok || !data.ok) throw new Error(data.error || 'Could not load Postgres topic');
         renderPgTopicRows(key, data);
-        pgTopicCache[key] = 'loaded';
+        pgTopicCache[cacheKey] = 'loaded';
       } catch (e) {
         if (tbody) {
           tbody.innerHTML = `<tr><td colspan="99" class="sev-critical">Could not load topic: ${e.message}</td></tr>`;
         }
-        pgTopicCache[key] = 'error';
+        pgTopicCache[cacheKey] = 'error';
       }
     }
 
@@ -4479,7 +4487,9 @@ HTML = """
       const btn = document.querySelector('[data-sub="'+id+'"]');
       if (btn) btn.classList.add('active');
       savePgActive(id);
-      if (id.startsWith('pg_') && id !== 'pg_overview') {
+      const pgPane = document.getElementById('pg');
+      const pgVisible = !!pgPane && pgPane.style.display !== 'none';
+      if (pgVisible && id.startsWith('pg_') && id !== 'pg_overview') {
         ensurePgTopicLoaded(id.slice(3));
       }
     }
