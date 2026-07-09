@@ -46,6 +46,37 @@ Support for RHEL-style systems is coming soon.
 
 ---
 
+## Prerequisites
+
+Review these requirements before adding a portal environment so bootstrap and collector jobs can complete cleanly.
+
+### CTERA Access
+
+- Create a Global Admin user for the dashboard before setup starts.
+- A read-only Global Admin user can collect most dashboard data. We recommend naming that user `monitoring`.
+- Keep the Global Admin password available during portal environment setup.
+
+### Network Ports
+
+- Open port `22` between the monitoring server and MainDB.
+- Open port `5432` between the monitoring server and MainDB.
+- Open port `443` between the monitoring server and the Tomcat servers or portal endpoint used for login.
+
+### MainDB SSH Access
+
+- Have an SSH path to MainDB ready before bootstrap begins.
+- The initial SSH mode can use a password or a private key.
+- The bootstrap user can be `root`, or another user that can `sudo` to root.
+- If a jump host is required, make sure the jump host path is already reachable from the monitoring server.
+
+### Bootstrap Behavior
+
+- MainDB root access is required during the initial bootstrap flow.
+- The dashboard uses the initial SSH access mode one time to install its runtime SSH key and collect what it needs.
+- After bootstrap, the dashboard switches ongoing access to the installed SSH key and saved runtime environment.
+
+---
+
 # Install
 
 There are three supported install options.
