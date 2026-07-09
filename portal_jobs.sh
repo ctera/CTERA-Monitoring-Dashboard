@@ -196,6 +196,12 @@ if [[ "${JUMP_HOST_ENABLED}" =~ ^(1|true|yes|on)$ ]]; then
   SERVER_METRICS_JUMP_USER="${SERVER_SSH_USER}"
 fi
 
+export LOCAL_PGHOST
+export LOCAL_PGPORT
+export LOCAL_MAINDB_SSH_PORT
+export SERVER_METRICS_JUMP_HOST
+export SERVER_METRICS_JUMP_USER
+
 rm -f "${FEATHERDASH_DATA_DIR}/storage.csv"
 python ctera_collect.py -H "${CTERA_HOST}" -u "${CTERA_USERNAME}" -p "${CTERA_PASSWORD}" --mode storage --global-admin -o "${FEATHERDASH_DATA_DIR}/storage.csv"
 
