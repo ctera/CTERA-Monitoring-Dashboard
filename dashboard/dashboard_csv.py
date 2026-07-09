@@ -41,6 +41,22 @@ JOB_NAMES = ("portal", "filer")
 CSV_READ_CACHE_MAX = 64
 _CSV_READ_CACHE = OrderedDict()
 _YAML_FILE_CACHE = {}
+
+
+def _env_csv_set(name, default_values):
+    raw = os.environ.get(name, "")
+    if not raw.strip():
+        return {str(v).strip().lower() for v in default_values if str(v).strip()}
+    return {part.strip().lower() for part in raw.split(",") if part.strip()}
+
+
+DEFAULT_DOCKER_HIDDEN_IMAGES = _env_csv_set(
+    "FEATHERDASH_DOCKER_HIDDEN_IMAGES",
+    {
+        "edenhill/kcat",
+        "edenhill/kcat:1.7.1",
+    },
+)
 def _data_path(filename):
     return os.path.join(DEFAULT_DATA_DIR, filename)
 
@@ -9639,6 +9655,9 @@ def _docker_row_class(row, header, warn_fn=None):
 def _docker_should_show_in_health_view(row):
     if str(row.get("CollectionError") or "").strip():
         return True
+    image = str(row.get("Image") or "").strip().lower()
+    if image in DEFAULT_DOCKER_HIDDEN_IMAGES:
+        return False
     state = str(row.get("State") or "").strip().lower()
     if state not in {"exited", "dead", "removing"}:
         return True
