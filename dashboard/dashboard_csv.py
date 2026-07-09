@@ -41,9 +41,6 @@ JOB_NAMES = ("portal", "filer")
 CSV_READ_CACHE_MAX = 64
 _CSV_READ_CACHE = OrderedDict()
 _YAML_FILE_CACHE = {}
-DEFAULT_DOCKER_EXITED_MAX_AGE_DAYS = int(os.environ.get("FEATHERDASH_DOCKER_EXITED_MAX_AGE_DAYS", "30"))
-
-
 def _data_path(filename):
     return os.path.join(DEFAULT_DATA_DIR, filename)
 
@@ -8541,7 +8538,7 @@ async function runAISummary(){
     <div id="health_docker" class="healthpane" style="display:none">
       <div class="sub">File: <code>{{ docker_csv }}</code> &nbsp;?&nbsp; Updated: <span class="sub" data-local-time="{{ docker_mtime }}">{{ docker_mtime or '?' }}</span></div>
       <div class="sub">
-        Showing running containers plus recent or service-like exits.
+        Showing running containers plus service-like exits.
         {% if docker_hidden_count %}
         Hidden stale exited containers: {{ docker_hidden_count }} of {{ docker_all_total }} total.
         {% endif %}
@@ -9639,7 +9636,7 @@ def _docker_row_class(row, header, warn_fn=None):
     return ""
 
 
-def _docker_should_show_in_health_view(row, stale_days=DEFAULT_DOCKER_EXITED_MAX_AGE_DAYS):
+def _docker_should_show_in_health_view(row):
     if str(row.get("CollectionError") or "").strip():
         return True
     state = str(row.get("State") or "").strip().lower()
@@ -9648,21 +9645,14 @@ def _docker_should_show_in_health_view(row, stale_days=DEFAULT_DOCKER_EXITED_MAX
     restart_policy = str(row.get("RestartPolicy") or "").strip().lower()
     if restart_policy in {"always", "unless-stopped", "on-failure"}:
         return True
-    finished_at = str(row.get("FinishedAt") or "").strip()
-    if not finished_at or finished_at.startswith("0001-01-01T00:00:00"):
-        return True
-    try:
-        finished = datetime.fromisoformat(finished_at.replace("Z", "+00:00")).replace(tzinfo=None)
-    except Exception:
-        return True
-    return (datetime.utcnow() - finished) <= timedelta(days=max(int(stale_days or 0), 0))
+    return False
 
 
-def _filter_docker_rows_for_health_view(rows, stale_days=DEFAULT_DOCKER_EXITED_MAX_AGE_DAYS):
+def _filter_docker_rows_for_health_view(rows):
     visible = []
     hidden = 0
     for row in rows:
-        if _docker_should_show_in_health_view(row, stale_days=stale_days):
+        if _docker_should_show_in_health_view(row):
             visible.append(row)
         else:
             hidden += 1
