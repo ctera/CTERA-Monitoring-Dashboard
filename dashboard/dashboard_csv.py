@@ -8603,7 +8603,7 @@ async function runAISummary(){
               {% endif %}
               <tr class="{{ 'docker-group-even' if (docker_ns.group_index % 2 == 0) else 'docker-group-odd' }}">
                 {% for h in docker_headers %}
-                  {% set cls = docker_row_class(r, h) %}
+                  {% set cls = docker_row_class(r, h, warn_docker) %}
                   <td class="{{ cls }}">{{ display_cell(h, r.get(h, '')) }}</td>
                 {% endfor %}
               </tr>
@@ -9645,34 +9645,45 @@ def _cluster_status_chart(rows, field_name):
     return _with_status_tones(_top_counts(rows, [field_name], limit=8, empty_label="Unknown"))
 
 
-def _docker_row_severity(row):
+def _docker_row_severity(row, warn_fn=None):
     error = str(row.get("CollectionError") or "").strip()
     if error:
         return "bad"
     recently_booted = str(row.get("RecentlyBooted") or "").strip().lower() in {"true", "1", "yes", "y", "on"}
     if recently_booted:
         return ""
-    state = str(row.get("State") or "").strip().lower()
-    health = str(row.get("Health") or "").strip().lower()
-    status_text = str(row.get("StatusText") or "").strip().lower()
-    restart_delta = _safe_int(row.get("RestartDelta"), 0) or 0
-    if state in {"restarting", "dead", "removing", "exited"}:
-        return "bad"
-    if "restarting" in status_text:
-        return "bad"
-    if health == "unhealthy":
-        return "bad"
-    if restart_delta >= 3:
-        return "bad"
-    if health == "starting":
-        return "warn"
-    if restart_delta > 0:
-        return "warn"
+    if warn_fn:
+        saw_warn = False
+        for field in ("State", "Health", "RestartDelta"):
+            sev = warn_fn(field, row.get(field, ""), row)
+            if sev == "bad":
+                return "bad"
+            if sev == "warn":
+                saw_warn = True
+        if saw_warn:
+            return "warn"
+    else:
+        state = str(row.get("State") or "").strip().lower()
+        health = str(row.get("Health") or "").strip().lower()
+        status_text = str(row.get("StatusText") or "").strip().lower()
+        restart_delta = _safe_int(row.get("RestartDelta"), 0) or 0
+        if state in {"restarting", "dead", "removing", "exited"}:
+            return "bad"
+        if "restarting" in status_text:
+            return "bad"
+        if health == "unhealthy":
+            return "bad"
+        if restart_delta >= 3:
+            return "bad"
+        if health == "starting":
+            return "warn"
+        if restart_delta > 0:
+            return "warn"
     return ""
 
 
-def _docker_row_class(row, header):
-    sev = _docker_row_severity(row)
+def _docker_row_class(row, header, warn_fn=None):
+    sev = _docker_row_severity(row, warn_fn=warn_fn)
     if header == "CollectionError" and str(row.get(header) or "").strip():
         return "sev-critical"
     if header in {"State", "Health", "RestartCount", "RestartDelta", "GraceState", "StatusText"}:
@@ -9683,10 +9694,10 @@ def _docker_row_class(row, header):
     return ""
 
 
-def _docker_counts(rows):
+def _docker_counts(rows, warn_fn=None):
     counts = {"bad": 0, "warn": 0}
     for row in rows:
-        sev = _docker_row_severity(row)
+        sev = _docker_row_severity(row, warn_fn=warn_fn)
         if sev == "bad":
             counts["bad"] += 1
         elif sev == "warn":
@@ -9694,8 +9705,8 @@ def _docker_counts(rows):
     return counts
 
 
-def _docker_summary(rows):
-    counts = _docker_counts(rows)
+def _docker_summary(rows, warn_fn=None):
+    counts = _docker_counts(rows, warn_fn=warn_fn)
     status_counts = Counter()
     restarting = unhealthy = flapping = grace = 0
     for row in rows:
@@ -10193,11 +10204,12 @@ def index():
     nomad_rows, nomad_headers = read_csv_rows(nomad_csv)
     consul_rows, consul_headers = read_csv_rows(consul_csv)
     docker_rows, docker_headers = read_csv_rows(docker_csv)
+    warn_docker = make_docker_warn_fn(ext)
     nomad_summary = _cluster_consistency_summary(nomad_rows, "NodeID", ok_values={"ready"})
     consul_summary = _cluster_consistency_summary(consul_rows, "Node", ok_values={"alive"})
     nomad_status_chart = _cluster_status_chart(nomad_rows, "Status")
     consul_status_chart = _cluster_status_chart(consul_rows, "Status")
-    docker_summary = _docker_summary(docker_rows)
+    docker_summary = _docker_summary(docker_rows, warn_fn=warn_docker)
     main_db_host_row = next((row for row in hosts_rows if _is_truthy(row.get("MainDB"))), {}) if hosts_rows else {}
     portal_build_host = str(main_db_host_row.get("Name") or main_db_host_row.get("Host") or "").strip()
     portal_image_version = str(main_db_host_row.get("ImageVersion") or "").strip()
@@ -10327,7 +10339,7 @@ def index():
         consul_csv=consul_csv, consul_mtime=consul_mtime, consul_rows=consul_rows, consul_headers=consul_headers,
         consul_summary=consul_summary, consul_status_chart=consul_status_chart,
         docker_csv=docker_csv, docker_mtime=docker_mtime, docker_rows=docker_rows, docker_headers=docker_headers,
-        docker_summary=docker_summary, docker_row_class=_docker_row_class,
+        docker_summary=docker_summary, docker_row_class=_docker_row_class, warn_docker=warn_docker,
         # portal sources
         portal_servers_src=portal_servers_src, portal_storage_src=portal_storage_src, portal_tasks_src=portal_tasks_src, portal_licenses_src=portal_licenses_src,
         portal_servers_mtime=portal_servers_mtime, portal_storage_mtime=portal_storage_mtime, portal_tasks_mtime=portal_tasks_mtime, portal_licenses_mtime=portal_licenses_mtime,
