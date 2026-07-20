@@ -91,13 +91,15 @@ def _job_state_path(job_name):
 
 def _load_app_version():
     try:
-        with open(VERSION_FILE, "r", encoding="utf-8") as handle:
-            version = handle.read().strip()
-            if version:
-                return version
+        with open(VERSION_FILE, "rb") as handle:
+            raw = handle.read()
+        cleaned = raw.decode("utf-8", errors="ignore").replace("\ufeff", "")
+        version = re.sub(r"[^0-9A-Za-z._-]+", "", cleaned).strip()
+        if version:
+            return version
     except Exception:
         pass
-    return "1a"
+    return "unknown"
 
 
 APP_VERSION = _load_app_version()
@@ -664,6 +666,21 @@ def _upgrade_network_settings_path():
     return UPGRADE_NETWORK_SETTINGS_FILE
 
 
+def _upgrade_completion_hint(status, tail_text):
+    status = str(status or "").strip().lower()
+    base_tail = str(tail_text or "").rstrip()
+    if status not in {"finished", "failed"}:
+        return base_tail
+    note = "Dashboard note: upgrade completed. Refresh this page to reconnect."
+    if status == "failed":
+        note = "Dashboard note: upgrade stopped. Refresh this page, then review the log above."
+    if note in base_tail:
+        return base_tail
+    if not base_tail:
+        return note
+    return f"{base_tail}\n\n{note}"
+
+
 def _job_status(job_name):
     state = _read_state(job_name)
     log_path = _log_path(job_name)
@@ -704,12 +721,21 @@ def _upgrade_status():
     log_path = _upgrade_log_path()
     status = out.get("status", "idle")
     pid = out.get("pid", "")
+    tail_text = _tail_text(log_path)
     if status == "running" and pid:
         try:
             os.kill(int(pid), 0)
         except Exception:
-            status = "unknown"
+            if out.get("finished_at") or out.get("last_exit", "").strip():
+                status = "failed" if str(out.get("last_exit", "")).strip() not in {"", "0"} else "finished"
+            else:
+                lowered_tail = tail_text.lower()
+                if "upgrade helper completed" in lowered_tail or "restarting service" in lowered_tail or lowered_tail.rstrip().endswith("terminated"):
+                    status = "finished"
+                else:
+                    status = "unknown"
             out["status"] = status
+    tail_text = _upgrade_completion_hint(status, tail_text)
     return {
         "job": "upgrade",
         "status": status,
@@ -720,7 +746,7 @@ def _upgrade_status():
         "log_path": log_path,
         "tail_command": f"tail -F {log_path}",
         "last_log_update": _file_mtime_utc(log_path),
-        "tail": _tail_text(log_path),
+        "tail": tail_text,
         "helper_path": DEFAULT_UPGRADE_HELPER,
     }
 
