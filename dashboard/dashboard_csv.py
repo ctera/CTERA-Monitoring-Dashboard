@@ -36,27 +36,17 @@ DEFAULT_CONFIG_FILE = os.environ.get("FEATHERDASH_CONFIG_FILE", "/etc/ctera-moni
 DEFAULT_UPGRADE_HELPER = os.environ.get("FEATHERDASH_UPGRADE_HELPER", "/usr/local/sbin/ctera-monitoring-dashboard-upgrade")
 UPGRADE_NETWORK_SETTINGS_FILE = os.environ.get("FEATHERDASH_UPGRADE_NETWORK_SETTINGS_FILE", os.path.join(DEFAULT_STATE_DIR, "upgrade_network.env"))
 UPGRADE_REQUEST_SETTINGS_FILE = os.environ.get("FEATHERDASH_UPGRADE_REQUEST_SETTINGS_FILE", os.path.join(DEFAULT_STATE_DIR, "upgrade_request.env"))
-DEFAULT_HIDDEN_TASK_NAMES = {"csrequestsprocessor", "csrrequestsprocessor"}
+DEFAULT_HIDDEN_TASK_NAMES = {
+    "csrequestsprocessor",
+    "csrrequestsprocessor",
+    "syslogconnectorstatusnotifier",
+}
 JOB_NAMES = ("portal", "filer")
 CSV_READ_CACHE_MAX = 64
 _CSV_READ_CACHE = OrderedDict()
 _YAML_FILE_CACHE = {}
 
 
-def _env_csv_set(name, default_values):
-    raw = os.environ.get(name, "")
-    if not raw.strip():
-        return {str(v).strip().lower() for v in default_values if str(v).strip()}
-    return {part.strip().lower() for part in raw.split(",") if part.strip()}
-
-
-DEFAULT_DOCKER_HIDDEN_IMAGES = _env_csv_set(
-    "FEATHERDASH_DOCKER_HIDDEN_IMAGES",
-    {
-        "edenhill/kcat",
-        "edenhill/kcat:1.7.1",
-    },
-)
 def _data_path(filename):
     return os.path.join(DEFAULT_DATA_DIR, filename)
 
@@ -3925,8 +3915,6 @@ HTML = """
     .nav-section.context-hidden { display:none; }
     body[data-initial-context="admin"] .nav-section[data-context="monitoring"] { display:none; }
     body[data-initial-context="env"] .nav-section[data-context="administration"] { display:none; }
-    body[data-initial-context="admin"] .sidebar-version-card-monitoring { display:none; }
-    body[data-initial-context="env"] .sidebar-version-card-admin { display:none; }
     .nav-group-btn { display:flex; align-items:center; justify-content:space-between; gap:10px; width:100%; border:none; background:transparent; color:#d5d8e6; padding:13px 16px; cursor:pointer; font-family:inherit; font-size:14px; font-weight:400; line-height:20px; text-align:left; transition:background .18s ease, color .18s ease; }
     .nav-group-btn:hover { background:rgba(88,96,234,0.10); color:#ffffff; }
     .nav-section.expanded .nav-group-btn { background:rgba(255,255,255,0.03); color:#f8fafc; box-shadow:inset 0 -1px 0 rgba(255,255,255,0.04); }
@@ -6905,18 +6893,14 @@ async function runAISummary(){
         </div>
       </div>
       <div class="sidebar-footer">
-        <div class="sidebar-version-card sidebar-version-card-monitoring" title="{{ portal_image_version or 'Portal Image Version' }}">
+        <div class="sidebar-version-card" title="{{ portal_build_summary or ('Dashboard ' ~ app_version) }}">
           {% if portal_image_version %}
           <div class="sidebar-version-primary">{{ portal_image_version }}</div>
-          <div class="sidebar-version-secondary">Portal Image Version</div>
+          <div class="sidebar-version-secondary">Service {{ portal_service_version or '-' }}</div>
           {% else %}
-          <div class="sidebar-version-primary">-</div>
-          <div class="sidebar-version-secondary">Portal Image Version</div>
-          {% endif %}
-        </div>
-        <div class="sidebar-version-card sidebar-version-card-admin" title="{{ 'Dashboard ' ~ app_version }}">
           <div class="sidebar-version-primary">{{ app_version }}</div>
           <div class="sidebar-version-secondary">Dashboard Version</div>
+          {% endif %}
         </div>
       </div>
     </aside>
@@ -8553,12 +8537,6 @@ async function runAISummary(){
 
     <div id="health_docker" class="healthpane" style="display:none">
       <div class="sub">File: <code>{{ docker_csv }}</code> &nbsp;?&nbsp; Updated: <span class="sub" data-local-time="{{ docker_mtime }}">{{ docker_mtime or '?' }}</span></div>
-      <div class="sub">
-        Showing running containers plus service-like exits.
-        {% if docker_hidden_count %}
-        Hidden stale exited containers: {{ docker_hidden_count }} of {{ docker_all_total }} total.
-        {% endif %}
-      </div>
       <div class="viz-grid two">
         <section class="viz-panel">
           <h3>Docker Restart Watch</h3>
@@ -8599,7 +8577,7 @@ async function runAISummary(){
               {% endif %}
               <tr class="{{ 'docker-group-even' if (docker_ns.group_index % 2 == 0) else 'docker-group-odd' }}">
                 {% for h in docker_headers %}
-                  {% set cls = docker_row_class(r, h, warn_docker) %}
+                  {% set cls = docker_row_class(r, h) %}
                   <td class="{{ cls }}">{{ display_cell(h, r.get(h, '')) }}</td>
                 {% endfor %}
               </tr>
@@ -9641,49 +9619,57 @@ def _cluster_status_chart(rows, field_name):
     return _with_status_tones(_top_counts(rows, [field_name], limit=8, empty_label="Unknown"))
 
 
-def _docker_row_class(row, header, warn_fn=None):
-    if not warn_fn:
+def _docker_row_severity(row):
+    error = str(row.get("CollectionError") or "").strip()
+    if error:
+        return "bad"
+    recently_booted = str(row.get("RecentlyBooted") or "").strip().lower() in {"true", "1", "yes", "y", "on"}
+    if recently_booted:
         return ""
-    sev = warn_fn(header, row.get(header, ""), row)
-    if sev == "bad":
-        return "sev-critical"
-    if sev == "warn":
-        return "sev-warning"
+    state = str(row.get("State") or "").strip().lower()
+    health = str(row.get("Health") or "").strip().lower()
+    status_text = str(row.get("StatusText") or "").strip().lower()
+    restart_delta = _safe_int(row.get("RestartDelta"), 0) or 0
+    if state in {"restarting", "dead", "removing", "exited"}:
+        return "bad"
+    if "restarting" in status_text:
+        return "bad"
+    if health == "unhealthy":
+        return "bad"
+    if restart_delta >= 3:
+        return "bad"
+    if health == "starting":
+        return "warn"
+    if restart_delta > 0:
+        return "warn"
     return ""
 
 
-def _docker_should_show_in_health_view(row):
-    if str(row.get("CollectionError") or "").strip():
-        return True
-    image = str(row.get("Image") or "").strip().lower()
-    if image in DEFAULT_DOCKER_HIDDEN_IMAGES:
-        return False
-    state = str(row.get("State") or "").strip().lower()
-    if state not in {"exited", "dead", "removing"}:
-        return True
-    restart_policy = str(row.get("RestartPolicy") or "").strip().lower()
-    if restart_policy in {"always", "unless-stopped", "on-failure"}:
-        return True
-    return False
+def _docker_row_class(row, header):
+    sev = _docker_row_severity(row)
+    if header == "CollectionError" and str(row.get(header) or "").strip():
+        return "sev-critical"
+    if header in {"State", "Health", "RestartCount", "RestartDelta", "GraceState", "StatusText"}:
+        if sev == "bad":
+            return "sev-critical"
+        if sev == "warn":
+            return "sev-warning"
+    return ""
 
 
-def _filter_docker_rows_for_health_view(rows):
-    visible = []
-    hidden = 0
+def _docker_counts(rows):
+    counts = {"bad": 0, "warn": 0}
     for row in rows:
-        if _docker_should_show_in_health_view(row):
-            visible.append(row)
-        else:
-            hidden += 1
-    return visible, hidden
+        sev = _docker_row_severity(row)
+        if sev == "bad":
+            counts["bad"] += 1
+        elif sev == "warn":
+            counts["warn"] += 1
+    return counts
 
 
-def _docker_counts(rows, headers, warn_fn):
-    return _count_row_severity(rows, headers, warn_fn)
-
-
-def _docker_summary(rows, headers, warn_fn):
-    counts = _docker_counts(rows, headers, warn_fn)
+def _docker_summary(rows):
+    counts = _docker_counts(rows)
     status_counts = Counter()
     restarting = unhealthy = flapping = grace = 0
     for row in rows:
@@ -10154,7 +10140,6 @@ def index():
     metrics_mtime = _file_mtime_iso(metrics_csv)
     hosts_rows, hosts_headers = read_csv_rows(metrics_csv)
     warn_hosts = make_servers_health_warn_fn(ext)
-    warn_docker = make_docker_warn_fn(ext)
     style_hosts = make_servers_health_style_fn(ext)
     hosts_base_counts = _count_row_severity(hosts_rows, hosts_headers, warn_hosts)
     host_gauges = [
@@ -10181,13 +10166,12 @@ def index():
     docker_mtime = _file_mtime_iso(docker_csv)
     nomad_rows, nomad_headers = read_csv_rows(nomad_csv)
     consul_rows, consul_headers = read_csv_rows(consul_csv)
-    docker_all_rows, docker_headers = read_csv_rows(docker_csv)
-    docker_rows, docker_hidden_count = _filter_docker_rows_for_health_view(docker_all_rows)
+    docker_rows, docker_headers = read_csv_rows(docker_csv)
     nomad_summary = _cluster_consistency_summary(nomad_rows, "NodeID", ok_values={"ready"})
     consul_summary = _cluster_consistency_summary(consul_rows, "Node", ok_values={"alive"})
     nomad_status_chart = _cluster_status_chart(nomad_rows, "Status")
     consul_status_chart = _cluster_status_chart(consul_rows, "Status")
-    docker_summary = _docker_summary(docker_rows, docker_headers, warn_docker)
+    docker_summary = _docker_summary(docker_rows)
     main_db_host_row = next((row for row in hosts_rows if _is_truthy(row.get("MainDB"))), {}) if hosts_rows else {}
     portal_build_host = str(main_db_host_row.get("Name") or main_db_host_row.get("Host") or "").strip()
     portal_image_version = str(main_db_host_row.get("ImageVersion") or "").strip()
@@ -10317,8 +10301,7 @@ def index():
         consul_csv=consul_csv, consul_mtime=consul_mtime, consul_rows=consul_rows, consul_headers=consul_headers,
         consul_summary=consul_summary, consul_status_chart=consul_status_chart,
         docker_csv=docker_csv, docker_mtime=docker_mtime, docker_rows=docker_rows, docker_headers=docker_headers,
-        docker_all_total=len(docker_all_rows), docker_hidden_count=docker_hidden_count,
-        docker_summary=docker_summary, docker_row_class=_docker_row_class, warn_docker=warn_docker,
+        docker_summary=docker_summary, docker_row_class=_docker_row_class,
         # portal sources
         portal_servers_src=portal_servers_src, portal_storage_src=portal_storage_src, portal_tasks_src=portal_tasks_src, portal_licenses_src=portal_licenses_src,
         portal_servers_mtime=portal_servers_mtime, portal_storage_mtime=portal_storage_mtime, portal_tasks_mtime=portal_tasks_mtime, portal_licenses_mtime=portal_licenses_mtime,
