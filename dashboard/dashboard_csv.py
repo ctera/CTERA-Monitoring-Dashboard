@@ -8050,7 +8050,11 @@ async function runAISummary(){
             {% set cls = style_edge(h, cell, r) %}
             {% set sev = warn_edge(h, cell, r) %}
             <td class="{{ cls }} {{ 'sev-critical' if sev == 'bad' else ('sev-warning' if sev == 'warn' else '') }}">
-              {% if clip_check(h, cell) %}
+              {% set key = h|string %}
+              {% if key == 'Connected' %}
+                {% set b = (cell|string).lower() in ['true','1','yes','y','on','online','connected'] %}
+                <span class="pill {{ 'pill-ok' if b else 'pill-bad' }}">{{ 'Online' if b else 'Offline' }}</span>
+              {% elif clip_check(h, cell) %}
                 <div class="clipcell" title="{{ cell|replace('\\n',' ') }}">{{ display_cell(h, cell) }}</div>
                 <div class="cell-actions">
                   <button class="btn-xs" onclick="openViewer(`{{ cell|replace('`','\\`') }}`)">View</button>
