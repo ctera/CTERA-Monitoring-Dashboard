@@ -6,7 +6,7 @@ This document lists what CTERA Monitoring Dashboard collects for each dataset an
 
 | Dataset | Fields Collected | Fields With Thresholds | Source Files |
 |---|---:|---:|---|
-| Filers | 31 | 6 | ctera_collect.py, thresholds.yaml |
+| Filers | 32 | 7 | ctera_collect.py, thresholds.yaml |
 | Tenants | 9 | 1 | pg_collect_tenants.py, thresholds.yaml |
 | Portal Servers | 4 | 1 | ctera_collect.py, thresholds.yaml |
 | Storage Nodes | 6 | 0 | ctera_collect.py, thresholds.yaml |
@@ -38,6 +38,7 @@ This document lists what CTERA Monitoring Dashboard collects for each dataset an
 |---|---|---|---|---|
 | Tenant | Yes |  |  |  |
 | Filer Name | Yes |  |  |  |
+| Connected | Yes |  | eq false | Portal `deviceConnectionStatus.connected`. Offline filers remain listed with stub metrics (no live API/CLI). |
 | CloudSync Status | Yes | eq UploadIsStalled | eq NoFolder |  |
 | selfScanIntervalInHours | Yes |  |  |  |
 | uploadingFiles | Yes | gt 10000 | gt 30000 |  |

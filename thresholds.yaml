@@ -4,6 +4,8 @@
 
 filers:
   default:
+    Connected:
+      crit: { eq: false }
     uploadingFiles:
       warn: { gt: 10000 }
       crit: { gt: 30000 }

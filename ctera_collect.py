@@ -174,12 +174,35 @@ def _derive_telnet_secret(mac_addr, firmware):
 
 
 
+def _filer_is_connected(filer) -> bool:
+    """Portal deviceConnectionStatus.connected (missing/false => offline)."""
+    return bool(getattr(getattr(filer, "deviceConnectionStatus", None), "connected", False))
+
+
+def _annotate_filers(filers):
+    """Keep all filers (online + offline); stamp connection flag for write_status."""
+    out = []
+    for f in (filers or []):
+        try:
+            f._md_connected = _filer_is_connected(f)
+        except Exception:
+            f._md_connected = False
+        out.append(f)
+    return out
+
+
 def get_filers(self, all_tenants=False, tenant=None):
+    """
+    Return ALL edge filers in scope (connected and offline).
+
+    Offline filers must remain in filer.csv so the dashboard can show Offline
+    and alert critical. Do not filter to connected-only.
+    """
     try:
-        connected_filers = []
+        discovered = []
         if all_tenants:
             _with_reauth(self, lambda: self.portals.browse_global_admin(), retries=2, label="browse_global_admin")
-            logging.info("Getting all Filers (all tenants)")
+            logging.info("Getting all Filers (all tenants, including offline)")
             tenants = _with_reauth(self, lambda: list(self.portals.tenants()), retries=2, label="list_tenants")
             for t in tenants:
                 tenant_name = getattr(t, "name", "")
@@ -194,18 +217,22 @@ def get_filers(self, all_tenants=False, tenant=None):
                         retries=2,
                         label=f"list_filers:{tenant_name}"
                     )
-                    tenant_connected = [
-                        f for f in (all_filers or [])
-                        if getattr(getattr(f, "deviceConnectionStatus", None), "connected", False)
-                    ]
-                    connected_filers.extend(tenant_connected)
-                    logging.info("Tenant %s: collected %s connected filers", tenant_name, len(tenant_connected))
+                    batch = _annotate_filers(all_filers)
+                    discovered.extend(batch)
+                    conn_n = sum(1 for f in batch if getattr(f, "_md_connected", False))
+                    logging.info(
+                        "Tenant %s: collected %s filers (%s connected, %s offline)",
+                        tenant_name,
+                        len(batch),
+                        conn_n,
+                        len(batch) - conn_n,
+                    )
                 except Exception as tenant_error:
                     logging.warning("Skipping tenant %s during filer discovery: %s", tenant_name or "Unknown", tenant_error)
                     _reauth(self)
                     continue
         elif tenant is not None:
-            logging.info("Getting Filers connected to %s", tenant)
+            logging.info("Getting all Filers for tenant %s (including offline)", tenant)
             _with_reauth(self, lambda: self.portals.browse(tenant), retries=2, label=f"browse_tenant:{tenant}")
             tenant_filers = _with_reauth(
                 self,
@@ -216,13 +243,16 @@ def get_filers(self, all_tenants=False, tenant=None):
                 retries=2,
                 label=f"list_filers:{tenant}"
             )
-            connected_filers.extend([f for f in tenant_filers if getattr(getattr(f, "deviceConnectionStatus", None), "connected", False)])
+            discovered.extend(_annotate_filers(tenant_filers))
         else:
             try:
                 current_tenant = self.users.session().current_tenant()
             except Exception:
                 current_tenant = None
-            logging.info("Getting Filers connected%s", f" to {current_tenant}" if current_tenant else "")
+            logging.info(
+                "Getting all Filers%s (including offline)",
+                f" for {current_tenant}" if current_tenant else "",
+            )
             tenant_filers = _with_reauth(
                 self,
                 lambda: self.devices.filers(include=[
@@ -232,9 +262,15 @@ def get_filers(self, all_tenants=False, tenant=None):
                 retries=2,
                 label="list_filers_current_tenant"
             )
-            connected_filers.extend([f for f in tenant_filers if getattr(getattr(f, "deviceConnectionStatus", None), "connected", False)])
-        logging.info("Discovered %s connected filers total", len(connected_filers))
-        return connected_filers
+            discovered.extend(_annotate_filers(tenant_filers))
+        conn_n = sum(1 for f in discovered if getattr(f, "_md_connected", False))
+        logging.info(
+            "Discovered %s filers total (%s connected, %s offline)",
+            len(discovered),
+            conn_n,
+            len(discovered) - conn_n,
+        )
+        return discovered
     except CTERAException as error:
         logging.debug(error)
         logging.error("Error getting Filers.")
@@ -254,6 +290,58 @@ def _ensure_session_alive(self):
 
 
 # -------------------- Filers CSV --------------------
+FILER_CSV_HEADER = [
+    'Tenant',
+    'Filer Name',
+    'Connected',  # portal deviceConnectionStatus.connected: true/false
+    'CloudSync Status',
+    'selfScanIntervalInHours',
+    'uploadingFiles',
+    'scanningFiles',
+    'selfVerificationscanningFiles',
+    'MetaLogsSetting',
+    'AuditLogsStatus',
+    'DeviceLocation',
+    'AuditLogsPath',
+    'MetaLogMaxSize',
+    'MetaLogMaxFiles',
+    'CurrentFirmware',
+    'License',
+    'EvictionPercentage',
+    'CurrentVolumeStorage',
+    'SN',
+    'MAC',
+    'IP Config',
+    'DNS Server1',
+    'DNS Server2',
+    'AD Domain Status',
+    'AD Mapping',
+    'Alerts',
+    'TimeServer',
+    'uptime',
+    'Current Performance',
+    'Max CPU',
+    'Max Memory',
+    'DB Size',
+]
+
+
+def _filer_connected_csv(connected: bool) -> str:
+    return "true" if connected else "false"
+
+
+def _filer_stub_row(tenant, name, connected: bool):
+    """Keep filer on dashboard when offline or metrics unavailable."""
+    empties = [""] * (len(FILER_CSV_HEADER) - 3)
+    return [tenant or "Unknown", name or "?", _filer_connected_csv(connected)] + empties
+
+
+def _append_filer_row(p_filename, row):
+    with open(p_filename, mode='a', newline='', encoding="utf-8-sig") as f:
+        w = csv.writer(f, dialect='excel', delimiter=',', quotechar='"', quoting=csv.QUOTE_MINIMAL)
+        w.writerow(row)
+
+
 def write_status(self, p_filename, all_tenants):
     get_list = ['config', 'status', 'proc/cloudsync', 'proc/time/', 'proc/storage/summary', 'proc/perfMonitor']
     logging.info("Gathering status for all filers...")
@@ -344,11 +432,27 @@ def write_status(self, p_filename, all_tenants):
 
     # ---------- your existing loop, now using the signal timeouts + per-filer budget ----------
     for filer in (get_filers(self, all_tenants) or []):
+        name = getattr(filer, "name", "?")
+        connected = bool(getattr(filer, "_md_connected", _filer_is_connected(filer)))
+        try:
+            tenant = getattr(filer, "portal", None) or "Unknown"
+        except Exception:
+            tenant = "Unknown"
+
+        # Offline on portal: keep row, do not call live APIs (they fail offline).
+        if not connected:
+            logging.info("Filer %s is offline on portal; writing Connected=false stub row", name)
+            try:
+                _append_filer_row(p_filename, _filer_stub_row(tenant, name, False))
+            except Exception as e:
+                logging.warning("Failed writing offline stub for %s: %s", name, e)
+            continue
+
         try:
             start = time.monotonic()
             _ensure_session_alive(self)
 
-            logging.info(f"Gathering status for {getattr(filer, 'name', '?')}...")
+            logging.info("Gathering status for %s (connected)...", name)
 
             def _budget_ok():
                 return (time.monotonic() - start) < BUDGET_PER_FILER
@@ -608,11 +712,12 @@ def write_status(self, p_filename, all_tenants):
             if not _budget_ok():
                 raise TimeoutError(f"Per-filer budget {BUDGET_PER_FILER}s exceeded")
 
-            with open(p_filename, mode='a', newline='', encoding="utf-8-sig") as f:
-                w = csv.writer(f, dialect='excel', delimiter=',', quotechar='"', quoting=csv.QUOTE_MINIMAL)
-                w.writerow([
+            _append_filer_row(
+                p_filename,
+                [
                     tenant,
-                    getattr(filer, 'name', '?'),
+                    name,
+                    _filer_connected_csv(True),
                     sync_id,
                     selfScanIntervalInHours,
                     uploadingFiles,
@@ -641,29 +746,34 @@ def write_status(self, p_filename, all_tenants):
                     f"CPU: {_display_pct(curr_cpu)} Mem: {_display_pct(curr_mem)}",
                     max_cpu_value,
                     max_mem_value,
-                    db_size_value
-                ])
+                    db_size_value,
+                ],
+            )
 
         except Exception as e:
-            logging.warning("Skipping filer %s due to error: %s", getattr(filer, 'name', '?'), e)
+            logging.warning(
+                "Metrics collection failed for %s (portal connected=%s): %s; writing stub row",
+                name,
+                connected,
+                e,
+            )
             try:
                 telnet_disable_safe(self, filer)  # timed cleanup
             except Exception:
                 pass
+            try:
+                _append_filer_row(p_filename, _filer_stub_row(tenant, name, connected))
+            except Exception as write_err:
+                logging.warning("Failed writing fallback row for %s: %s", name, write_err)
             _ensure_session_alive(self)
             continue
 
 
-
-
-
-    
- 
 def write_filers_header(p_filename):
     try:
         with open(p_filename, mode='a', newline='', encoding="utf-8-sig") as f:
             w = csv.writer(f, dialect='excel', delimiter=',', quotechar='"', quoting=csv.QUOTE_MINIMAL)
-            w.writerow(['Tenant','Filer Name','CloudSync Status','selfScanIntervalInHours','uploadingFiles','scanningFiles','selfVerificationscanningFiles','MetaLogsSetting','AuditLogsStatus','DeviceLocation','AuditLogsPath','MetaLogMaxSize','MetaLogMaxFiles','CurrentFirmware','License','EvictionPercentage','CurrentVolumeStorage','SN','MAC','IP Config','DNS Server1','DNS Server2','AD Domain Status','AD Mapping','Alerts','TimeServer','uptime','Current Performance','Max CPU','Max Memory','DB Size'])
+            w.writerow(FILER_CSV_HEADER)
     except FileNotFoundError as error:
         logging.error(error)
         sys.exit("Make sure you entered a valid file name and it exists")
