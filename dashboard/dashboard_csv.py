@@ -1212,6 +1212,14 @@ def eval_level(val, rule):
 
 
 # -------- rule resolvers (edge / portal / postgres / servers health / tenants)
+def _edge_filer_offline(row):
+    """True when Connected is explicitly false/offline (missing Connected => not offline)."""
+    if not isinstance(row, dict) or "Connected" not in row:
+        return False
+    connected = _boolish(row.get("Connected"))
+    return connected is False
+
+
 def make_edge_warn_fn(base_cfg, ext):
     ignored_cols = {"scanningFiles", "EvictionPercentage"}
 
@@ -1232,6 +1240,9 @@ def make_edge_warn_fn(base_cfg, ext):
 
     def warn(col, val, row):
         if col in ignored_cols:
+            return ''
+        # Offline stub rows: only Connected is actionable; skip empty-metric false alarms.
+        if _edge_filer_offline(row) and str(col) != "Connected":
             return ''
         rule = _resolve(row).get(col)
         return eval_level(val, rule) if rule else ''
@@ -1259,6 +1270,8 @@ def make_edge_style_fn(base_cfg, ext):
 
     def style(col, val, row):
         if col in ignored_cols:
+            return ''
+        if _edge_filer_offline(row) and str(col) != "Connected":
             return ''
         rule = _resolve(row).get(col)
         return _style_from_rule(rule, val)

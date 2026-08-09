@@ -38,7 +38,7 @@ This document lists what CTERA Monitoring Dashboard collects for each dataset an
 |---|---|---|---|---|
 | Tenant | Yes |  |  |  |
 | Filer Name | Yes |  |  |  |
-| Connected | Yes |  | eq false | Portal `deviceConnectionStatus.connected`. Offline filers remain listed with stub metrics (no live API/CLI). |
+| Connected | Yes |  | eq false | Portal `deviceConnectionStatus.connected`. Offline filers remain listed with stub metrics (no live API/CLI). When offline, only Connected is evaluated; other filer thresholds are skipped for that row. |
 | CloudSync Status | Yes | eq UploadIsStalled | eq NoFolder |  |
 | selfScanIntervalInHours | Yes |  |  |  |
 | uploadingFiles | Yes | gt 10000 | gt 30000 |  |
