@@ -226,6 +226,8 @@ if [[ -n "${ROOT_KEY:-}" && -r "${ROOT_KEY}" ]]; then
     --nomad-out "${FEATHERDASH_DATA_DIR}/nomad_nodes.csv"
     --consul-out "${FEATHERDASH_DATA_DIR}/consul_members.csv"
     --docker-out "${FEATHERDASH_DATA_DIR}/docker_containers.csv"
+    --replication-out "${FEATHERDASH_DB_DIR}/replication_status.csv"
+    --snapshots-out "${FEATHERDASH_DB_DIR}/snapshots.csv"
   )
   if [[ "${SERVER_METRICS_MODE}" == "jump" ]]; then
     if [[ "${JUMP_HOST_ENABLED}" =~ ^(1|true|yes|on)$ && "${MAINDB_VIA_JUMP_PRECONFIGURED}" =~ ^(1|true|yes|on)$ ]]; then
