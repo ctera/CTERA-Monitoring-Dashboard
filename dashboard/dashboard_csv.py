@@ -462,7 +462,12 @@ def load_conf():
     base = dict(DEFAULT_CONF)
     for k, v in cfg.items():
         if k in ("ui", "theme", "brand", "portal", "postgres", "servers_health") and isinstance(v, dict):
-            base[k] = {**base.get(k, {}), **v}
+            merged = {**base.get(k, {}), **v}
+            if k == "postgres":
+                default_topics = ((base.get("postgres") or {}).get("topics") or {})
+                cfg_topics = (v.get("topics") or {})
+                merged["topics"] = {**default_topics, **cfg_topics}
+            base[k] = merged
         else:
             base[k] = v
     data_dir = os.environ.get("FEATHERDASH_DATA_DIR")
