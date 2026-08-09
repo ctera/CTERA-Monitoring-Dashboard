@@ -600,6 +600,54 @@ def _state_dir():
     return DEFAULT_STATE_DIR
 
 
+def _scheduler_state_dir():
+    path = os.path.join(_state_dir(), "scheduler")
+    os.makedirs(path, exist_ok=True)
+    return path
+
+
+def _scheduler_last_run_path(job_name, env_id):
+    return os.path.join(_scheduler_state_dir(), f"{job_name}-{env_id}.last")
+
+
+def _scheduler_last_success_path(job_name, env_id):
+    return os.path.join(_scheduler_state_dir(), f"{job_name}-{env_id}.last_ok")
+
+
+def _read_scheduler_last_run_epoch(job_name, env_id):
+    if env_id in (None, "", "admin"):
+        return None
+    path = _scheduler_last_success_path(job_name, env_id)
+    try:
+        with open(path, "r", encoding="utf-8", errors="ignore") as handle:
+            raw = handle.read().strip()
+        epoch = int(raw)
+        return epoch if epoch > 0 else None
+    except Exception:
+        return None
+
+
+def _scheduler_last_run_iso(job_name, env_id):
+    epoch = _read_scheduler_last_run_epoch(job_name, env_id)
+    if epoch is None:
+        return ""
+    try:
+        return datetime.utcfromtimestamp(epoch).replace(microsecond=0).isoformat() + "Z"
+    except Exception:
+        return ""
+
+
+def _mark_scheduler_last_run(job_name, env_id):
+    if env_id in (None, "", "admin"):
+        return
+    path = _scheduler_last_success_path(job_name, env_id)
+    try:
+        with open(path, "w", encoding="utf-8", newline="\n") as handle:
+            handle.write(f"{int(datetime.utcnow().timestamp())}\n")
+    except Exception:
+        pass
+
+
 def _job_state_path(job_name):
     return os.path.join(_state_dir(), f"{job_name}.state")
 
@@ -788,6 +836,8 @@ def _launch_job(job_name, environment_id=None):
     script = os.path.join(PROJECT_DIR, f"{job_name}_jobs.sh")
     log_path = _log_path(job_name)
     state_path = _job_state_path(job_name)
+    last_run_path = _scheduler_last_run_path(job_name, env["id"])
+    last_ok_path = _scheduler_last_success_path(job_name, env["id"])
     started_at = _now_utc_iso()
     _write_state(job_name, {
         "status": "running",
@@ -806,6 +856,8 @@ def _launch_job(job_name, environment_id=None):
         "last_exit=$rc\n"
         "pid=\n"
         "EOF\n"
+        f"date +%s > {shlex.quote(last_run_path)}; "
+        f"[ \"$rc\" -eq 0 ] && date +%s > {shlex.quote(last_ok_path)}\n"
     )
     proc = subprocess.Popen(
         ["/usr/bin/env", "bash", "-lc", wrapper],
@@ -3171,9 +3223,14 @@ def _delete_environment(env_id):
 
 
 def _environment_payload():
+    items = _list_environments(include_secret=False)
+    for item in items:
+        env_id = item.get("id")
+        item["portal_last_run_at"] = _scheduler_last_run_iso("portal", env_id)
+        item["filer_last_run_at"] = _scheduler_last_run_iso("filer", env_id)
     return {
-        "items": _list_environments(include_secret=False),
-        "count": len(_list_environments(include_secret=False)),
+        "items": items,
+        "count": len(items),
         "scheduler_paused": bool(_load_app_settings().get("scheduler_paused")),
     }
 
@@ -6302,6 +6359,23 @@ async function runAISummary(){
       renderInitialSshFields();
     }
 
+    function formatPortalLastRunCell(env){
+      const ts = (env && env.portal_last_run_at) || '';
+      if (!ts) {
+        return '<span style="color:var(--crit);font-weight:600" title="No successful portal job recorded yet">Never</span>';
+      }
+      const dt = new Date(String(ts).trim().replace(' UTC', 'Z'));
+      const text = formatLocalTimestamp(ts);
+      if (Number.isNaN(dt.getTime())) {
+        return '<span style="color:var(--crit);font-weight:600">' + text + '</span>';
+      }
+      const ageMs = Date.now() - dt.getTime();
+      if (ageMs > (2 * 60 * 60 * 1000)) {
+        return '<span style="color:var(--crit);font-weight:600" title="Last successful portal job is older than 2 hours">' + text + '</span>';
+      }
+      return text;
+    }
+
     function renderEnvironmentList(){
       const body = document.getElementById('environmentListBody');
       const empty = document.getElementById('environmentListEmpty');
@@ -6317,6 +6391,7 @@ async function runAISummary(){
           + '<td>' + (env.portal_fqdn || env.portal_ip || '-') + '</td>'
           + '<td>' + (env.main_db_ip || env.pg_host || '-') + '</td>'
           + '<td>' + (env.enabled ? '<span class="pill pill-ok">Enabled</span>' : '<span class="pill pill-muted">Disabled</span>') + '</td>'
+          + '<td>' + formatPortalLastRunCell(env) + '</td>'
           + '<td>' + formatLocalTimestamp(env.updated_at || env.created_at || '') + '</td>';
         const actionsTd = document.createElement('td');
         const wrap = document.createElement('div');
@@ -7365,6 +7440,7 @@ async function runAISummary(){
               <th>Portal</th>
               <th>MainDB</th>
               <th>Status</th>
+              <th>Last portal success</th>
               <th>Updated</th>
               <th>Actions</th>
             </tr>
