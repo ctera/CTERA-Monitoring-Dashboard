@@ -61,6 +61,12 @@ mark_run() {
   date +%s > "${SCHED_STATE_DIR}/${job_name}-${env_id}.last"
 }
 
+mark_success() {
+  local job_name="$1"
+  local env_id="$2"
+  date +%s > "${SCHED_STATE_DIR}/${job_name}-${env_id}.last_ok"
+}
+
 is_due() {
   local job_name="$1"
   local env_id="$2"
@@ -103,6 +109,7 @@ run_due_job() {
   if FEATHERDASH_CONFIG="${env_file}" "${script_path}" >> "${log_path}" 2>&1; then
     append_job_log "${job_name}" "Scheduler completed ${job_name}_jobs.sh for environment ${env_name} (id=${env_id})."
     log "Completed ${job_name} for ${env_name} (id=${env_id})"
+    mark_success "${job_name}" "${env_id}"
   else
     append_job_log "${job_name}" "Scheduler saw ${job_name}_jobs.sh fail for environment ${env_name} (id=${env_id})."
     log "Failed ${job_name} for ${env_name} (id=${env_id})"
