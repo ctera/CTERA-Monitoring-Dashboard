@@ -426,6 +426,8 @@ DEFAULT_CONF = {
     "postgres": {
         "base_dir": DEFAULT_DB_DIR,
         "topics": {
+            "replication_status": "replication_status.csv",
+            "snapshots": "snapshots.csv",
             "long_running_queries": "long_running_queries.csv",
             "wraparound_database": "wraparound_database.csv",
             "wraparound_top_tables": "wraparound_top_tables.csv",
