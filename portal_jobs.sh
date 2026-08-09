@@ -196,6 +196,12 @@ if [[ "${JUMP_HOST_ENABLED}" =~ ^(1|true|yes|on)$ ]]; then
   SERVER_METRICS_JUMP_USER="${SERVER_SSH_USER}"
 fi
 
+export LOCAL_PGHOST
+export LOCAL_PGPORT
+export LOCAL_MAINDB_SSH_PORT
+export SERVER_METRICS_JUMP_HOST
+export SERVER_METRICS_JUMP_USER
+
 rm -f "${FEATHERDASH_DATA_DIR}/storage.csv"
 python ctera_collect.py -H "${CTERA_HOST}" -u "${CTERA_USERNAME}" -p "${CTERA_PASSWORD}" --mode storage --global-admin -o "${FEATHERDASH_DATA_DIR}/storage.csv"
 
@@ -220,8 +226,6 @@ if [[ -n "${ROOT_KEY:-}" && -r "${ROOT_KEY}" ]]; then
     --nomad-out "${FEATHERDASH_DATA_DIR}/nomad_nodes.csv"
     --consul-out "${FEATHERDASH_DATA_DIR}/consul_members.csv"
     --docker-out "${FEATHERDASH_DATA_DIR}/docker_containers.csv"
-    --replication-out "${FEATHERDASH_DB_DIR}/replication_status.csv"
-    --snapshots-out "${FEATHERDASH_DB_DIR}/snapshots.csv"
   )
   if [[ "${SERVER_METRICS_MODE}" == "jump" ]]; then
     if [[ "${JUMP_HOST_ENABLED}" =~ ^(1|true|yes|on)$ && "${MAINDB_VIA_JUMP_PRECONFIGURED}" =~ ^(1|true|yes|on)$ ]]; then
