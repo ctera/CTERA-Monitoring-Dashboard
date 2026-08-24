@@ -134,13 +134,195 @@ install_os_packages() {
   esac
 }
 
-install_base_packages() {
+try_install_os_package() {
+  local pkg="$1"
   case "${PKG_MGR}" in
     apt)
-      install_os_packages python3 python3-venv python3-pip cron curl jq net-tools openssh-client sqlite3 nginx
+      apt-get install -y "${pkg}" >/dev/null 2>&1 || apt install -y "${pkg}"
+      ;;
+    dnf)
+      dnf install -y "${pkg}"
+      ;;
+    yum)
+      yum install -y "${pkg}"
+      ;;
+    *)
+      return 1
+      ;;
+  esac
+}
+
+rhel_major_version() {
+  local major=""
+  major="$(rpm -E '%{rhel}' 2>/dev/null || true)"
+  if [[ "${major}" =~ ^[0-9]+$ ]]; then
+    printf '%s' "${major}"
+    return 0
+  fi
+  if [[ -f /etc/os-release ]]; then
+    # shellcheck disable=SC1091
+    . /etc/os-release
+    major="${VERSION_ID%%.*}"
+    if [[ "${major}" =~ ^[0-9]+$ ]]; then
+      printf '%s' "${major}"
+      return 0
+    fi
+  fi
+  printf '9'
+}
+
+ensure_nginx_vendor_repo() {
+  local major
+  major="$(rhel_major_version)"
+  mkdir -p /etc/yum.repos.d
+  cat > /etc/yum.repos.d/nginx-ctera-monitoring.repo <<EOF
+[nginx-stable]
+name=nginx stable repo
+baseurl=https://nginx.org/packages/rhel/${major}/\$basearch/
+gpgcheck=1
+enabled=1
+gpgkey=https://nginx.org/keys/nginx_signing.key
+module_hotfixes=true
+EOF
+}
+
+install_nginx_package() {
+  if command -v nginx >/dev/null 2>&1; then
+    echo "nginx already installed."
+    return 0
+  fi
+
+  if try_install_os_package nginx; then
+    return 0
+  fi
+
+  case "${PKG_MGR}" in
+    dnf|yum)
+      echo "nginx not available in current repos; installing from nginx.org..."
+      ensure_nginx_vendor_repo
+      if try_install_os_package nginx; then
+        return 0
+      fi
+      ;;
+  esac
+
+  echo "Warning: nginx could not be installed automatically." >&2
+  echo "The dashboard can still run directly on port ${DASHBOARD_PORT:-8080}; HTTPS reverse-proxy setup needs nginx later." >&2
+  return 0
+}
+
+install_sshpass_from_epel_rpm() {
+  local major arch letter base html rpm_name rpm_url tmp
+  if command -v sshpass >/dev/null 2>&1; then
+    return 0
+  fi
+  major="$(rhel_major_version)"
+  arch="$(uname -m)"
+  case "${arch}" in
+    x86_64|amd64) arch="x86_64" ;;
+    aarch64|arm64) arch="aarch64" ;;
+    *)
+      echo "Unsupported architecture for sshpass RPM fallback: ${arch}" >&2
+      return 1
+      ;;
+  esac
+  letter="s"
+  base="https://dl.fedoraproject.org/pub/epel/${major}/Everything/${arch}/Packages/${letter}"
+  echo "Downloading sshpass RPM from EPEL (${base})..."
+  html="$(curl -fsSL "${base}/")" || return 1
+  rpm_name="$(printf '%s\n' "${html}" | grep -oE "sshpass-[0-9][^\"<> ]+\\.el${major}\\.${arch}\\.rpm" | sort -V | tail -1 || true)"
+  if [[ -z "${rpm_name}" ]]; then
+    echo "Could not locate an sshpass RPM on the EPEL mirror." >&2
+    return 1
+  fi
+  rpm_url="${base}/${rpm_name}"
+  tmp="$(mktemp "/tmp/${rpm_name}.XXXXXX")"
+  if ! curl -fsSL -o "${tmp}" "${rpm_url}"; then
+    rm -f "${tmp}"
+    return 1
+  fi
+  if rpm -Uvh "${tmp}"; then
+    rm -f "${tmp}"
+    return 0
+  fi
+  rm -f "${tmp}"
+  return 1
+}
+
+install_sshpass_from_source() {
+  local version="1.09"
+  local src_url="https://downloads.sourceforge.net/project/sshpass/sshpass/${version}/sshpass-${version}.tar.gz"
+  local work build_dir
+  if command -v sshpass >/dev/null 2>&1; then
+    return 0
+  fi
+  if ! command -v gcc >/dev/null 2>&1 || ! command -v make >/dev/null 2>&1; then
+    echo "gcc/make not available; cannot build sshpass from source." >&2
+    return 1
+  fi
+  echo "Building sshpass ${version} from source..."
+  work="$(mktemp -d /tmp/sshpass-build.XXXXXX)"
+  build_dir="${work}/sshpass-${version}"
+  if ! curl -fsSL -o "${work}/sshpass.tar.gz" "${src_url}"; then
+    rm -rf "${work}"
+    return 1
+  fi
+  tar -xzf "${work}/sshpass.tar.gz" -C "${work}"
+  (
+    cd "${build_dir}"
+    ./configure --prefix=/usr
+    make -j"$(nproc 2>/dev/null || echo 1)"
+    make install
+  )
+  local rc=$?
+  rm -rf "${work}"
+  return "${rc}"
+}
+
+install_sshpass_package() {
+  if command -v sshpass >/dev/null 2>&1; then
+    echo "sshpass already installed."
+    return 0
+  fi
+
+  if try_install_os_package sshpass; then
+    return 0
+  fi
+
+  case "${PKG_MGR}" in
+    dnf|yum)
+      echo "sshpass not available in current repos; trying EPEL RPM download..."
+      if install_sshpass_from_epel_rpm; then
+        return 0
+      fi
+      echo "EPEL RPM download failed; trying source build..."
+      if install_sshpass_from_source; then
+        return 0
+      fi
+      ;;
+  esac
+
+  echo "Warning: sshpass could not be installed. Password-based SSH bootstrap will be unavailable; use key-based bootstrap." >&2
+  return 0
+}
+
+install_base_packages() {
+  local pkg
+  case "${PKG_MGR}" in
+    apt)
+      install_os_packages python3 python3-venv python3-pip cron curl jq net-tools openssh-client sqlite3
+      install_nginx_package
+      install_sshpass_package
       ;;
     dnf|yum)
-      install_os_packages python3 python3-pip cronie curl jq net-tools openssh-clients sshpass sqlite nginx
+      for pkg in python3 python3-pip cronie curl jq net-tools openssh-clients sqlite; do
+        if ! try_install_os_package "${pkg}"; then
+          echo "Failed to install required package: ${pkg}" >&2
+          exit 1
+        fi
+      done
+      install_nginx_package
+      install_sshpass_package
       ;;
   esac
 }
@@ -148,12 +330,13 @@ install_base_packages() {
 install_ssh_helper_packages() {
   case "${PKG_MGR}" in
     apt)
-      install_os_packages sshpass openssh-client
+      try_install_os_package openssh-client || true
       ;;
     dnf|yum)
-      install_os_packages sshpass openssh-clients
+      try_install_os_package openssh-clients || true
       ;;
   esac
+  install_sshpass_package
 }
 
 helper_asset_name() {
@@ -559,20 +742,7 @@ open_firewall_port() {
 }
 
 install_nginx_if_missing() {
-  if command -v nginx >/dev/null 2>&1; then
-    return 0
-  fi
-  if command -v apt >/dev/null 2>&1; then
-    apt update
-    apt install -y nginx
-  elif command -v dnf >/dev/null 2>&1; then
-    dnf install -y nginx
-  elif command -v yum >/dev/null 2>&1; then
-    yum install -y nginx
-  else
-    echo "Could not install nginx automatically." >&2
-    exit 1
-  fi
+  install_nginx_package
 }
 
 disable_nginx_default_sites() {

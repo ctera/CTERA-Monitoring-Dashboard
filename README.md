@@ -16,19 +16,17 @@ https://github.com/ctera/CTERA-Monitoring-Dashboard
 
 ## Supported Platforms
 
-This installer currently supports Ubuntu/Debian based Linux servers.
+This installer supports Ubuntu/Debian and RHEL-style systems (`dnf` / `yum`).
 
 | Platform | Status | Notes |
 |---|---|---|
 | Ubuntu | Supported | Recommended platform |
 | Debian | Supported | Expected to work |
-| RHEL / Rocky / AlmaLinux / Oracle Linux | Coming soon | Installer support for `dnf` and `yum` is planned |
-| CentOS | Coming soon | Older CentOS versions may require additional package adjustments |
+| RHEL / Rocky / AlmaLinux / Oracle Linux | Supported | On unregistered RHEL, the installer falls back to nginx.org for `nginx` and an EPEL RPM/source build for `sshpass` |
+| CentOS | Best effort | Older CentOS versions may require additional package adjustments |
 | Windows | Not supported | Windows can be used to download and upload files, but the dashboard service should run on Linux |
 
-The current installer uses `apt`, so it should be run on Ubuntu or Debian based systems.
-
-Support for RHEL-style systems is coming soon.
+On RHEL hosts without Red Hat subscription entitlements, base AppStream packages like `nginx` may be missing. The installer detects that and installs those dependencies itself when possible.
 
 ## Default Layout
 
