@@ -184,108 +184,33 @@ install_os_packages() {
   esac
 }
 
-try_install_os_package() {
-  local pkg="$1"
-  case "${PKG_MGR}" in
-    apt)
-      apt-get install -y "${pkg}" >/dev/null 2>&1 || apt install -y "${pkg}"
-      ;;
-    dnf)
-      dnf install -y "${pkg}"
-      ;;
-    yum)
-      yum install -y "${pkg}"
-      ;;
-    *)
-      return 1
-      ;;
-  esac
-}
+print_rhel_repo_help() {
+  cat >&2 <<'EOF'
 
-rhel_major_version() {
-  local major=""
-  major="$(rpm -E '%{rhel}' 2>/dev/null || true)"
-  if [[ "${major}" =~ ^[0-9]+$ ]]; then
-    printf '%s' "${major}"
-    return 0
-  fi
-  if [[ -f /etc/os-release ]]; then
-    # shellcheck disable=SC1091
-    . /etc/os-release
-    major="${VERSION_ID%%.*}"
-    if [[ "${major}" =~ ^[0-9]+$ ]]; then
-      printf '%s' "${major}"
-      return 0
-    fi
-  fi
-  printf '9'
-}
+Could not install required OS packages (nginx and/or sshpass).
 
-ensure_nginx_vendor_repo() {
-  local major
-  major="$(rhel_major_version)"
-  mkdir -p /etc/yum.repos.d
-  cat > /etc/yum.repos.d/nginx-ctera-monitoring.repo <<EOF
-[nginx-stable]
-name=nginx stable repo
-baseurl=https://nginx.org/packages/rhel/${major}/\$basearch/
-gpgcheck=1
-enabled=1
-gpgkey=https://nginx.org/keys/nginx_signing.key
-module_hotfixes=true
+This usually happens on Red Hat Enterprise Linux when the host is not registered
+with Red Hat subscription management, so AppStream/BaseOS packages are unavailable.
+
+sshpass is required for password-based SSH bootstrap, so install/upgrade cannot continue.
+
+Fix options:
+  1) Register this RHEL host, then rerun:
+
+       subscription-manager register --username <redhat-account> --password <password>
+       subscription-manager attach --auto
+       # or, if you already have a pool id:
+       # subscription-manager attach --pool=<pool-id>
+       dnf clean all
+       dnf makecache
+
+  2) Or use a supported platform that already has full package repos:
+       - Ubuntu
+       - Rocky Linux
+       - AlmaLinux
+       - CTERA Portal server OVA
+
 EOF
-}
-
-install_nginx_package() {
-  if command -v nginx >/dev/null 2>&1; then
-    return 0
-  fi
-  if [[ -n "${PKG_MGR}" ]] && try_install_os_package nginx; then
-    return 0
-  fi
-  if command -v dnf >/dev/null 2>&1 || command -v yum >/dev/null 2>&1; then
-    echo "nginx not available in current repos; installing from nginx.org..."
-    ensure_nginx_vendor_repo
-    if command -v dnf >/dev/null 2>&1; then
-      PKG_MGR="dnf"
-    else
-      PKG_MGR="yum"
-    fi
-    if try_install_os_package nginx; then
-      return 0
-    fi
-  fi
-  echo "Warning: nginx could not be installed automatically." >&2
-  return 0
-}
-
-ensure_scheduler_packages() {
-  local missing_sqlite=0
-  local missing_nginx=0
-  command -v sqlite3 >/dev/null 2>&1 || missing_sqlite=1
-  command -v nginx >/dev/null 2>&1 || missing_nginx=1
-  if [[ "${missing_sqlite}" -eq 0 && "${missing_nginx}" -eq 0 ]]; then
-    return 0
-  fi
-
-  detect_platform_tools
-  section "Installing scheduler dependencies"
-  if [[ "${missing_sqlite}" -eq 1 ]]; then
-    case "${PKG_MGR}" in
-      apt)
-        try_install_os_package sqlite3 || echo "Warning: could not install sqlite3." >&2
-        ;;
-      dnf|yum)
-        try_install_os_package sqlite || echo "Warning: could not install sqlite." >&2
-        ;;
-      *)
-        echo "Warning: could not determine package manager to install sqlite automatically." >&2
-        ;;
-    esac
-  fi
-  if [[ "${missing_nginx}" -eq 1 ]]; then
-    install_nginx_package
-  fi
 }
 
 helper_asset_name() {
@@ -621,6 +546,35 @@ install_private_helper() {
   echo "  Installed ${HELPER_NAME} ${current_version} to ${HELPER_INSTALL_PATH}"
 }
 
+ensure_scheduler_packages() {
+  local missing=0
+  command -v sqlite3 >/dev/null 2>&1 || missing=1
+  command -v nginx >/dev/null 2>&1 || missing=1
+  if [[ "${missing}" -eq 0 ]]; then
+    return 0
+  fi
+
+  detect_platform_tools
+  section "Installing scheduler dependencies"
+  case "${PKG_MGR}" in
+    apt)
+      if ! install_os_packages sqlite3 nginx; then
+        echo "Failed to install required OS packages (sqlite3/nginx)." >&2
+        exit 1
+      fi
+      ;;
+    dnf|yum)
+      if ! install_os_packages sqlite nginx; then
+        print_rhel_repo_help
+        exit 1
+      fi
+      ;;
+    *)
+      echo "Warning: could not determine package manager to install sqlite3/nginx automatically." >&2
+      ;;
+  esac
+}
+
 ensure_sudoers_include() {
   local include_pattern='^[[:space:]]*[#@]includedir[[:space:]]+/etc/sudoers\.d([[:space:]]|$)'
   if grep -Eq "${include_pattern}" /etc/sudoers 2>/dev/null; then
@@ -691,7 +645,29 @@ open_firewall_port() {
 }
 
 install_nginx_if_missing() {
-  install_nginx_package
+  if command -v nginx >/dev/null 2>&1; then
+    return 0
+  fi
+  if command -v apt >/dev/null 2>&1; then
+    apt update
+    apt install -y nginx || {
+      echo "Failed to install nginx." >&2
+      exit 1
+    }
+  elif command -v dnf >/dev/null 2>&1; then
+    dnf install -y nginx || {
+      print_rhel_repo_help
+      exit 1
+    }
+  elif command -v yum >/dev/null 2>&1; then
+    yum install -y nginx || {
+      print_rhel_repo_help
+      exit 1
+    }
+  else
+    echo "Could not install nginx automatically." >&2
+    exit 1
+  fi
 }
 
 disable_nginx_default_sites() {

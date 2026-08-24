@@ -16,17 +16,19 @@ https://github.com/ctera/CTERA-Monitoring-Dashboard
 
 ## Supported Platforms
 
-This installer supports Ubuntu/Debian and RHEL-style systems (`dnf` / `yum`).
+This installer supports Ubuntu/Debian and RHEL-style systems (`dnf` / `yum`) **when package repos are available**.
 
 | Platform | Status | Notes |
 |---|---|---|
 | Ubuntu | Supported | Recommended platform |
 | Debian | Supported | Expected to work |
-| RHEL / Rocky / AlmaLinux / Oracle Linux | Supported | On unregistered RHEL, the installer falls back to nginx.org for `nginx` and an EPEL RPM/source build for `sshpass` |
+| Rocky Linux / AlmaLinux | Supported | Full package repos available without Red Hat subscription |
+| CTERA Portal server OVA | Supported | Use the Portal OVA / portal Linux image when that is your standard host |
+| RHEL | Supported only when registered | Unregistered RHEL often cannot install `nginx` / `sshpass`; installer stops with register steps |
 | CentOS | Best effort | Older CentOS versions may require additional package adjustments |
 | Windows | Not supported | Windows can be used to download and upload files, but the dashboard service should run on Linux |
 
-On RHEL hosts without Red Hat subscription entitlements, base AppStream packages like `nginx` may be missing. The installer detects that and installs those dependencies itself when possible.
+Required packages include `nginx` and `sshpass`. If install fails on RHEL because repos are missing, register the host with Red Hat subscription-manager, or use Ubuntu / Rocky / Alma / a CTERA Portal server OVA.
 
 ## Default Layout
 
