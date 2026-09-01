@@ -213,6 +213,50 @@ Fix options:
 EOF
 }
 
+select_python_for_venv() {
+  local candidate version major minor
+  for candidate in python3.12 python3.11 python3.10 python3.9 python3.8 python39 python38 python3; do
+    if ! command -v "${candidate}" >/dev/null 2>&1; then
+      continue
+    fi
+    version="$("${candidate}" -c 'import sys; print("%d.%d" % sys.version_info[:2])' 2>/dev/null || true)"
+    if [[ ! "${version}" =~ ^([0-9]+)\.([0-9]+)$ ]]; then
+      continue
+    fi
+    major="${BASH_REMATCH[1]}"
+    minor="${BASH_REMATCH[2]}"
+    if (( major > 3 || (major == 3 && minor >= 8) )); then
+      printf '%s' "${candidate}"
+      return 0
+    fi
+  done
+  return 1
+}
+
+create_python_venv() {
+  local target_dir="$1"
+  local python_bin=""
+  local resolved_version=""
+
+  if ! python_bin="$(select_python_for_venv)"; then
+    cat >&2 <<'EOF'
+No suitable Python found for the dashboard virtualenv.
+
+Need Python 3.8 or newer (3.9+ recommended).
+On this host, `python3` is often still 3.6 even after python3.9 is installed.
+
+Install a newer interpreter (example on RHEL/Rocky/Alma):
+  dnf install -y python39 python39-devel
+Then rerun install/upgrade.
+EOF
+    exit 1
+  fi
+
+  resolved_version="$("${python_bin}" -c 'import sys; print("%d.%d.%d" % sys.version_info[:3])')"
+  echo "  Using ${python_bin} (${resolved_version}) for venv"
+  "${python_bin}" -m venv "${target_dir}"
+}
+
 helper_asset_name() {
   local os_name arch_name
   os_name="$(uname -s 2>/dev/null || echo "")"
@@ -1121,12 +1165,23 @@ chmod +x \
 
 if [[ ! -d "${INSTALL_DIR}/venv" ]]; then
   section "Creating virtual environment"
-  python3 -m venv "${INSTALL_DIR}/venv"
+  create_python_venv "${INSTALL_DIR}/venv"
+else
+  # Recreate if existing venv is too old (common when python3 is still 3.6)
+  if ! "${INSTALL_DIR}/venv/bin/python" -c 'import sys; raise SystemExit(0 if sys.version_info >= (3, 8) else 1)' 2>/dev/null; then
+    section "Recreating virtual environment with Python 3.8+"
+    rm -rf "${INSTALL_DIR}/venv"
+    create_python_venv "${INSTALL_DIR}/venv"
+  fi
 fi
 
 section "Installing Python requirements"
 "${INSTALL_DIR}/venv/bin/pip" install -r "${INSTALL_DIR}/requirements.txt"
 install_private_helper
+
+if command -v restorecon >/dev/null 2>&1; then
+  restorecon -Rv "${INSTALL_DIR}" >/dev/null 2>&1 || true
+fi
 
 ensure_scheduler_packages
 install_upgrade_helper
