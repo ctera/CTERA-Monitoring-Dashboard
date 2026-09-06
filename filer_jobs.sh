@@ -85,7 +85,14 @@ source "${SCRIPT_DIR}/venv/bin/activate"
 
 # CTERA (no -p flag)
 rm -f "${FEATHERDASH_DATA_DIR}/filer.csv"
-python ctera_collect.py -H "${CTERA_HOST}" -u "${CTERA_USERNAME}" -p "${CTERA_PASSWORD}" --mode filers --all-tenants --global-admin -o "${FEATHERDASH_DATA_DIR}/filer.csv"
+FILER_COLLECT_TIMEOUT_SEC="${FILER_COLLECT_TIMEOUT_SEC:-3600}"
+COLLECT_CMD=(python ctera_collect.py -H "${CTERA_HOST}" -u "${CTERA_USERNAME}" -p "${CTERA_PASSWORD}" --mode filers --all-tenants --global-admin -o "${FEATHERDASH_DATA_DIR}/filer.csv")
+if command -v timeout >/dev/null 2>&1; then
+  # Hard ceiling so a wedged collector cannot leave the UI stuck on Running forever.
+  timeout --foreground --signal=TERM --kill-after=45 "${FILER_COLLECT_TIMEOUT_SEC}" "${COLLECT_CMD[@]}"
+else
+  "${COLLECT_CMD[@]}"
+fi
 
 PORT="${PORT:-8080}"
 if command -v curl >/dev/null 2>&1; then
