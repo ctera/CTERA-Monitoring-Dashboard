@@ -87,8 +87,27 @@ is_due() {
   return 1
 }
 
-# Claim due work under the lock, then release before long collectors run.
-# Holding flock for the entire filer job made cron print "already running"
+job_run_lock_path() {
+  local job_name="$1"
+  local env_id="$2"
+  printf '%s/%s-%s.run.lock' "${SCHED_STATE_DIR}" "${job_name}" "${env_id}"
+}
+
+# True if another scheduler tick already holds this collector's run lock.
+is_job_running() {
+  local run_lock="$1"
+  exec 8>"${run_lock}"
+  if flock -n 8; then
+    flock -u 8 || true
+    exec 8>&- || true
+    return 1
+  fi
+  exec 8>&- || true
+  return 0
+}
+
+# Queue due work under the global lock, then release before long collectors run.
+# Holding the global flock for an entire filer job made cron print "already running"
 # for hours/days whenever one portal was slow or wedged.
 claim_due_job() {
   local env_id="$1"
@@ -96,11 +115,18 @@ claim_due_job() {
   local job_name="$3"
   local interval_minutes="$4"
   local env_file="${RUNTIME_DIR}/environment-${env_id}.env"
+  local run_lock
 
   interval_minutes="$(sanitize_minutes "${interval_minutes}")"
+  run_lock="$(job_run_lock_path "${job_name}" "${env_id}")"
 
   if ! is_due "${job_name}" "${env_id}" "${interval_minutes}"; then
     log "Skipping ${job_name} for ${env_name} (id=${env_id}); not due yet (${interval_minutes} min interval)."
+    return 0
+  fi
+
+  if is_job_running "${run_lock}"; then
+    log "Skipping ${job_name} for ${env_name} (id=${env_id}); already running."
     return 0
   fi
 
@@ -110,10 +136,10 @@ claim_due_job() {
     return 0
   fi
 
-  # Claim the interval slot now so a later cron tick will not double-start.
-  mark_run "${job_name}" "${env_id}"
+  # Do not mark_run here: stamp .last only after this tick holds the per-job run lock,
+  # otherwise a later cron tick can queue a second overlapping collector.
   DUE_JOBS+=("${env_id}"$'\t'"${env_name}"$'\t'"${job_name}"$'\t'"${env_file}")
-  log "Claimed ${job_name} for ${env_name} (id=${env_id}); will run after scheduler lock is released."
+  log "Queued ${job_name} for ${env_name} (id=${env_id}); will run after scheduler lock is released."
 }
 
 run_claimed_job() {
@@ -123,7 +149,20 @@ run_claimed_job() {
   local env_file="$4"
   local script_path="${SCRIPT_DIR}/${job_name}_jobs.sh"
   local log_path="${LOG_DIR}/${job_name}.log"
+  local run_lock
+  run_lock="$(job_run_lock_path "${job_name}" "${env_id}")"
 
+  exec 8>"${run_lock}"
+  if ! flock -n 8; then
+    log "Skipping ${job_name} for ${env_name} (id=${env_id}); already running."
+    exec 8>&- || true
+    return 0
+  fi
+
+  # Hold fd 8 for the whole collector so overlapping cron ticks cannot start a second copy.
+  # The child inherits fd 8; if this scheduler tick is killed, the collector keeps the
+  # per-job lock and still blocks a duplicate start (global scheduler.lock stays free).
+  mark_run "${job_name}" "${env_id}"
   append_job_log "${job_name}" "Scheduler launching ${job_name}_jobs.sh for environment ${env_name} (id=${env_id})."
   log "Running ${job_name} for ${env_name} (id=${env_id}) using ${env_file}"
   if FEATHERDASH_CONFIG="${env_file}" "${script_path}" >> "${log_path}" 2>&1; then
@@ -134,6 +173,9 @@ run_claimed_job() {
     append_job_log "${job_name}" "Scheduler saw ${job_name}_jobs.sh fail for environment ${env_name} (id=${env_id})."
     log "Failed ${job_name} for ${env_name} (id=${env_id})"
   fi
+
+  flock -u 8 || true
+  exec 8>&- || true
 }
 
 paused_setting="$(sqlite3 -tabs "${DB_PATH}" "SELECT COALESCE((SELECT setting_value FROM app_settings WHERE setting_key = 'scheduler_paused' LIMIT 1),'false');" 2>/dev/null || echo false)"
@@ -156,7 +198,7 @@ while IFS=$'\t' read -r env_id env_name portal_minutes filer_minutes; do
   claim_due_job "${env_id}" "${env_name}" "filer" "${filer_minutes}"
 done <<< "${rows}"
 
-# Drop the lock before collectors run so the next cron tick can schedule other work.
+# Drop the global lock before collectors run so the next cron tick can schedule other work.
 flock -u 9 || true
 exec 9>&- || true
 
