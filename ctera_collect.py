@@ -31,7 +31,6 @@ from cryptography.x509.oid import NameOID
 from cterasdk.exceptions import CTERAException
 from cterasdk import GlobalAdmin, ServicesPortal
 import cterasdk.settings
-from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeout
 import time
 
 
@@ -75,10 +74,6 @@ def _to_iso(v):
 # ----------------------------------------------------
 
 
-
-# One shared pool is fine; these are short tasks
-_EXECUTOR = ThreadPoolExecutor(max_workers=8)
-
 def _ensure_asyncio_event_loop():
     try:
         asyncio.get_running_loop()
@@ -91,21 +86,28 @@ def _ensure_asyncio_event_loop():
         asyncio.set_event_loop(asyncio.new_event_loop())
 
 def _with_timeout(timeout_sec, label, fn):
-    """Run fn in a worker thread; raise TimeoutError if it exceeds timeout_sec.
+    """Run fn on the current thread; warn if it exceeds timeout_sec.
 
-    Prefer this over SIGALRM: signal timeouts can interrupt cterasdk/asyncio
-    internals and leave the collector process permanently wedged.
+    cterasdk binds asyncio Futures to the loop used at login. Running SDK calls
+    in a worker thread causes: "Future attached to a different loop" and every
+    filer becomes a stub row. SIGALRM is also unsafe here — it can interrupt
+    asyncio callbacks and wedge the collector.
+
+    Hard abort of a hung call is handled by filer_jobs.sh process timeout and
+    dashboard stale-job recovery, not by preempting the SDK mid-call.
     """
-    def _runner():
-        _ensure_asyncio_event_loop()
-        return fn()
-
-    fut = _EXECUTOR.submit(_runner)
+    start = time.monotonic()
     try:
-        return fut.result(timeout=timeout_sec)
-    except FuturesTimeout:
-        logging.warning("%s timed out after %ss", label, timeout_sec)
-        raise TimeoutError(f"{label} timed out after {timeout_sec}s")
+        return fn()
+    finally:
+        elapsed = time.monotonic() - start
+        if elapsed > timeout_sec:
+            logging.warning(
+                "%s took %.1fs (soft budget %ss); continuing on same event loop",
+                label,
+                elapsed,
+                timeout_sec,
+            )
 
 
 # --- helpers (put near the top of the file once) ---
@@ -355,9 +357,9 @@ def write_status(self, p_filename, all_tenants):
     get_list = ['config', 'status', 'proc/cloudsync', 'proc/time/', 'proc/storage/summary', 'proc/perfMonitor']
     logging.info("Gathering status for all filers...")
 
-    # Per-call timeouts via ThreadPoolExecutor (module-level _with_timeout).
-    # Do NOT use SIGALRM here: interrupting cterasdk/asyncio mid-callback can wedge
-    # the collector process forever and leave the dashboard job stuck on "Running".
+    # Soft budgets only (module-level _with_timeout runs on this thread / event loop).
+    # Do not use worker threads (different-loop errors) or SIGALRM (wedges asyncio).
+    # Hard hangs are killed by filer_jobs.sh process timeout + stale-job recovery.
     TIMEOUT_API   = 12
     TIMEOUT_CLI   = 8
     TIMEOUT_SHELL = 8
@@ -416,7 +418,7 @@ def write_status(self, p_filename, all_tenants):
             return str(result.text)
         return str(result) if result is not None else ""
 
-    # ---------- filer loop with thread-pool timeouts + per-filer budget ----------
+    # ---------- filer loop (same-thread SDK calls + soft budgets) ----------
     for filer in (get_filers(self, all_tenants) or []):
         name = getattr(filer, "name", "?")
         connected = bool(getattr(filer, "_md_connected", _filer_is_connected(filer)))
