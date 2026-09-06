@@ -79,17 +79,23 @@ is_due() {
   fi
   epoch_last="$(cat "${last_file}" 2>/dev/null || echo 0)"
   [[ ! "${epoch_last}" =~ ^[0-9]+$ ]] && return 0
-  (( now - epoch_last >= interval_minutes * 60 ))
+  # Avoid bare ((...)) as the function's last command under "set -e"
+  # (a false comparison would otherwise abort the whole scheduler).
+  if (( now - epoch_last >= interval_minutes * 60 )); then
+    return 0
+  fi
+  return 1
 }
 
-run_due_job() {
+# Claim due work under the lock, then release before long collectors run.
+# Holding flock for the entire filer job made cron print "already running"
+# for hours/days whenever one portal was slow or wedged.
+claim_due_job() {
   local env_id="$1"
   local env_name="$2"
   local job_name="$3"
   local interval_minutes="$4"
   local env_file="${RUNTIME_DIR}/environment-${env_id}.env"
-  local script_path="${SCRIPT_DIR}/${job_name}_jobs.sh"
-  local log_path="${LOG_DIR}/${job_name}.log"
 
   interval_minutes="$(sanitize_minutes "${interval_minutes}")"
 
@@ -104,6 +110,20 @@ run_due_job() {
     return 0
   fi
 
+  # Claim the interval slot now so a later cron tick will not double-start.
+  mark_run "${job_name}" "${env_id}"
+  DUE_JOBS+=("${env_id}"$'\t'"${env_name}"$'\t'"${job_name}"$'\t'"${env_file}")
+  log "Claimed ${job_name} for ${env_name} (id=${env_id}); will run after scheduler lock is released."
+}
+
+run_claimed_job() {
+  local env_id="$1"
+  local env_name="$2"
+  local job_name="$3"
+  local env_file="$4"
+  local script_path="${SCRIPT_DIR}/${job_name}_jobs.sh"
+  local log_path="${LOG_DIR}/${job_name}.log"
+
   append_job_log "${job_name}" "Scheduler launching ${job_name}_jobs.sh for environment ${env_name} (id=${env_id})."
   log "Running ${job_name} for ${env_name} (id=${env_id}) using ${env_file}"
   if FEATHERDASH_CONFIG="${env_file}" "${script_path}" >> "${log_path}" 2>&1; then
@@ -114,7 +134,6 @@ run_due_job() {
     append_job_log "${job_name}" "Scheduler saw ${job_name}_jobs.sh fail for environment ${env_name} (id=${env_id})."
     log "Failed ${job_name} for ${env_name} (id=${env_id})"
   fi
-  mark_run "${job_name}" "${env_id}"
 }
 
 paused_setting="$(sqlite3 -tabs "${DB_PATH}" "SELECT COALESCE((SELECT setting_value FROM app_settings WHERE setting_key = 'scheduler_paused' LIMIT 1),'false');" 2>/dev/null || echo false)"
@@ -130,8 +149,23 @@ if [[ -z "${rows}" ]]; then
   exit 0
 fi
 
+DUE_JOBS=()
 while IFS=$'\t' read -r env_id env_name portal_minutes filer_minutes; do
   [[ -z "${env_id:-}" ]] && continue
-  run_due_job "${env_id}" "${env_name}" "portal" "${portal_minutes}"
-  run_due_job "${env_id}" "${env_name}" "filer" "${filer_minutes}"
+  claim_due_job "${env_id}" "${env_name}" "portal" "${portal_minutes}"
+  claim_due_job "${env_id}" "${env_name}" "filer" "${filer_minutes}"
 done <<< "${rows}"
+
+# Drop the lock before collectors run so the next cron tick can schedule other work.
+flock -u 9 || true
+exec 9>&- || true
+
+if [[ "${#DUE_JOBS[@]}" -eq 0 ]]; then
+  log "No due collector jobs this tick."
+  exit 0
+fi
+
+for entry in "${DUE_JOBS[@]}"; do
+  IFS=$'\t' read -r env_id env_name job_name env_file <<< "${entry}"
+  run_claimed_job "${env_id}" "${env_name}" "${job_name}" "${env_file}"
+done
