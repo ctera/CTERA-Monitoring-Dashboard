@@ -91,7 +91,16 @@ def _ensure_asyncio_event_loop():
         asyncio.set_event_loop(asyncio.new_event_loop())
 
 def _with_timeout(timeout_sec, label, fn):
-    fut = _EXECUTOR.submit(fn)
+    """Run fn in a worker thread; raise TimeoutError if it exceeds timeout_sec.
+
+    Prefer this over SIGALRM: signal timeouts can interrupt cterasdk/asyncio
+    internals and leave the collector process permanently wedged.
+    """
+    def _runner():
+        _ensure_asyncio_event_loop()
+        return fn()
+
+    fut = _EXECUTOR.submit(_runner)
     try:
         return fut.result(timeout=timeout_sec)
     except FuturesTimeout:
@@ -346,37 +355,14 @@ def write_status(self, p_filename, all_tenants):
     get_list = ['config', 'status', 'proc/cloudsync', 'proc/time/', 'proc/storage/summary', 'proc/perfMonitor']
     logging.info("Gathering status for all filers...")
 
-    # ---------- per-call timeouts + wrappers (signal-based, no threads) ----------
-    import signal
-    import time
-    from contextlib import contextmanager
-
-    # tune these in seconds
+    # Per-call timeouts via ThreadPoolExecutor (module-level _with_timeout).
+    # Do NOT use SIGALRM here: interrupting cterasdk/asyncio mid-callback can wedge
+    # the collector process forever and leave the dashboard job stuck on "Running".
     TIMEOUT_API   = 12
     TIMEOUT_CLI   = 8
     TIMEOUT_SHELL = 8
     TIMEOUT_TEL   = 5
     BUDGET_PER_FILER = 30  # hard ceiling per filer
-
-    @contextmanager
-    def _timeout_after(seconds, label):
-        # Use POSIX timer so we don't spawn threads
-        def _handler(signum, frame):
-            raise TimeoutError(f"{label} timed out after {seconds}s")
-        prev_handler = signal.getsignal(signal.SIGALRM)
-        signal.signal(signal.SIGALRM, _handler)
-        # ITIMER_REAL uses real time, delivers SIGALRM
-        signal.setitimer(signal.ITIMER_REAL, seconds)
-        try:
-            yield
-        finally:
-            # clear timer and restore handler
-            signal.setitimer(signal.ITIMER_REAL, 0)
-            signal.signal(signal.SIGALRM, prev_handler)
-
-    def _with_timeout(seconds, label, fn):
-        with _timeout_after(seconds, label):
-            return fn()
 
     def api_get_multi_safe(self, filer, path, lst, label="get_multi"):
         return _with_timeout(
@@ -430,7 +416,7 @@ def write_status(self, p_filename, all_tenants):
             return str(result.text)
         return str(result) if result is not None else ""
 
-    # ---------- your existing loop, now using the signal timeouts + per-filer budget ----------
+    # ---------- filer loop with thread-pool timeouts + per-filer budget ----------
     for filer in (get_filers(self, all_tenants) or []):
         name = getattr(filer, "name", "?")
         connected = bool(getattr(filer, "_md_connected", _filer_is_connected(filer)))

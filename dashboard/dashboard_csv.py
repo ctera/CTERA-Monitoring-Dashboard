@@ -42,6 +42,9 @@ DEFAULT_HIDDEN_TASK_NAMES = {
     "syslogconnectorstatusnotifier",
 }
 JOB_NAMES = ("portal", "filer")
+# Auto-recover wedged collectors: no log progress, or absolute max runtime.
+JOB_STALE_LOG_SECONDS = int(os.environ.get("FEATHERDASH_JOB_STALE_SECONDS", "900"))
+JOB_MAX_RUNTIME_SECONDS = int(os.environ.get("FEATHERDASH_JOB_MAX_RUNTIME_SECONDS", "7200"))
 CSV_READ_CACHE_MAX = 64
 _CSV_READ_CACHE = OrderedDict()
 _YAML_FILE_CACHE = {}
@@ -736,17 +739,93 @@ def _upgrade_completion_hint(status, tail_text):
     return f"{base_tail}\n\n{note}"
 
 
+def _pid_is_alive(pid):
+    try:
+        os.kill(int(pid), 0)
+        return True
+    except Exception:
+        return False
+
+
+def _parse_job_started_at(value):
+    raw = str(value or "").strip()
+    if not raw:
+        return None
+    try:
+        if raw.endswith("Z"):
+            raw = raw[:-1] + "+00:00"
+        dt = datetime.fromisoformat(raw)
+        if dt.tzinfo is not None:
+            from datetime import timezone
+            dt = dt.astimezone(timezone.utc).replace(tzinfo=None)
+        return dt
+    except Exception:
+        return None
+
+
+def _kill_job_process_tree(pid):
+    """Kill a dashboard-launched job (start_new_session=True → pid is group leader)."""
+    try:
+        pid_i = int(pid)
+    except Exception:
+        return
+    import time as _time
+    for sig in (15, 9):
+        try:
+            os.killpg(pid_i, sig)
+        except Exception:
+            try:
+                os.kill(pid_i, sig)
+            except Exception:
+                return
+        if sig == 15:
+            _time.sleep(0.4)
+            if not _pid_is_alive(pid_i):
+                return
+
+
+def _job_is_stale(state, log_path):
+    """True when a 'running' job is wedged (silent log, or over max runtime)."""
+    started = _parse_job_started_at(state.get("started_at"))
+    now = datetime.utcnow()
+    age = (now - started).total_seconds() if started is not None else None
+    if age is not None and age >= JOB_MAX_RUNTIME_SECONDS:
+        return True, "max_runtime"
+    # Do not use log mtime until the job has been running long enough; otherwise a
+    # freshly started job can look "stale" against the previous run's log file.
+    if age is None or age < JOB_STALE_LOG_SECONDS:
+        return False, ""
+    try:
+        if log_path and os.path.exists(log_path):
+            quiet = now.timestamp() - os.path.getmtime(log_path)
+            if quiet >= JOB_STALE_LOG_SECONDS:
+                return True, "stale_log"
+        else:
+            return True, "missing_log"
+    except Exception:
+        pass
+    return False, ""
+
+
 def _job_status(job_name):
     state = _read_state(job_name)
     log_path = _log_path(job_name)
     status = state.get("status", "idle")
     pid = state.get("pid", "")
-    if status == "running" and pid:
-        try:
-            os.kill(int(pid), 0)
-        except Exception:
-            status = "unknown"
-            state["status"] = status
+    if status == "running":
+        pid_alive = bool(pid) and _pid_is_alive(pid)
+        stale, _reason = _job_is_stale(state, log_path)
+        if not pid_alive or stale:
+            if pid_alive:
+                _kill_job_process_tree(pid)
+            status = "failed"
+            state = {
+                "status": status,
+                "started_at": state.get("started_at", ""),
+                "finished_at": _now_utc_iso(),
+                "last_exit": state.get("last_exit") or "124",
+                "pid": "",
+            }
             _write_state(job_name, state)
     return {
         "job": job_name,
