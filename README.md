@@ -109,29 +109,60 @@ This stages the package under `/tmp/ctera-monitoring-dashboard` and installs to:
 
 ## Install behind an HTTP/HTTPS proxy
 
-If the server reaches GitHub, OS repos, or PyPI only through a proxy, export the standard proxy variables **before** the install command (same shell). Include the username and password in the URL when the proxy requires authentication:
+Use this when the monitoring server cannot reach the internet directly and must go through a company proxy.
+
+**Step 1 — Set the proxy (same SSH session you will use for install)**
+
+Replace the placeholders with your real values:
+
+- `PROXYUSER` = proxy username
+- `PROXYPASS` = proxy password
+- `proxy.example.com:8080` = proxy hostname and port
 
 ```bash
 export http_proxy='http://PROXYUSER:PROXYPASS@proxy.example.com:8080'
 export https_proxy='http://PROXYUSER:PROXYPASS@proxy.example.com:8080'
 export HTTP_PROXY="$http_proxy"
 export HTTPS_PROXY="$https_proxy"
-# Optional: skip proxy for local/internal hosts
-export no_proxy='localhost,127.0.0.1,.group.wan'
+export no_proxy='localhost,127.0.0.1'
 export NO_PROXY="$no_proxy"
 ```
 
-Then run the same one-command install:
+Example (username `myuser`, password `secret`, proxy `10.0.0.5:3128`):
+
+```bash
+export http_proxy='http://myuser:secret@10.0.0.5:3128'
+export https_proxy='http://myuser:secret@10.0.0.5:3128'
+export HTTP_PROXY="$http_proxy"
+export HTTPS_PROXY="$https_proxy"
+export no_proxy='localhost,127.0.0.1'
+export NO_PROXY="$no_proxy"
+```
+
+If the password itself contains `@`, `:`, `/`, or `#`, replace those characters before pasting:
+
+| Character in password | Write this instead |
+| --- | --- |
+| `@` | `%40` |
+| `:` | `%3A` |
+| `/` | `%2F` |
+| `#` | `%23` |
+| ` ` (space) | `%20` |
+
+Example: password is `p@ss:rd` → use `p%40ss%3Ard` in the URL:
+
+```bash
+export http_proxy='http://myuser:p%40ss%3Ard@10.0.0.5:3128'
+export https_proxy='http://myuser:p%40ss%3Ard@10.0.0.5:3128'
+```
+
+**Step 2 — Run install with `sudo -E`**
+
+Important: use `sudo -E` (keep the ` -E `). Plain `sudo` drops the proxy settings and the install will fail.
 
 ```bash
 cd /tmp && curl -L https://github.com/ctera/CTERA-Monitoring-Dashboard/archive/refs/heads/main.tar.gz -o ctera-monitoring-dashboard.tar.gz && rm -rf /tmp/ctera-monitoring-dashboard && mkdir -p /tmp/ctera-monitoring-dashboard && sudo tar -xzf /tmp/ctera-monitoring-dashboard.tar.gz -C /tmp/ctera-monitoring-dashboard --strip-components=1 && cd /tmp/ctera-monitoring-dashboard && sudo -E bash ./install.sh
 ```
-
-Notes:
-
-- Use `sudo -E` so `http(s)_proxy` is preserved for `pip` and package managers under root.
-- If the proxy password contains special characters (`@`, `:`, `/`, `#`, etc.), URL-encode them (for example `@` → `%40`).
-- Example with encoded password: `http://myuser:p%40ssw%3Ard@10.0.0.5:3128`
 
 ---
 
@@ -189,23 +220,28 @@ cd /tmp && sudo rm -rf /tmp/ctera-monitoring-dashboard && curl -L https://github
 
 ## Upgrade option 4: One-command upgrade behind a proxy
 
-Use this from SSH when the server needs a proxy for GitHub / OS repos / PyPI.
+Use this from SSH when the server needs a proxy. Prefer **Upgrade option 2** (UI) when you can — the UI has separate username/password fields and does the special-character handling for you.
+
+**Step 1 — Set the proxy (same SSH session)**
 
 ```bash
 export http_proxy='http://PROXYUSER:PROXYPASS@proxy.example.com:8080'
 export https_proxy='http://PROXYUSER:PROXYPASS@proxy.example.com:8080'
 export HTTP_PROXY="$http_proxy"
 export HTTPS_PROXY="$https_proxy"
-export no_proxy='localhost,127.0.0.1,.group.wan'
+export no_proxy='localhost,127.0.0.1'
 export NO_PROXY="$no_proxy"
-
-cd /tmp && sudo rm -rf /tmp/ctera-monitoring-dashboard && curl -L https://github.com/ctera/CTERA-Monitoring-Dashboard/archive/refs/heads/main.tar.gz -o /tmp/ctera-monitoring-dashboard.tar.gz && sudo mkdir -p /tmp/ctera-monitoring-dashboard && sudo tar -xzf /tmp/ctera-monitoring-dashboard.tar.gz -C /tmp/ctera-monitoring-dashboard --strip-components=1 && cd /tmp/ctera-monitoring-dashboard && sudo -E bash ./upgrade.sh --install-dir /opt/monitoring/ctera-monitoring-dashboard
 ```
 
-Notes:
+If the password contains `@`, `:`, `/`, `#`, or spaces, replace them using the same table in **Install behind an HTTP/HTTPS proxy** above.
 
-- Use `sudo -E` so root keeps the proxy environment for `curl` / `pip` / package managers.
-- URL-encode special characters in the proxy password (same rules as install).
+**Step 2 — Run upgrade with `sudo -E`**
+
+Important: use `sudo -E` (keep the ` -E `). Plain `sudo` drops the proxy settings and the upgrade will fail.
+
+```bash
+cd /tmp && sudo rm -rf /tmp/ctera-monitoring-dashboard && curl -L https://github.com/ctera/CTERA-Monitoring-Dashboard/archive/refs/heads/main.tar.gz -o /tmp/ctera-monitoring-dashboard.tar.gz && sudo mkdir -p /tmp/ctera-monitoring-dashboard && sudo tar -xzf /tmp/ctera-monitoring-dashboard.tar.gz -C /tmp/ctera-monitoring-dashboard --strip-components=1 && cd /tmp/ctera-monitoring-dashboard && sudo -E bash ./upgrade.sh --install-dir /opt/monitoring/ctera-monitoring-dashboard
+```
 
 What upgrade does:
 
