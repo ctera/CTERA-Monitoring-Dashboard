@@ -120,7 +120,8 @@ def _reauth(sess):
         return False
     try:
         _ensure_asyncio_event_loop()
-        sess.login(user, password)
+        verify_ssl = bool(getattr(sess, "_featherdash_verify_ssl", False))
+        portal_login(sess, user, password, verify_ssl=verify_ssl)
         if global_admin:
             sess.portals.browse_global_admin()
         logging.info("Re-authenticated.")
@@ -1474,6 +1475,179 @@ def configure_ctera_tls(verify_ssl):
         pass
 
 
+def _portal_prelogin_opener(verify_ssl=False):
+    import http.cookiejar
+    import ssl
+    import urllib.request
+
+    jar = http.cookiejar.CookieJar()
+    handlers = [urllib.request.HTTPCookieProcessor(jar)]
+    if not verify_ssl:
+        handlers.insert(0, urllib.request.HTTPSHandler(context=ssl._create_unverified_context()))
+    return urllib.request.build_opener(*handlers), jar
+
+
+def _portal_http_get(opener, url):
+    import urllib.error
+
+    try:
+        with opener.open(url, timeout=30) as resp:
+            return getattr(resp, "geturl", lambda: url)(), getattr(resp, "status", 200), resp.headers
+    except urllib.error.HTTPError as e:
+        return getattr(e, "url", url), e.code, e.headers
+    except Exception as e:
+        logging.debug("Pre-login GET %s failed: %s", url, e)
+        return None, None, None
+
+
+def _portal_post_consent(opener, consent_url):
+    import urllib.error
+    import urllib.request
+
+    req = urllib.request.Request(
+        consent_url,
+        data=b"",
+        method="POST",
+        headers={
+            "Accept": "application/json, text/plain, */*",
+            "Content-Type": "text/xml; charset=UTF-8",
+        },
+    )
+    try:
+        with opener.open(req, timeout=30) as resp:
+            return getattr(resp, "status", 200), resp.headers
+    except urllib.error.HTTPError as e:
+        return e.code, e.headers
+    except Exception as e:
+        logging.debug("Consent POST failed: %s", e)
+        return None, None
+
+
+def accept_portal_consent(sess, verify_ssl=False, opener=None, jar=None):
+    """Reach local-login mode: /admin/bypass + ACCEPT until login.html?bypass=true.
+
+    Returns (opener, jar, base_url) for a follow-on j_security_check login.
+    """
+    context_name = getattr(sess, "context", None) or "admin"
+    host = sess.host()
+    base = f"https://{host}/{context_name.strip('/')}/"
+    consent_url = f"{base}public/consent?format=jsonext"
+    entry_url = f"{base}bypass" if context_name == "admin" else f"{base}login.html"
+
+    if opener is None or jar is None:
+        opener, jar = _portal_prelogin_opener(verify_ssl=verify_ssl)
+
+    logging.info("Opening local-login entry page %s ...", entry_url)
+    _portal_http_get(opener, entry_url)
+
+    for attempt in range(1, 6):
+        logging.info("Accepting portal consent (attempt %s/5) ...", attempt)
+        code, _headers = _portal_post_consent(opener, consent_url)
+        if code in (404, 405, 501):
+            logging.debug("Consent endpoint not present (HTTP %s); continuing without it.", code)
+            break
+        if code is not None and code < 400:
+            logging.info("Consent ACCEPT returned HTTP %s.", code)
+        elif code is not None:
+            logging.info("Consent ACCEPT returned HTTP %s; retrying.", code)
+        final_url, _status, _ = _portal_http_get(opener, entry_url)
+        if final_url and "bypass=true" in final_url:
+            logging.info("Local login page ready: %s", final_url)
+            break
+        if final_url and "consent=true" in final_url:
+            logging.info("Still on consent page; accepting again.")
+
+    try:
+        cookies = {c.name: c.value for c in jar}
+        if cookies:
+            sess.default.cookie_jar.update_cookies(cookies, sess.default.baseurl)
+    except Exception as e:
+        logging.debug("Could not copy pre-login cookies into SDK session: %s", e)
+
+    return opener, jar, base
+
+
+def _local_security_check_login(opener, jar, base, username, password):
+    """Browser admin form posts to action=\"j_security_check\" (not j_spring / api/login)."""
+    import urllib.error
+    import urllib.parse
+    import urllib.request
+
+    url = f"{base}j_security_check"
+    body = urllib.parse.urlencode({"j_username": username, "j_password": password}).encode()
+    req = urllib.request.Request(
+        url,
+        data=body,
+        method="POST",
+        headers={
+            "Content-Type": "application/x-www-form-urlencoded",
+            "Referer": f"{base}login.html?bypass=true",
+        },
+    )
+    try:
+        with opener.open(req, timeout=30) as resp:
+            return getattr(resp, "geturl", lambda: url)(), getattr(resp, "status", 200), resp.headers
+    except urllib.error.HTTPError as e:
+        return getattr(e, "url", url), e.code, e.headers
+    except Exception as e:
+        logging.warning("j_security_check failed: %s", e)
+        return None, None, None
+
+
+def _apply_jar_session_to_sdk(sess, jar):
+    """Attach urllib JSESSIONID to the SDK and start the CTERA session (skips /api/login)."""
+    cookies = {c.name: c.value for c in jar}
+    jsession = cookies.get("JSESSIONID")
+    if not jsession:
+        raise RuntimeError("No JSESSIONID after local form login")
+    # Prefer SDK helper when present; it also starts the session object.
+    if hasattr(sess, "set_session_id"):
+        sess.set_session_id(jsession)
+    else:
+        sess.default.cookie_jar.update_cookies(cookies, sess.default.baseurl)
+        sess.session().start_session(sess)
+    logging.info("Authenticated via j_security_check (JSESSIONID applied to SDK).")
+
+
+def portal_login(sess, username, password, verify_ssl=False):
+    """SAML bypass + consent + local j_security_check, then bind session into cterasdk.
+
+    On SAML portals, /admin/api/login (SDK default) often returns 403 even with a valid
+    local GA password. The admin UI posts to j_security_check after /admin/bypass.
+    """
+    opener, jar, base = accept_portal_consent(sess, verify_ssl=verify_ssl)
+
+    final_url, code, headers = _local_security_check_login(opener, jar, base, username, password)
+    logging.info("j_security_check -> HTTP %s final=%s", code, final_url)
+
+    # Some portals bounce once more through consent after credentials.
+    loc = ""
+    if headers:
+        try:
+            loc = headers.get("Location") or headers.get("location") or ""
+        except Exception:
+            loc = ""
+    if (final_url and "consent=true" in str(final_url)) or ("consent=true" in str(loc)):
+        logging.info("Post-login consent gate; accepting again ...")
+        _portal_post_consent(opener, f"{base}public/consent?format=jsonext")
+        _portal_http_get(opener, f"{base}bypass")
+        final_url, code, headers = _local_security_check_login(opener, jar, base, username, password)
+        logging.info("j_security_check retry -> HTTP %s final=%s", code, final_url)
+
+    try:
+        _apply_jar_session_to_sdk(sess, jar)
+        return
+    except Exception as bind_exc:
+        logging.info("Could not bind j_security_check session (%s); falling back to SDK login.", bind_exc)
+
+    try:
+        sess.login(username, password)
+    except Exception as first_exc:
+        logging.info("SDK login failed (%s); re-accepting consent and retrying once.", first_exc)
+        accept_portal_consent(sess, verify_ssl=verify_ssl, opener=opener, jar=jar)
+        sess.login(username, password)
+
+
 def safe_attr(obj, path, default='N/A'):
     current = obj
     for part in path.split('.'):
@@ -1528,11 +1702,12 @@ def main():
     sess = Session(args.host)
     try:
         _ensure_asyncio_event_loop()
-        sess.login(args.user, args.password)
+        portal_login(sess, args.user, args.password, verify_ssl=args.verify_ssl)
         sess._featherdash_user = args.user
         sess._featherdash_password = args.password
         sess._featherdash_global_admin = args.global_admin
         sess._featherdash_tls_host = args.host
+        sess._featherdash_verify_ssl = bool(args.verify_ssl)
 
         if args.mode == "filers":
             if args.global_admin and args.tenant and not args.all_tenants:

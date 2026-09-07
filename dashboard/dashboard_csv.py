@@ -3148,8 +3148,12 @@ def _save_environment(payload):
     ]
     merged["environment_name"] = name
     for field in fields:
-        if field in payload:
-            merged[field] = payload.get(field)
+        if field not in payload:
+            continue
+        # Client edit form sends empty ssh_key_path when not re-uploading; keep the saved path.
+        if field in ("ssh_key_path", "jump_ssh_key_path") and not str(payload.get(field) or "").strip():
+            continue
+        merged[field] = payload.get(field)
     merged["sudo_required"] = 1 if _bool_setting(payload.get("sudo_required"), bool(current.get("sudo_required")) if current else True) else 0
     merged["jump_host_enabled"] = 1 if _bool_setting(payload.get("jump_host_enabled"), bool(current.get("jump_host_enabled")) if current else False) else 0
     merged["main_db_via_jump_preconfigured"] = 1 if _bool_setting(payload.get("main_db_via_jump_preconfigured"), bool(current.get("main_db_via_jump_preconfigured")) if current else False) else 0
@@ -3289,7 +3293,8 @@ def _save_environment(payload):
                 ),
             )
         conn.commit()
-    return _list_environments(include_secret=False)
+    # Always return the enriched list (includes last portal/filer success timestamps).
+    return _environment_payload()["items"]
 
 
 def _delete_environment(env_id):
@@ -3298,7 +3303,7 @@ def _delete_environment(env_id):
     with _notifications_conn() as conn:
         conn.execute("DELETE FROM environments WHERE id = ?", (int(env_id),))
         conn.commit()
-    return _list_environments(include_secret=False)
+    return _environment_payload()["items"]
 
 
 def _environment_payload():
@@ -6340,6 +6345,7 @@ async function runAISummary(){
         envMainDbIp: env.main_db_ip || '',
         envMainDbSshPort: String(env.main_db_ssh_port || 22),
         envInitialSshMode: env.ssh_mode || 'root_password',
+        envInitialSshUsername: env.ssh_username || 'root',
         envOpenAiKey: '',
         envPortalSchedule: String(env.portal_schedule_minutes || 60),
         envFilerSchedule: String(env.filer_schedule_minutes || 60),
@@ -6573,6 +6579,7 @@ async function runAISummary(){
         uploadedJumpKeyName = uploadedJumpKey.files[0].name || '';
         uploadedJumpKeyContent = await uploadedJumpKey.files[0].text();
       }
+      const current = currentEditingEnvironment();
       return {
         id: editingEnvironmentId,
         environment_name: document.getElementById('environmentName').value,
@@ -6590,6 +6597,7 @@ async function runAISummary(){
         jump_ssh_password: document.getElementById('envJumpSshPassword').value || '',
         jump_ssh_private_key_name: uploadedJumpKeyName,
         jump_ssh_private_key_content: uploadedJumpKeyContent,
+        jump_ssh_key_path: uploadedJumpKeyContent ? '' : ((current && current.jump_ssh_key_path) || ''),
         main_db_ip: document.getElementById('envMainDbIp').value,
         main_db_ssh_port: document.getElementById('envMainDbSshPort').value || '22',
         pg_host: document.getElementById('envMainDbIp').value,
@@ -6603,7 +6611,7 @@ async function runAISummary(){
         enabled: document.getElementById('envEnabled').checked,
         ssh_mode: document.getElementById('envInitialSshMode').value,
         ssh_username: document.getElementById('envInitialSshUsername').value || 'root',
-        ssh_key_path: '',
+        ssh_key_path: uploadedKeyContent ? '' : ((current && current.ssh_key_path) || ''),
         ssh_password: document.getElementById('envInitialSshPassword').value || '',
         ssh_private_key_name: uploadedKeyName,
         ssh_private_key_content: uploadedKeyContent,
@@ -6667,6 +6675,9 @@ async function runAISummary(){
         if (!resp.ok || !data.ok) throw new Error(data.error || 'Save failed');
         environmentConfig.items = data.items || [];
         environmentConfig.count = data.count || environmentConfig.items.length;
+        if (typeof data.scheduler_paused !== 'undefined') {
+          environmentConfig.scheduler_paused = Boolean(data.scheduler_paused);
+        }
         renderEnvironmentSelector();
         renderEnvironmentList();
         clearEnvironmentForm();
@@ -7456,6 +7467,8 @@ async function runAISummary(){
           <ul class="about-list">
             <li>Make sure you have created a read-only administrator in Global Admin. We recommend naming that user <strong>monitoring</strong>.</li>
             <li>Know the password for the read-only administrator before starting portal setup.</li>
+            <li>If <strong>Global Administrators Access Control</strong> (IP allowlist) is enabled on the portal, add this monitoring server’s IP there. Otherwise collectors can fail with HTTP 403 even when browser login from your PC works.</li>
+            <li>Path on the portal: <strong>Settings → Control Panel → Global Administrators Access Control</strong>.</li>
           </ul>
         </article>
         <article class="notify-card">
@@ -9386,7 +9399,29 @@ def environments_save():
     payload = request.get_json(force=True, silent=True) or {}
     try:
         items = _save_environment(payload)
-        return jsonify({"ok": True, "items": items, "count": len(items)})
+        # Keep collector runtime env in sync when credentials/settings change (Save Only).
+        try:
+            env_id = payload.get("id")
+            if not env_id and items:
+                name = str(payload.get("environment_name") or "").strip().lower()
+                match = next((item for item in items if str(item.get("name") or "").strip().lower() == name), None)
+                env_id = match.get("id") if match else None
+            if env_id:
+                env = next(
+                    (item for item in _list_environments(include_secret=True) if int(item["id"]) == int(env_id)),
+                    None,
+                )
+                runtime_path = os.path.join(_runtime_env_dir(), f"environment-{int(env_id)}.env")
+                if env and (os.path.exists(runtime_path) or str(env.get("ssh_key_path") or "").strip()):
+                    _write_runtime_env_file(env)
+        except Exception:
+            pass
+        return jsonify({
+            "ok": True,
+            "items": items,
+            "count": len(items),
+            "scheduler_paused": bool(_load_app_settings().get("scheduler_paused")),
+        })
     except Exception as exc:
         return jsonify({"ok": False, "error": str(exc)}), 400
 
@@ -9407,7 +9442,7 @@ def environments_bootstrap():
         runtime_env_path = _write_runtime_env_file(env)
         portal_job_status, portal_job_started = _launch_job("portal", target_id)
         filer_job_status, filer_job_started = _launch_job("filer", target_id)
-        refreshed = _list_environments(include_secret=False)
+        refreshed = _environment_payload()["items"]
         return jsonify({
             "ok": True,
             "items": refreshed,
@@ -9420,6 +9455,7 @@ def environments_bootstrap():
             "filer_job_started": bool(filer_job_started),
             "filer_job_already_running": not bool(filer_job_started) and filer_job_status.get("status") == "running",
             "filer_job": filer_job_status,
+            "scheduler_paused": bool(_load_app_settings().get("scheduler_paused")),
         })
     except Exception as exc:
         return jsonify({"ok": False, "error": str(exc)}), 400
