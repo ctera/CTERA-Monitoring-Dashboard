@@ -26,7 +26,7 @@ This installer supports Ubuntu/Debian and RHEL-style systems (`dnf` / `yum`) **w
 | CTERA Portal server OVA | Supported | Use the Portal OVA / portal Linux image when that is your standard host |
 | RHEL | Supported only when registered | Unregistered RHEL often cannot install `nginx` / `sshpass`; installer stops with register steps |
 | CentOS | Best effort | Older CentOS versions may require additional package adjustments |
-| Windows | Not supported | Windows can be used to download and upload files, but the dashboard service should run on Linux |
+| Windows | Not supported | Windows can be used to open docs or reach GitHub in a browser, but the dashboard service must run on Linux with outbound internet for install/upgrade |
 
 Required packages include `nginx` and `sshpass`. If install fails on RHEL because repos are missing, register the host with Red Hat subscription-manager, or use Ubuntu / Rocky / Alma / a CTERA Portal server OVA.
 
@@ -52,10 +52,13 @@ Review these requirements before adding a portal environment so bootstrap and co
 
 ### CTERA Access
 
-- Create a Global Admin user for the dashboard before setup starts.
-- A read-only Global Admin user can collect most dashboard data. We recommend naming that user `monitoring`.
-- Keep the Global Admin password available during portal environment setup.
-- Allow the monitoring server in **Settings → Control Panel → Global Administrators Access Control** (IP allowlist). Use the address the portal sees from that host (often its private/LAN IP). If the server is missing from this list, browser login from your PC can work while collectors on the server fail with HTTP 403 / `Authentication failed`.
+- Create a Global Admin user for the dashboard before setup starts. We recommend naming that user `monitoring`.
+- A **read-only** Global Admin can collect most portal and filer data.
+- Use a **read/write** Global Admin if you need filer **CPU**, **memory**, **disk**, or CloudSync DB size metrics (those require shell access on the filer).
+- Keep that administrator’s password available during portal environment setup.
+- If **Global Administrators Access Control** (IP allowlist) is enabled, add this monitoring server’s IP:
+  - Portal path: **Settings → Control Panel → Global Administrators Access Control**
+  - Use the address the portal sees from that host (often its private/LAN IP). If the server is missing from this list, browser login from your PC can work while collectors on the server fail with HTTP 403 / `Authentication failed`.
 - If Global Admin **SAML SSO** is enabled, the `monitoring` user must still have a **local password** set (required for `/admin/bypass` and API-style collection).
 - If **Display consent page before login** is enabled, collectors accept it automatically; you can also disable that page under **Settings → Global Settings → Consent Page** if your policy allows.
 
@@ -82,185 +85,53 @@ Review these requirements before adding a portal environment so bootstrap and co
 
 # Install
 
-There are three supported install options.
+Install requires outbound internet on the monitoring server for:
 
-## Install Options Summary
+- GitHub (download the package)
+- OS package repos (`apt` / `dnf` / `yum`: `nginx`, `sshpass`, Python, etc.)
+- PyPI (`pip install -r requirements.txt`)
 
-| Option | Method | Best For |
-|---|---|---|
-| Option 1 | Download ZIP from GitHub website and upload to server | Servers without internet access, or users who prefer WinSCP/SCP |
-| Option 2 | Download package directly on the Linux server | Servers with internet access to GitHub |
-| Option 3 | Clone repository with Git | Servers that should be updated later with `git pull` |
+There is **no offline / air-gapped installer**. Use the one-command install below.
 
-Most users should use **Install Option 2** or the quick tarball flow below.
+MainDB root (or sudo-to-root) access is required during setup. The installer switches ongoing access to an installed SSH key afterward.
 
-Fresh package installs use the bundled helper automatically.
-
-MainDB root access is required during setup. The initial connection can start with password or key authentication, either directly as `root` or through a user that can `sudo` to root, but the installer switches the ongoing workflow to certificate/key-based authentication.
-
----
-
-## Recommended Quick Install (Tarball)
-
-Use this when you want the shortest install path with the packaged installer:
+## One-command install
 
 ```bash
 cd /tmp && curl -L https://github.com/ctera/CTERA-Monitoring-Dashboard/archive/refs/heads/main.tar.gz -o ctera-monitoring-dashboard.tar.gz && rm -rf /tmp/ctera-monitoring-dashboard && mkdir -p /tmp/ctera-monitoring-dashboard && sudo tar -xzf /tmp/ctera-monitoring-dashboard.tar.gz -C /tmp/ctera-monitoring-dashboard --strip-components=1 && cd /tmp/ctera-monitoring-dashboard && sudo bash ./install.sh
 ```
 
-This uses `/tmp/ctera-monitoring-dashboard` only as a temporary staging folder for the package.
-The installer's default final application path is:
+This stages the package under `/tmp/ctera-monitoring-dashboard` and installs to:
 
 ```text
 /opt/monitoring/ctera-monitoring-dashboard
 ```
 
----
+## Install behind an HTTP/HTTPS proxy
 
-## Install Option 1: Download ZIP From GitHub Website and Upload to Server
-
-Use this option when you want to download the package from the GitHub website on your computer, then upload it to the Linux server with WinSCP, SCP, or another file transfer tool.
-
-### Step 1: Download the ZIP
-
-Open the repository in your browser:
-
-```text
-https://github.com/ctera/CTERA-Monitoring-Dashboard
-```
-
-Click:
-
-```text
-Code -> Download ZIP
-```
-
-This downloads a file similar to:
-
-```text
-CTERA-Monitoring-Dashboard-main.zip
-```
-
-Rename the downloaded file to:
-
-```text
-ctera-monitoring-dashboard.zip
-```
-
-### Step 2: Upload the ZIP to the Linux server
-
-Upload the ZIP file to:
-
-```text
-/tmp/ctera-monitoring-dashboard.zip
-```
-
-### Step 3: Install unzip if needed
-
-Run this on the Linux server:
+If the server reaches GitHub, OS repos, or PyPI only through a proxy, export the standard proxy variables **before** the install command (same shell). Include the username and password in the URL when the proxy requires authentication:
 
 ```bash
-sudo apt update
-sudo apt install -y unzip
+export http_proxy='http://PROXYUSER:PROXYPASS@proxy.example.com:8080'
+export https_proxy='http://PROXYUSER:PROXYPASS@proxy.example.com:8080'
+export HTTP_PROXY="$http_proxy"
+export HTTPS_PROXY="$https_proxy"
+# Optional: skip proxy for local/internal hosts
+export no_proxy='localhost,127.0.0.1,.group.wan'
+export NO_PROXY="$no_proxy"
 ```
 
-### Step 4: Extract into the application directory
-
-Run this on the Linux server:
+Then run the same one-command install:
 
 ```bash
-sudo rm -rf /opt/monitoring/ctera-monitoring-dashboard
-sudo mkdir -p /opt/monitoring/ctera-monitoring-dashboard
-
-sudo rm -rf /tmp/ctera-monitoring-dashboard-unzip
-sudo mkdir -p /tmp/ctera-monitoring-dashboard-unzip
-
-sudo unzip -q /tmp/ctera-monitoring-dashboard.zip -d /tmp/ctera-monitoring-dashboard-unzip
-
-sudo cp -a /tmp/ctera-monitoring-dashboard-unzip/CTERA-Monitoring-Dashboard-main/. /opt/monitoring/ctera-monitoring-dashboard/
+cd /tmp && curl -L https://github.com/ctera/CTERA-Monitoring-Dashboard/archive/refs/heads/main.tar.gz -o ctera-monitoring-dashboard.tar.gz && rm -rf /tmp/ctera-monitoring-dashboard && mkdir -p /tmp/ctera-monitoring-dashboard && sudo tar -xzf /tmp/ctera-monitoring-dashboard.tar.gz -C /tmp/ctera-monitoring-dashboard --strip-components=1 && cd /tmp/ctera-monitoring-dashboard && sudo -E bash ./install.sh
 ```
 
-### Step 5: Run the installer
+Notes:
 
-```bash
-cd /opt/monitoring/ctera-monitoring-dashboard
-sudo bash ./install.sh
-```
-
-During the install, the packaged helper is installed automatically from the bundle in this release.
-
----
-
-## Install Option 2: Download Package Directly on Server
-
-Use this option when the Linux server has internet access and can reach GitHub.
-
-### Step 1: Install wget if needed
-
-```bash
-sudo apt update
-sudo apt install -y wget
-```
-
-### Step 2: Download the package
-
-```bash
-cd /tmp
-
-sudo rm -f ctera-monitoring-dashboard.tar.gz
-sudo wget -O ctera-monitoring-dashboard.tar.gz https://github.com/ctera/CTERA-Monitoring-Dashboard/archive/refs/heads/main.tar.gz
-```
-
-### Step 3: Extract into the application directory
-
-```bash
-sudo rm -rf /opt/monitoring/ctera-monitoring-dashboard
-sudo mkdir -p /opt/monitoring/ctera-monitoring-dashboard
-
-sudo tar -xzf /tmp/ctera-monitoring-dashboard.tar.gz \
-  -C /opt/monitoring/ctera-monitoring-dashboard \
-  --strip-components=1
-```
-
-### Step 4: Run the installer
-
-```bash
-cd /opt/monitoring/ctera-monitoring-dashboard
-sudo bash ./install.sh
-```
-
-During the install, the packaged helper is installed automatically from the bundle in this release.
-
----
-
-## Install Option 3: Clone Repository With Git
-
-Use this option only if the installed server should use `git pull` directly.
-
-### Step 1: Install Git
-
-```bash
-sudo apt update
-sudo apt install -y git
-```
-
-### Step 2: Clone the repository
-
-```bash
-sudo mkdir -p /opt/monitoring
-cd /opt/monitoring
-
-sudo git clone https://github.com/ctera/CTERA-Monitoring-Dashboard.git ctera-monitoring-dashboard
-cd ctera-monitoring-dashboard
-```
-
-### Step 3: Run the installer
-
-```bash
-sudo bash ./install.sh
-```
-
-During the install, the packaged helper is installed automatically from the bundle in this release.
+- Use `sudo -E` so `http(s)_proxy` is preserved for `pip` and package managers under root.
+- If the proxy password contains special characters (`@`, `:`, `/`, `#`, etc.), URL-encode them (for example `@` → `%40`).
+- Example with encoded password: `http://myuser:p%40ssw%3Ard@10.0.0.5:3128`
 
 ---
 
@@ -282,173 +153,21 @@ http://<server-ip>:8080/healthz
 
 # Upgrade
 
-There are three supported upgrade options.
+Upgrade also requires outbound internet (GitHub + OS repos + PyPI when packages change).
 
-## Upgrade Options Summary
-
-| Option | Method | Best For |
-|---|---|---|
-| Option 1 | Download ZIP from GitHub website and upload to server | Servers without internet access, or users who prefer WinSCP/SCP |
-| Option 2 | Download package directly on the Linux server | Servers with internet access to GitHub |
-| Option 3 | Git pull from cloned repository | Servers originally installed with `git clone` |
-
-Most users should use **Upgrade Option 2** or the one-command upgrade below.
-
----
-
-## Recommended One-Command Upgrade
-
-Use this when the Linux server can reach GitHub and you want the shortest supported upgrade path.
+## One-command upgrade
 
 ```bash
 cd /tmp && sudo rm -rf /tmp/ctera-monitoring-dashboard && curl -L https://github.com/ctera/CTERA-Monitoring-Dashboard/archive/refs/heads/main.tar.gz -o /tmp/ctera-monitoring-dashboard.tar.gz && sudo mkdir -p /tmp/ctera-monitoring-dashboard && sudo tar -xzf /tmp/ctera-monitoring-dashboard.tar.gz -C /tmp/ctera-monitoring-dashboard --strip-components=1 && cd /tmp/ctera-monitoring-dashboard && sudo bash ./upgrade.sh --install-dir /opt/monitoring/ctera-monitoring-dashboard
 ```
 
-What this does:
+Behind a proxy, export the same `http_proxy` / `https_proxy` variables as for install, then use `sudo -E bash ./upgrade.sh ...`.
+
+What upgrade does:
+
 - downloads the latest package under `/tmp`
-- extracts it into `/tmp/ctera-monitoring-dashboard`
-- runs `upgrade.sh` from the new package directory
 - creates a backup and restore script before changing the installed copy
 - preserves customer settings and merges new default threshold entries into `thresholds.yaml`
-
----
-
-## Upgrade Option 1: Download ZIP From GitHub Website and Upload to Server
-
-Use this option when you downloaded a newer ZIP from GitHub and uploaded it to the Linux server.
-
-### Step 1: Download the latest ZIP
-
-Open the repository in your browser:
-
-```text
-https://github.com/ctera/CTERA-Monitoring-Dashboard
-```
-
-Click:
-
-```text
-Code -> Download ZIP
-```
-
-Rename the downloaded file to:
-
-```text
-ctera-monitoring-dashboard.zip
-```
-
-### Step 2: Upload the ZIP to the Linux server
-
-Upload the ZIP file to:
-
-```text
-/tmp/ctera-monitoring-dashboard.zip
-```
-
-### Step 3: Install unzip if needed
-
-Run this on the Linux server:
-
-```bash
-sudo apt update
-sudo apt install -y unzip
-```
-
-### Step 4: Extract the upgrade package under `/tmp`
-
-Run this on the Linux server:
-
-```bash
-sudo rm -rf /tmp/ctera-monitoring-dashboard
-sudo rm -rf /tmp/ctera-monitoring-dashboard-unzip
-sudo mkdir -p /tmp/ctera-monitoring-dashboard
-sudo mkdir -p /tmp/ctera-monitoring-dashboard-unzip
-
-sudo unzip -q /tmp/ctera-monitoring-dashboard.zip -d /tmp/ctera-monitoring-dashboard-unzip
-
-sudo cp -a /tmp/ctera-monitoring-dashboard-unzip/CTERA-Monitoring-Dashboard-main/. /tmp/ctera-monitoring-dashboard/
-```
-
-### Step 5: Run the upgrade
-
-```bash
-cd /tmp/ctera-monitoring-dashboard
-sudo bash ./upgrade.sh
-```
-
-The upgrade script updates the installed application under:
-
-```text
-/opt/monitoring/ctera-monitoring-dashboard
-```
-
-It also creates a backup before applying the update.
-
-Current upgrade behavior:
-- preserves existing runtime configuration
-- preserves dashboard UI config
-- merges `thresholds.yaml` by keeping installed values and adding any missing shipped defaults
-
----
-
-## Upgrade Option 2: Download Package Directly on Server
-
-Use this option when the Linux server has internet access and can reach GitHub.
-
-### Step 1: Install wget if needed
-
-```bash
-sudo apt update
-sudo apt install -y wget
-```
-
-### Step 2: Download the latest package
-
-```bash
-cd /tmp
-
-sudo rm -f ctera-monitoring-dashboard.tar.gz
-sudo wget -O ctera-monitoring-dashboard.tar.gz https://github.com/ctera/CTERA-Monitoring-Dashboard/archive/refs/heads/main.tar.gz
-```
-
-### Step 3: Extract under `/tmp`
-
-```bash
-sudo rm -rf /tmp/ctera-monitoring-dashboard
-sudo mkdir -p /tmp/ctera-monitoring-dashboard
-
-sudo tar -xzf /tmp/ctera-monitoring-dashboard.tar.gz \
-  -C /tmp/ctera-monitoring-dashboard \
-  --strip-components=1
-```
-
-### Step 4: Run the upgrade
-
-```bash
-cd /tmp/ctera-monitoring-dashboard
-sudo bash ./upgrade.sh
-```
-
-The upgrade script updates the installed application under:
-
-```text
-/opt/monitoring/ctera-monitoring-dashboard
-```
-
-It also creates a backup before applying the update.
-
----
-
-## Upgrade Option 3: Git Pull From Cloned Repository
-
-Use this option only if the server was installed using `git clone`.
-
-```bash
-cd /opt/monitoring/ctera-monitoring-dashboard
-
-sudo git pull
-sudo bash ./upgrade.sh
-```
 
 ---
 

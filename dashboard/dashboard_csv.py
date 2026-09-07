@@ -7465,10 +7465,15 @@ async function runAISummary(){
         <article class="notify-card">
           <h4>CTERA Access</h4>
           <ul class="about-list">
-            <li>Make sure you have created a read-only administrator in Global Admin. We recommend naming that user <strong>monitoring</strong>.</li>
-            <li>Know the password for the read-only administrator before starting portal setup.</li>
-            <li>If <strong>Global Administrators Access Control</strong> (IP allowlist) is enabled on the portal, add this monitoring server’s IP there. Otherwise collectors can fail with HTTP 403 even when browser login from your PC works.</li>
-            <li>Path on the portal: <strong>Settings → Control Panel → Global Administrators Access Control</strong>.</li>
+            <li>Create a Global Admin user named <strong>monitoring</strong> (recommended) before portal setup.</li>
+            <li>A <strong>read-only</strong> Global Admin can collect most portal and filer data.</li>
+            <li>Use a <strong>read/write</strong> Global Admin if you need filer <strong>CPU</strong>, <strong>memory</strong>, <strong>disk</strong>, or CloudSync DB size metrics (those require shell access on the filer).</li>
+            <li>Know that administrator’s password before starting portal setup.</li>
+            <li>If <strong>Global Administrators Access Control</strong> (IP allowlist) is enabled on the portal, add this monitoring server’s IP there. Otherwise collectors can fail with HTTP 403 even when browser login from your PC works.
+              <ul style="margin:0.4rem 0 0 1.1rem; padding:0;">
+                <li>Path on the portal: <strong>Settings → Control Panel → Global Administrators Access Control</strong>.</li>
+              </ul>
+            </li>
           </ul>
         </article>
         <article class="notify-card">
