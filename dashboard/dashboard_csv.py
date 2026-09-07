@@ -11,6 +11,7 @@ from datetime import datetime, timedelta
 import json
 from collections import Counter, OrderedDict
 from email.message import EmailMessage
+from urllib.parse import quote, unquote, urlsplit, urlunsplit
 from werkzeug.security import generate_password_hash
 from werkzeug.security import check_password_hash
 from cryptography import x509
@@ -165,20 +166,117 @@ def _parse_env_settings_file(path):
     return values
 
 
+def _split_proxy_url(url):
+    """Return (host_url_without_auth, username, password)."""
+    raw = str(url or "").strip()
+    if not raw:
+        return "", "", ""
+    parsed = urlsplit(raw)
+    username = unquote(parsed.username) if parsed.username is not None else ""
+    password = unquote(parsed.password) if parsed.password is not None else ""
+    hostname = parsed.hostname or ""
+    if not hostname and not parsed.netloc:
+        return raw, username, password
+    if ":" in hostname and not hostname.startswith("["):
+        host_part = f"[{hostname}]"
+    else:
+        host_part = hostname
+    if parsed.port:
+        netloc = f"{host_part}:{parsed.port}"
+    else:
+        netloc = host_part
+    clean = urlunsplit((parsed.scheme, netloc, parsed.path, parsed.query, parsed.fragment))
+    return clean, username, password
+
+
+def _with_proxy_auth(url, username="", password=""):
+    clean, embedded_user, embedded_password = _split_proxy_url(url)
+    if not clean:
+        return ""
+    user = str(username or "").strip() or embedded_user
+    secret = password if password is not None and str(password) != "" else embedded_password
+    if not user:
+        return clean
+    parsed = urlsplit(clean)
+    hostname = parsed.hostname or ""
+    if ":" in hostname and not hostname.startswith("["):
+        host_part = f"[{hostname}]"
+    else:
+        host_part = hostname
+    auth = quote(user, safe="")
+    if secret:
+        auth = f"{auth}:{quote(str(secret), safe='')}"
+    if parsed.port:
+        netloc = f"{auth}@{host_part}:{parsed.port}"
+    else:
+        netloc = f"{auth}@{host_part}"
+    return urlunsplit((parsed.scheme, netloc, parsed.path, parsed.query, parsed.fragment))
+
+
+def _load_upgrade_network_settings_raw():
+    return _parse_env_settings_file(UPGRADE_NETWORK_SETTINGS_FILE)
+
+
 def _load_upgrade_network_settings():
-    values = _parse_env_settings_file(UPGRADE_NETWORK_SETTINGS_FILE)
+    values = _load_upgrade_network_settings_raw()
+    http_raw = str(values.get("FEATHERDASH_GITHUB_HTTP_PROXY") or "").strip()
+    https_raw = str(values.get("FEATHERDASH_GITHUB_HTTPS_PROXY") or "").strip()
+    http_clean, http_user, http_password = _split_proxy_url(http_raw)
+    https_clean, https_user, https_password = _split_proxy_url(https_raw)
+    stored_user = str(values.get("FEATHERDASH_GITHUB_PROXY_USER") or "").strip()
+    stored_password = str(values.get("FEATHERDASH_GITHUB_PROXY_PASSWORD") or "")
+    proxy_user = stored_user or http_user or https_user
+    proxy_password = stored_password or http_password or https_password
     return {
-        "http_proxy": str(values.get("FEATHERDASH_GITHUB_HTTP_PROXY") or "").strip(),
-        "https_proxy": str(values.get("FEATHERDASH_GITHUB_HTTPS_PROXY") or "").strip(),
+        "http_proxy": http_clean,
+        "https_proxy": https_clean,
+        "proxy_user": proxy_user,
+        "proxy_password_set": bool(proxy_password),
         "insecure": _is_truthy(values.get("FEATHERDASH_GITHUB_INSECURE")),
         "path": UPGRADE_NETWORK_SETTINGS_FILE,
     }
 
 
+def _upgrade_proxy_urls_for_runtime(values=None, payload=None):
+    values = values if values is not None else _load_upgrade_network_settings_raw()
+    payload = payload or {}
+    http_raw = str(payload.get("http_proxy") if "http_proxy" in payload else values.get("FEATHERDASH_GITHUB_HTTP_PROXY") or "").strip()
+    https_raw = str(payload.get("https_proxy") if "https_proxy" in payload else values.get("FEATHERDASH_GITHUB_HTTPS_PROXY") or "").strip()
+    http_clean, http_user, http_password = _split_proxy_url(http_raw)
+    https_clean, https_user, https_password = _split_proxy_url(https_raw)
+    stored_user = str(values.get("FEATHERDASH_GITHUB_PROXY_USER") or "").strip()
+    stored_password = str(values.get("FEATHERDASH_GITHUB_PROXY_PASSWORD") or "")
+    if "proxy_user" in payload:
+        proxy_user = str(payload.get("proxy_user") or "").strip()
+    else:
+        proxy_user = stored_user or http_user or https_user
+    if not proxy_user:
+        proxy_password = ""
+    elif "proxy_password" in payload:
+        incoming_password = payload.get("proxy_password")
+        if incoming_password is None or str(incoming_password) == "":
+            proxy_password = stored_password or http_password or https_password
+        else:
+            proxy_password = str(incoming_password)
+    else:
+        proxy_password = stored_password or http_password or https_password
+    return (
+        _with_proxy_auth(http_clean or http_raw, proxy_user, proxy_password),
+        _with_proxy_auth(https_clean or https_raw, proxy_user, proxy_password),
+        proxy_user,
+        proxy_password,
+    )
+
+
 def _save_upgrade_network_settings(payload):
+    existing = _load_upgrade_network_settings_raw()
+    http_proxy, https_proxy, proxy_user, proxy_password = _upgrade_proxy_urls_for_runtime(existing, payload)
+    # Store auth-ready proxy URLs for the upgrade helper, plus separate user/password for the UI form.
     settings = {
-        "FEATHERDASH_GITHUB_HTTP_PROXY": str(payload.get("http_proxy") or "").strip(),
-        "FEATHERDASH_GITHUB_HTTPS_PROXY": str(payload.get("https_proxy") or "").strip(),
+        "FEATHERDASH_GITHUB_HTTP_PROXY": http_proxy,
+        "FEATHERDASH_GITHUB_HTTPS_PROXY": https_proxy,
+        "FEATHERDASH_GITHUB_PROXY_USER": proxy_user,
+        "FEATHERDASH_GITHUB_PROXY_PASSWORD": proxy_password,
         "FEATHERDASH_GITHUB_INSECURE": "true" if _is_truthy(payload.get("insecure")) else "false",
     }
     path = UPGRADE_NETWORK_SETTINGS_FILE
@@ -186,6 +284,8 @@ def _save_upgrade_network_settings(payload):
     with open(path, "w", encoding="utf-8", newline="\n") as handle:
         handle.write(f"FEATHERDASH_GITHUB_HTTP_PROXY={_env_quote_line(settings['FEATHERDASH_GITHUB_HTTP_PROXY'])}\n")
         handle.write(f"FEATHERDASH_GITHUB_HTTPS_PROXY={_env_quote_line(settings['FEATHERDASH_GITHUB_HTTPS_PROXY'])}\n")
+        handle.write(f"FEATHERDASH_GITHUB_PROXY_USER={_env_quote_line(settings['FEATHERDASH_GITHUB_PROXY_USER'])}\n")
+        handle.write(f"FEATHERDASH_GITHUB_PROXY_PASSWORD={_env_quote_line(settings['FEATHERDASH_GITHUB_PROXY_PASSWORD'])}\n")
         handle.write(f"FEATHERDASH_GITHUB_INSECURE={_env_quote_line(settings['FEATHERDASH_GITHUB_INSECURE'])}\n")
     return _load_upgrade_network_settings()
 
@@ -206,12 +306,16 @@ def _save_upgrade_request_settings(payload):
 
 def _github_network_settings():
     settings = _load_upgrade_network_settings()
+    http_proxy, https_proxy, _, _ = _upgrade_proxy_urls_for_runtime()
     proxies = {}
-    if settings["http_proxy"]:
-        proxies["http"] = settings["http_proxy"]
-    if settings["https_proxy"]:
-        proxies["https"] = settings["https_proxy"]
-    return settings, proxies, (not settings["insecure"])
+    if http_proxy:
+        proxies["http"] = http_proxy
+    if https_proxy:
+        proxies["https"] = https_proxy
+    runtime = dict(settings)
+    runtime["http_proxy"] = http_proxy
+    runtime["https_proxy"] = https_proxy
+    return runtime, proxies, (not settings["insecure"])
 
 
 def _extract_remote_version_with_curl(url):
@@ -4967,9 +5071,19 @@ async function runAISummary(){
         }
         const httpEl = document.getElementById('upgradeHttpProxy');
         const httpsEl = document.getElementById('upgradeHttpsProxy');
+        const userEl = document.getElementById('upgradeProxyUser');
+        const passEl = document.getElementById('upgradeProxyPassword');
+        const passHint = document.getElementById('upgradeProxyPasswordHint');
         const insecureEl = document.getElementById('upgradeInsecure');
         if (httpEl) httpEl.value = data.http_proxy || '';
         if (httpsEl) httpsEl.value = data.https_proxy || '';
+        if (userEl) userEl.value = data.proxy_user || '';
+        if (passEl) passEl.value = '';
+        if (passHint) {
+          passHint.textContent = data.proxy_password_set
+            ? 'A proxy password is saved. Leave blank to keep it, or enter a new password to replace it.'
+            : 'Leave blank if the proxy does not require a password.';
+        }
         if (insecureEl) insecureEl.checked = !!data.insecure;
         setActionStatus('upgradeSettingsStatus', data.path ? ('Settings file: ' + data.path) : '', '');
       } catch (e) {
@@ -4987,6 +5101,8 @@ async function runAISummary(){
           body: JSON.stringify({
             http_proxy: (document.getElementById('upgradeHttpProxy') || {}).value || '',
             https_proxy: (document.getElementById('upgradeHttpsProxy') || {}).value || '',
+            proxy_user: (document.getElementById('upgradeProxyUser') || {}).value || '',
+            proxy_password: (document.getElementById('upgradeProxyPassword') || {}).value || '',
             insecure: !!((document.getElementById('upgradeInsecure') || {}).checked),
           })
         });
@@ -4995,6 +5111,7 @@ async function runAISummary(){
           throw new Error((data && data.error) || 'Could not save GitHub network settings');
         }
         setActionStatus('upgradeSettingsStatus', 'Saved GitHub network settings.', 'success');
+        await loadUpgradeNetworkConfig();
         await checkForUpdates({ silent:true });
       } catch (e) {
         console.error('upgrade network config save failed', e);
@@ -7963,6 +8080,15 @@ async function runAISummary(){
           <div class="threshold-field" style="margin-top:12px;">
             <label for="upgradeHttpsProxy">GitHub HTTPS Proxy</label>
             <input id="upgradeHttpsProxy" class="threshold-input" type="text" placeholder="http://proxy.example.com:8080">
+          </div>
+          <div class="threshold-field" style="margin-top:12px;">
+            <label for="upgradeProxyUser">Proxy Username</label>
+            <input id="upgradeProxyUser" class="threshold-input" type="text" autocomplete="off" placeholder="optional">
+          </div>
+          <div class="threshold-field" style="margin-top:12px;">
+            <label for="upgradeProxyPassword">Proxy Password</label>
+            <input id="upgradeProxyPassword" class="threshold-input" type="password" autocomplete="new-password" placeholder="optional">
+            <div class="notify-helper" id="upgradeProxyPasswordHint">Leave blank to keep the saved password. Clear the username to remove proxy authentication.</div>
           </div>
           <div class="threshold-field" style="margin-top:12px;">
             <label class="notify-checkbox" for="upgradeInsecure">

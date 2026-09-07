@@ -153,21 +153,65 @@ http://<server-ip>:8080/healthz
 
 # Upgrade
 
-Upgrade also requires outbound internet (GitHub + OS repos + PyPI when packages change).
+Upgrade requires outbound internet (GitHub + OS repos + PyPI when packages change). There is **no offline upgrade**.
 
-## One-command upgrade
+Choose one of these four paths.
+
+## Upgrade option 1: Dashboard UI (direct internet)
+
+Use this when the monitoring server can reach GitHub without a proxy.
+
+1. Open the dashboard → **About**.
+2. Optionally set **Threshold handling during upgrade** (merge vs replace).
+3. Click **Upgrade and Restart**.
+4. Confirm when prompted. The service restarts; refresh the page when it comes back.
+
+## Upgrade option 2: Dashboard UI with proxy
+
+Use this when GitHub is only reachable through an HTTP/HTTPS proxy.
+
+1. Open the dashboard → **About**.
+2. Fill in **GitHub HTTP Proxy** and/or **GitHub HTTPS Proxy** as host URLs only, for example `http://proxy.example.com:8080`.
+3. If the proxy requires authentication, fill in **Proxy Username** and **Proxy Password** (do not put credentials in the proxy URL fields).
+4. Click **Save GitHub Network Settings**.
+5. Optionally set **Threshold handling during upgrade**.
+6. Click **Upgrade and Restart**.
+
+These proxy settings are stored for UI-triggered upgrades (and update checks). They do not change the one-command shell upgrade below unless you also export proxy variables in that shell.
+
+## Upgrade option 3: One-command upgrade (direct internet)
+
+Use this from an SSH session on the monitoring server when it can reach GitHub without a proxy.
 
 ```bash
 cd /tmp && sudo rm -rf /tmp/ctera-monitoring-dashboard && curl -L https://github.com/ctera/CTERA-Monitoring-Dashboard/archive/refs/heads/main.tar.gz -o /tmp/ctera-monitoring-dashboard.tar.gz && sudo mkdir -p /tmp/ctera-monitoring-dashboard && sudo tar -xzf /tmp/ctera-monitoring-dashboard.tar.gz -C /tmp/ctera-monitoring-dashboard --strip-components=1 && cd /tmp/ctera-monitoring-dashboard && sudo bash ./upgrade.sh --install-dir /opt/monitoring/ctera-monitoring-dashboard
 ```
 
-Behind a proxy, export the same `http_proxy` / `https_proxy` variables as for install, then use `sudo -E bash ./upgrade.sh ...`.
+## Upgrade option 4: One-command upgrade behind a proxy
+
+Use this from SSH when the server needs a proxy for GitHub / OS repos / PyPI.
+
+```bash
+export http_proxy='http://PROXYUSER:PROXYPASS@proxy.example.com:8080'
+export https_proxy='http://PROXYUSER:PROXYPASS@proxy.example.com:8080'
+export HTTP_PROXY="$http_proxy"
+export HTTPS_PROXY="$https_proxy"
+export no_proxy='localhost,127.0.0.1,.group.wan'
+export NO_PROXY="$no_proxy"
+
+cd /tmp && sudo rm -rf /tmp/ctera-monitoring-dashboard && curl -L https://github.com/ctera/CTERA-Monitoring-Dashboard/archive/refs/heads/main.tar.gz -o /tmp/ctera-monitoring-dashboard.tar.gz && sudo mkdir -p /tmp/ctera-monitoring-dashboard && sudo tar -xzf /tmp/ctera-monitoring-dashboard.tar.gz -C /tmp/ctera-monitoring-dashboard --strip-components=1 && cd /tmp/ctera-monitoring-dashboard && sudo -E bash ./upgrade.sh --install-dir /opt/monitoring/ctera-monitoring-dashboard
+```
+
+Notes:
+
+- Use `sudo -E` so root keeps the proxy environment for `curl` / `pip` / package managers.
+- URL-encode special characters in the proxy password (same rules as install).
 
 What upgrade does:
 
-- downloads the latest package under `/tmp`
+- downloads the latest package
 - creates a backup and restore script before changing the installed copy
-- preserves customer settings and merges new default threshold entries into `thresholds.yaml`
+- preserves customer settings and merges new default threshold entries into `thresholds.yaml` (unless you choose replace in the UI)
 
 ---
 
