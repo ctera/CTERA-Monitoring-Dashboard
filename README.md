@@ -179,13 +179,13 @@ Use this when the monitoring server can reach GitHub without a proxy.
 Use this when GitHub is only reachable through an HTTP/HTTPS proxy.
 
 1. Open the dashboard → **About**.
-2. Fill in **GitHub HTTP Proxy** and/or **GitHub HTTPS Proxy** as host URLs only, for example `http://proxy.example.com:8080`.
-3. If the proxy requires authentication, fill in **Proxy Username** and **Proxy Password** (do not put credentials in the proxy URL fields).
+2. Set **GitHub HTTP Proxy** / **GitHub HTTPS Proxy** to the proxy host only, for example `http://proxy.example.com:8080` (no username/password in this box).
+3. Set **Proxy Username** and **Proxy Password** (type the password normally).
 4. Click **Save GitHub Network Settings**.
 5. Optionally set **Threshold handling during upgrade**.
 6. Click **Upgrade and Restart**.
 
-These proxy settings are stored for UI-triggered upgrades (and update checks). They do not change the one-command shell upgrade below unless you also export proxy variables in that shell.
+These settings apply to UI upgrades and update checks only. For the SSH one-line upgrade, use option 4 below.
 
 ## Upgrade option 3: One-command upgrade (direct internet)
 
@@ -197,9 +197,9 @@ cd /tmp && sudo rm -rf /tmp/ctera-monitoring-dashboard && curl -L https://github
 
 ## Upgrade option 4: One-command upgrade behind a proxy
 
-Use this from SSH when the server needs a proxy. Prefer **Upgrade option 2** (UI) when you can — separate username/password fields, no password encoding.
+Use this from SSH when the server needs a proxy.
 
-Copy the block below. Put host, username, and password in the three variables (password as-is), then paste the whole block:
+Copy the block below. Put your real host, username, and password in the three variables (type the password normally — do not encode it). Then paste the whole block into SSH:
 
 ```bash
 export PROXY_HOST='proxy.example.com:8080'
@@ -212,6 +212,22 @@ export no_proxy='localhost,127.0.0.1' NO_PROXY="$no_proxy"
 
 cd /tmp && sudo -E rm -rf /tmp/ctera-monitoring-dashboard && curl -L https://github.com/ctera/CTERA-Monitoring-Dashboard/archive/refs/heads/main.tar.gz -o /tmp/ctera-monitoring-dashboard.tar.gz && sudo -E mkdir -p /tmp/ctera-monitoring-dashboard && sudo -E tar -xzf /tmp/ctera-monitoring-dashboard.tar.gz -C /tmp/ctera-monitoring-dashboard --strip-components=1 && cd /tmp/ctera-monitoring-dashboard && sudo -E bash ./upgrade.sh --install-dir /opt/monitoring/ctera-monitoring-dashboard
 ```
+
+Filled example (user `myuser`, password `p@ss:rd`, proxy `10.0.0.5:3128`):
+
+```bash
+export PROXY_HOST='10.0.0.5:3128'
+export PROXY_USER='myuser'
+export PROXY_PASS='p@ss:rd'
+
+proxy_url="$(python3 -c 'import os,urllib.parse as u; h=os.environ["PROXY_HOST"].strip().split("://",1)[-1]; user=os.environ.get("PROXY_USER","").strip(); pw=os.environ.get("PROXY_PASS",""); print("http://%s:%s@%s" % (u.quote(user, safe=""), u.quote(pw, safe=""), h) if user else "http://%s" % h)')"
+export http_proxy="$proxy_url" https_proxy="$proxy_url" HTTP_PROXY="$proxy_url" HTTPS_PROXY="$proxy_url"
+export no_proxy='localhost,127.0.0.1' NO_PROXY="$no_proxy"
+
+cd /tmp && sudo -E rm -rf /tmp/ctera-monitoring-dashboard && curl -L https://github.com/ctera/CTERA-Monitoring-Dashboard/archive/refs/heads/main.tar.gz -o /tmp/ctera-monitoring-dashboard.tar.gz && sudo -E mkdir -p /tmp/ctera-monitoring-dashboard && sudo -E tar -xzf /tmp/ctera-monitoring-dashboard.tar.gz -C /tmp/ctera-monitoring-dashboard --strip-components=1 && cd /tmp/ctera-monitoring-dashboard && sudo -E bash ./upgrade.sh --install-dir /opt/monitoring/ctera-monitoring-dashboard
+```
+
+If the proxy has no username/password, set `PROXY_USER=''` and `PROXY_PASS=''`.
 
 What upgrade does:
 
