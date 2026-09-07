@@ -55,6 +55,9 @@ Review these requirements before adding a portal environment so bootstrap and co
 - Create a Global Admin user for the dashboard before setup starts.
 - A read-only Global Admin user can collect most dashboard data. We recommend naming that user `monitoring`.
 - Keep the Global Admin password available during portal environment setup.
+- Allow the monitoring server in **Settings → Control Panel → Global Administrators Access Control** (IP allowlist). Use the address the portal sees from that host (often its private/LAN IP). If the server is missing from this list, browser login from your PC can work while collectors on the server fail with HTTP 403 / `Authentication failed`.
+- If Global Admin **SAML SSO** is enabled, the `monitoring` user must still have a **local password** set (required for `/admin/bypass` and API-style collection).
+- If **Display consent page before login** is enabled, collectors accept it automatically; you can also disable that page under **Settings → Global Settings → Consent Page** if your policy allows.
 
 ### Network Ports
 
