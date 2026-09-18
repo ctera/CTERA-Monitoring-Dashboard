@@ -348,6 +348,67 @@ def _filer_stub_row(tenant, name, connected: bool):
     return [tenant or "Unknown", name or "?", _filer_connected_csv(connected)] + empties
 
 
+def _previous_filer_csv_path(out_path):
+    """When writing to dest.csv.tmp.<pid>, previous live file is dest.csv."""
+    path = str(out_path or "")
+    match = re.match(r"^(.*)\.tmp\.\d+$", path)
+    if match:
+        return match.group(1)
+    return path
+
+
+def _load_filer_rows_by_name(path):
+    rows = {}
+    if not path or not os.path.exists(path):
+        return rows
+    try:
+        with open(path, newline="", encoding="utf-8-sig") as handle:
+            reader = csv.DictReader(handle)
+            for row in reader:
+                name = str(row.get("Filer Name") or "").strip()
+                if name:
+                    rows[name] = row
+    except Exception as exc:
+        logging.debug("Could not load previous filer CSV %s: %s", path, exc)
+    return rows
+
+
+def _filer_row_has_metrics(row):
+    if not row:
+        return False
+    if isinstance(row, dict):
+        for key in ("CloudSync Status", "CurrentFirmware", "Current Performance", "Max CPU", "IP Config", "SN"):
+            if str(row.get(key) or "").strip():
+                return True
+        return False
+    # list aligned to FILER_CSV_HEADER
+    if len(row) < 4:
+        return False
+    return any(str(cell or "").strip() for cell in row[3:])
+
+
+def _filer_dict_to_row(row_dict, connected=None):
+    out = []
+    for key in FILER_CSV_HEADER:
+        if key == "Connected" and connected is not None:
+            out.append(_filer_connected_csv(bool(connected)))
+        else:
+            out.append(row_dict.get(key, "") if isinstance(row_dict, dict) else "")
+    return out
+
+
+def _format_collect_error(exc):
+    parts = [type(exc).__name__]
+    msg = str(exc or "").strip()
+    if msg:
+        parts.append(msg)
+    for attr in ("status", "code", "errno"):
+        val = getattr(exc, attr, None)
+        if val not in (None, ""):
+            parts.append(f"{attr}={val}")
+    return " | ".join(parts)
+
+
 def _append_filer_row(p_filename, row):
     with open(p_filename, mode='a', newline='', encoding="utf-8-sig") as f:
         w = csv.writer(f, dialect='excel', delimiter=',', quotechar='"', quoting=csv.QUOTE_MINIMAL)
@@ -357,6 +418,7 @@ def _append_filer_row(p_filename, row):
 def write_status(self, p_filename, all_tenants):
     get_list = ['config', 'status', 'proc/cloudsync', 'proc/time/', 'proc/storage/summary', 'proc/perfMonitor']
     logging.info("Gathering status for all filers...")
+    previous_rows = _load_filer_rows_by_name(_previous_filer_csv_path(p_filename))
 
     # Soft budgets only (module-level _with_timeout runs on this thread / event loop).
     # Do not use worker threads (different-loop errors) or SIGALRM (wedges asyncio).
@@ -744,14 +806,22 @@ def write_status(self, p_filename, all_tenants):
                 "Metrics collection failed for %s (portal connected=%s): %s; writing stub row",
                 name,
                 connected,
-                e,
+                _format_collect_error(e),
             )
             try:
                 telnet_disable_safe(self, filer)  # timed cleanup
             except Exception:
                 pass
             try:
-                _append_filer_row(p_filename, _filer_stub_row(tenant, name, connected))
+                prev = previous_rows.get(name)
+                if _filer_row_has_metrics(prev):
+                    logging.warning(
+                        "Keeping previous metrics for %s after collect failure (avoid blank Online stub)",
+                        name,
+                    )
+                    _append_filer_row(p_filename, _filer_dict_to_row(prev, connected=connected))
+                else:
+                    _append_filer_row(p_filename, _filer_stub_row(tenant, name, connected))
             except Exception as write_err:
                 logging.warning("Failed writing fallback row for %s: %s", name, write_err)
             _ensure_session_alive(self)
