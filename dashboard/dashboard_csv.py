@@ -1675,6 +1675,9 @@ def make_docker_warn_fn(ext):
         return eff
 
     def warn(col, val, row):
+        # Leftover docker create (never started) — ignore, not an outage.
+        if str(col) == "State" and str(val or "").strip().lower() == "created":
+            return ""
         rule = _rules(row).get(col)
         return eval_level(val, rule) if rule else ''
 
@@ -10092,9 +10095,11 @@ def _docker_field_severity(row, header, warn_fn=None):
     recently_booted = str(row.get("RecentlyBooted") or "").strip().lower() in {"true", "1", "yes", "y", "on"}
     if recently_booted:
         return ""
+    state = str(row.get("State") or "").strip().lower()
+    if name == "State" and state in {"", "created"}:
+        return ""
     if warn_fn:
         return warn_fn(name, row.get(name, ""), row) or ""
-    state = str(row.get("State") or "").strip().lower()
     health = str(row.get("Health") or "").strip().lower()
     restart_delta = _safe_int(row.get("RestartDelta"), 0) or 0
     if name == "State":
