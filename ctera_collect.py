@@ -123,11 +123,41 @@ def _reauth(sess):
         verify_ssl = bool(getattr(sess, "_featherdash_verify_ssl", False))
         portal_login(sess, user, password, verify_ssl=verify_ssl)
         if global_admin:
-            sess.portals.browse_global_admin()
+            _browse_global_admin_safe(sess)
         logging.info("Re-authenticated.")
         return True
     except Exception as e2:
         logging.warning("Re-auth failed: %s", e2)
+        return False
+
+
+def _browse_global_admin_safe(sess):
+    """Switch to Global Admin. Some portals 500 on PUT currentPortal='' (SDK default)."""
+    try:
+        sess.portals.browse_global_admin()
+        return True
+    except Exception as e:
+        logging.warning(
+            "browse_global_admin (empty currentPortal) failed: %s; trying 'Administration'",
+            _format_collect_error(e),
+        )
+    try:
+        sess.api.put("/currentPortal", "Administration")
+        try:
+            sess.session().update_current_tenant("Administration")
+        except Exception:
+            pass
+        logging.info("Browsed Global Admin via currentPortal=Administration")
+        return True
+    except Exception as e2:
+        logging.warning(
+            "Could not switch to Global Admin context (%s); continuing with session as-is",
+            _format_collect_error(e2),
+        )
+        try:
+            sess.session().update_current_tenant("Administration")
+        except Exception:
+            pass
         return False
 
 
@@ -157,6 +187,10 @@ def _is_retriable_filer_error(exc):
             "session",
             "401",
             "403",
+            "500",
+            "internalservererror",
+            "internal server error",
+            "currentportal",
         )
     )
 
@@ -238,6 +272,12 @@ def _annotate_filers(filers):
     return out
 
 
+FILER_DISCOVERY_INCLUDE = [
+    "deviceConnectionStatus.connected",
+    "deviceReportedStatus.config.hostname",
+]
+
+
 def get_filers(self, all_tenants=False, tenant=None):
     """
     Return ALL edge filers in scope (connected and offline).
@@ -248,45 +288,73 @@ def get_filers(self, all_tenants=False, tenant=None):
     try:
         discovered = []
         if all_tenants:
-            _with_reauth(self, lambda: self.portals.browse_global_admin(), retries=2, label="browse_global_admin")
-            logging.info("Getting all Filers (all tenants, including offline)")
-            tenants = _with_reauth(self, lambda: list(self.portals.tenants()), retries=2, label="list_tenants")
-            for t in tenants:
-                tenant_name = getattr(t, "name", "")
-                try:
-                    _with_reauth(self, lambda: self.portals.browse(tenant_name), retries=2, label=f"browse_tenant:{tenant_name}")
-                    all_filers = _with_reauth(
-                        self,
-                        lambda: self.devices.filers(include=[
-                            'deviceConnectionStatus.connected',
-                            'deviceReportedStatus.config.hostname'
-                        ]),
-                        retries=2,
-                        label=f"list_filers:{tenant_name}"
-                    )
-                    batch = _annotate_filers(all_filers)
-                    discovered.extend(batch)
-                    conn_n = sum(1 for f in batch if getattr(f, "_md_connected", False))
-                    logging.info(
-                        "Tenant %s: collected %s filers (%s connected, %s offline)",
-                        tenant_name,
-                        len(batch),
-                        conn_n,
-                        len(batch) - conn_n,
-                    )
-                except Exception as tenant_error:
-                    logging.warning("Skipping tenant %s during filer discovery: %s", tenant_name or "Unknown", tenant_error)
-                    _reauth(self)
-                    continue
+            # Prefer allPortals=True so we do not depend on PUT /currentPortal ''
+            # (some portals return HTTP 500 for that SDK browse_global_admin call).
+            _browse_global_admin_safe(self)
+            logging.info("Getting all Filers (allPortals=True, including offline)")
+            try:
+                all_filers = _with_reauth(
+                    self,
+                    lambda: list(
+                        self.devices.filers(
+                            include=FILER_DISCOVERY_INCLUDE,
+                            allPortals=True,
+                        )
+                    ),
+                    retries=3,
+                    label="list_filers_allPortals",
+                )
+                discovered.extend(_annotate_filers(all_filers))
+            except Exception as all_portals_err:
+                logging.warning(
+                    "allPortals filer list failed (%s); falling back to per-tenant discovery",
+                    _format_collect_error(all_portals_err),
+                )
+                _browse_global_admin_safe(self)
+                tenants = _with_reauth(
+                    self, lambda: list(self.portals.tenants()), retries=2, label="list_tenants"
+                )
+                for t in tenants:
+                    tenant_name = getattr(t, "name", "")
+                    try:
+                        _with_reauth(
+                            self,
+                            lambda tn=tenant_name: self.portals.browse(tn),
+                            retries=2,
+                            label=f"browse_tenant:{tenant_name}",
+                        )
+                        tenant_filers = _with_reauth(
+                            self,
+                            lambda: list(
+                                self.devices.filers(include=FILER_DISCOVERY_INCLUDE)
+                            ),
+                            retries=2,
+                            label=f"list_filers:{tenant_name}",
+                        )
+                        batch = _annotate_filers(tenant_filers)
+                        discovered.extend(batch)
+                        conn_n = sum(1 for f in batch if getattr(f, "_md_connected", False))
+                        logging.info(
+                            "Tenant %s: collected %s filers (%s connected, %s offline)",
+                            tenant_name,
+                            len(batch),
+                            conn_n,
+                            len(batch) - conn_n,
+                        )
+                    except Exception as tenant_error:
+                        logging.warning(
+                            "Skipping tenant %s during filer discovery: %s",
+                            tenant_name or "Unknown",
+                            tenant_error,
+                        )
+                        _reauth(self)
+                        continue
         elif tenant is not None:
             logging.info("Getting all Filers for tenant %s (including offline)", tenant)
             _with_reauth(self, lambda: self.portals.browse(tenant), retries=2, label=f"browse_tenant:{tenant}")
             tenant_filers = _with_reauth(
                 self,
-                lambda: self.devices.filers(include=[
-                    'deviceConnectionStatus.connected',
-                    'deviceReportedStatus.config.hostname'
-                ]),
+                lambda: list(self.devices.filers(include=FILER_DISCOVERY_INCLUDE)),
                 retries=2,
                 label=f"list_filers:{tenant}"
             )
@@ -302,10 +370,7 @@ def get_filers(self, all_tenants=False, tenant=None):
             )
             tenant_filers = _with_reauth(
                 self,
-                lambda: self.devices.filers(include=[
-                    'deviceConnectionStatus.connected',
-                    'deviceReportedStatus.config.hostname'
-                ]),
+                lambda: list(self.devices.filers(include=FILER_DISCOVERY_INCLUDE)),
                 retries=2,
                 label="list_filers_current_tenant"
             )
@@ -1818,14 +1883,7 @@ def main():
 
         if args.mode == "filers":
             if args.global_admin and args.all_tenants:
-                try:
-                    sess.portals.browse_global_admin()
-                    logging.info("Browsed global admin context after login")
-                except Exception as e:
-                    logging.warning(
-                        "browse_global_admin after login failed (%s); get_filers will retry",
-                        _format_collect_error(e),
-                    )
+                _browse_global_admin_safe(sess)
             elif args.global_admin and args.tenant and not args.all_tenants:
                 sess.portals.browse(args.tenant)
             if args.ensure_remote:
@@ -1838,22 +1896,22 @@ def main():
             run_filers(sess, args.outfile, args.all_tenants)
 
         elif args.mode == "servers":
-            sess.portals.browse_global_admin()
+            _browse_global_admin_safe(sess)
             run_servers(sess, args.outfile)
 
         elif args.mode == "storage":
-            sess.portals.browse_global_admin()
+            _browse_global_admin_safe(sess)
             run_buckets(sess, args.outfile)
 
         elif args.mode == "certificate":
             run_certificate(sess, args.outfile)
 
         elif args.mode == "infra":
-            sess.portals.browse_global_admin()
+            _browse_global_admin_safe(sess)
             run_infra(sess, args.outfile)
 
         else:  # tasks
-            sess.portals.browse_global_admin()
+            _browse_global_admin_safe(sess)
             run_server_tasks(sess, args.outfile)
 
     finally:
