@@ -209,12 +209,16 @@ collect_replace() {
   local out_flag="$2"
   shift 2
   local tmp="${dest}.tmp.$$"
+  local rc=0
   rm -f "${tmp}"
-  if "$@" "${out_flag}" "${tmp}"; then
+  set +e
+  "$@" "${out_flag}" "${tmp}"
+  rc=$?
+  set -e
+  if [[ "${rc}" -eq 0 ]]; then
     mv -f "${tmp}" "${dest}"
     return 0
   fi
-  local rc=$?
   rm -f "${tmp}"
   echo "WARNING: collect failed for ${dest}; keeping previous file if present (exit ${rc})" >&2
   return "${rc}"
