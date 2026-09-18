@@ -4854,6 +4854,10 @@ HTML = """
     }
 
     function filterTableByInput(tableId, inputId){
+      if (tableId === 'dockerTable') {
+        applyDockerFilters();
+        return;
+      }
       const q = (document.getElementById(inputId).value || '').toLowerCase();
       const rows = document.querySelectorAll('#'+tableId+' tbody tr');
       rows.forEach(tr => {
@@ -4900,6 +4904,39 @@ HTML = """
         }
 
         tr.style.display = show ? '' : 'none';
+      });
+    }
+
+    function rowMatchesSeverityMode(tr, mode){
+      const cells = tr.querySelectorAll('td');
+      let hasCrit = false;
+      let hasWarn = false;
+      cells.forEach(td => {
+        if (td.classList.contains('sev-critical')) hasCrit = true;
+        if (td.classList.contains('sev-warning')) hasWarn = true;
+      });
+      if (mode === 'crit') return hasCrit;
+      if (mode === 'warn') return hasWarn && !hasCrit;
+      if (mode === 'critwarn') return hasCrit || hasWarn;
+      if (mode === 'none') return !hasCrit && !hasWarn;
+      return true;
+    }
+
+    function filterDockerSeverity(){
+      applyDockerFilters();
+    }
+
+    function applyDockerFilters(){
+      const sel = document.getElementById('dockerSeverityFilter');
+      const input = document.getElementById('q_docker');
+      const tbody = document.querySelector('#dockerTable tbody');
+      if (!tbody) return;
+      const mode = (sel && sel.value) || 'all';
+      const q = ((input && input.value) || '').toLowerCase();
+      tbody.querySelectorAll('tr').forEach(tr => {
+        const textOk = !q || tr.innerText.toLowerCase().indexOf(q) !== -1;
+        const sevOk = rowMatchesSeverityMode(tr, mode);
+        tr.style.display = (textOk && sevOk) ? '' : 'none';
       });
     }
 
@@ -8929,6 +8966,14 @@ async function runAISummary(){
       </div>
       <div class="controls">
         <input id="q_docker" type="text" placeholder="Search Docker rows?" oninput="filterTableByInput('dockerTable','q_docker')" style="min-width:280px">
+        <label for="dockerSeverityFilter" class="sub" style="margin-left:8px;">Filter:</label>
+        <select id="dockerSeverityFilter" onchange="filterDockerSeverity()" style="min-width:180px; margin-left:4px;">
+          <option value="all">All (no filter)</option>
+          <option value="crit">Critical only</option>
+          <option value="warn">Warning only (no critical)</option>
+          <option value="critwarn">Critical + Warning</option>
+          <option value="none">No Critical/Warning</option>
+        </select>
       </div>
       <div class="table-wrap">
         <table id="dockerTable">
