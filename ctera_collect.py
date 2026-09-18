@@ -388,6 +388,14 @@ def _format_collect_error(exc):
     return " | ".join(parts)
 
 
+def _config_is_true(val):
+    if isinstance(val, bool):
+        return val
+    if val is None:
+        return False
+    return str(val).strip().lower() in ("true", "1", "yes", "y", "on")
+
+
 def _append_filer_row(p_filename, row):
     with open(p_filename, mode='a', newline='', encoding="utf-8-sig") as f:
         w = csv.writer(f, dialect='excel', delimiter=',', quotechar='"', quoting=csv.QUOTE_MINIMAL)
@@ -459,6 +467,48 @@ def write_status(self, p_filename, all_tenants):
             return str(result.text)
         return str(result) if result is not None else ""
 
+    def ensure_admin_remote_access_sso(self, filer, name):
+        """Portal device-cmd needs /config/gui/adminRemoteAccessSSO true; enable if false."""
+        try:
+            enabled = _with_timeout(
+                TIMEOUT_API,
+                "sso_enabled",
+                lambda: _with_reauth(
+                    self, lambda: filer.services.sso_enabled(), retries=2, label="sso_enabled"
+                ),
+            )
+            if _config_is_true(enabled):
+                logging.debug("adminRemoteAccessSSO already true on %s", name)
+                return True
+            logging.info(
+                "adminRemoteAccessSSO is false on %s; setting true for portal metrics access",
+                name,
+            )
+            _with_timeout(
+                TIMEOUT_API,
+                "enable_sso",
+                lambda: _with_reauth(
+                    self, lambda: filer.services.enable_sso(), retries=2, label="enable_sso"
+                ),
+            )
+            return True
+        except Exception as e:
+            logging.warning(
+                "Could not read/enable adminRemoteAccessSSO on %s via API (%s); trying CLI",
+                name,
+                _format_collect_error(e),
+            )
+            result = cli_safe(self, filer, "set /config/gui/adminRemoteAccessSSO true")
+            if result == "Not Applicable":
+                logging.warning(
+                    "CLI could not set adminRemoteAccessSSO on %s; "
+                    "enable manually: set /config/gui/adminRemoteAccessSSO true",
+                    name,
+                )
+                return False
+            logging.info("Set adminRemoteAccessSSO true via CLI on %s (%s)", name, result)
+            return True
+
     # ---------- filer loop (same-thread SDK calls + soft budgets) ----------
     filer_queue = [(filer, 0) for filer in (get_filers(self, all_tenants) or [])]
     while filer_queue:
@@ -487,6 +537,9 @@ def write_status(self, p_filename, all_tenants):
 
             def _budget_ok():
                 return (time.monotonic() - start) < BUDGET_PER_FILER
+
+            # Portal remote metrics need SSO remote access enabled on the filer.
+            ensure_admin_remote_access_sso(self, filer, name)
 
             info = api_get_multi_safe(self, filer, '/', get_list, label="get_multi")
 
