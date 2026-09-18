@@ -131,34 +131,75 @@ def _reauth(sess):
         return False
 
 
-def _browse_global_admin_safe(sess):
-    """Switch to Global Admin. Some portals 500 on PUT currentPortal='' (SDK default)."""
-    try:
-        sess.portals.browse_global_admin()
-        return True
-    except Exception as e:
-        logging.warning(
-            "browse_global_admin (empty currentPortal) failed: %s; trying 'Administration'",
-            _format_collect_error(e),
-        )
-    try:
-        sess.api.put("/currentPortal", "Administration")
+def _browse_global_admin_safe(sess, *, attempts=3):
+    """Switch to Global Admin. Some portals 500 on first PUT /currentPortal after login."""
+    last_err = None
+    for attempt in range(attempts):
+        if attempt:
+            time.sleep(min(1.5 * attempt, 4.0))
         try:
-            sess.session().update_current_tenant("Administration")
-        except Exception:
-            pass
-        logging.info("Browsed Global Admin via currentPortal=Administration")
-        return True
-    except Exception as e2:
-        logging.warning(
-            "Could not switch to Global Admin context (%s); continuing with session as-is",
-            _format_collect_error(e2),
-        )
+            sess.portals.browse_global_admin()
+            if attempt:
+                logging.info("browse_global_admin succeeded on retry %s", attempt + 1)
+            return True
+        except Exception as e:
+            last_err = e
+            logging.warning(
+                "browse_global_admin (empty currentPortal) attempt %s failed: %s",
+                attempt + 1,
+                _format_collect_error(e),
+            )
         try:
-            sess.session().update_current_tenant("Administration")
-        except Exception:
-            pass
-        return False
+            sess.api.put("/currentPortal", "Administration")
+            try:
+                sess.session().update_current_tenant("Administration")
+            except Exception:
+                pass
+            logging.info(
+                "Browsed Global Admin via currentPortal=Administration (attempt %s)",
+                attempt + 1,
+            )
+            return True
+        except Exception as e2:
+            last_err = e2
+            logging.warning(
+                "currentPortal=Administration attempt %s failed: %s",
+                attempt + 1,
+                _format_collect_error(e2),
+            )
+    logging.warning(
+        "Could not switch to Global Admin after %s attempts (%s); continuing with session as-is",
+        attempts,
+        _format_collect_error(last_err) if last_err else "unknown",
+    )
+    try:
+        sess.session().update_current_tenant("Administration")
+    except Exception:
+        pass
+    return False
+
+
+def _discover_filers_with_retry(sess, all_tenants, *, attempts=3):
+    """EMEA often 500s on the first currentPortal/list call; retry with re-auth."""
+    last = None
+    for attempt in range(attempts):
+        if attempt:
+            logging.info(
+                "Retrying filer discovery (attempt %s/%s) after re-auth...",
+                attempt + 1,
+                attempts,
+            )
+            _reauth(sess)
+            time.sleep(min(2.0 * attempt, 5.0))
+        discovered = get_filers(sess, all_tenants)
+        if discovered is not None:
+            if attempt:
+                logging.info("Filer discovery succeeded on attempt %s", attempt + 1)
+            return discovered
+        last = attempt + 1
+        logging.warning("Filer discovery attempt %s/%s failed", attempt + 1, attempts)
+    logging.error("Filer discovery failed after %s attempts", last or attempts)
+    return None
 
 
 def _is_retriable_filer_error(exc):
@@ -574,7 +615,7 @@ def write_status(self, p_filename, all_tenants):
             return True
 
     # ---------- filer loop (same-thread SDK calls + soft budgets) ----------
-    discovered = get_filers(self, all_tenants)
+    discovered = _discover_filers_with_retry(self, all_tenants)
     if discovered is None:
         raise RuntimeError("Filer discovery failed; not replacing filer.csv")
     filer_queue = [(filer, 0) for filer in discovered]
