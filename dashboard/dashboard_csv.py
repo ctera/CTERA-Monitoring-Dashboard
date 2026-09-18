@@ -10698,10 +10698,18 @@ def index():
 
 
 if __name__ == "__main__":
-    app.run(
-        host=os.environ.get("FEATHERDASH_BIND_HOST", "0.0.0.0"),
-        port=int(os.environ.get("PORT", "8080")),
-        debug=False,
+    from waitress import serve
+
+    # Waitress: concurrent threads so large `/` responses are not stalled by UI polling.
+    host = os.environ.get("FEATHERDASH_BIND_HOST", "0.0.0.0")
+    port = int(os.environ.get("PORT", "8080"))
+    threads = int(os.environ.get("FEATHERDASH_WAITRESS_THREADS", "8"))
+    serve(
+        app,
+        host=host,
+        port=port,
+        threads=max(4, threads),
+        channel_timeout=120,
+        ident="CTERA-Monitoring-Dashboard",
     )
-    #app.run(host="127.0.0.1", port=int(os.environ.get("PORT","8080")), debug=False)
 
