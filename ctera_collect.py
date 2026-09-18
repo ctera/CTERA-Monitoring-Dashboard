@@ -130,16 +130,44 @@ def _reauth(sess):
         logging.warning("Re-auth failed: %s", e2)
         return False
 
+
+def _is_retriable_filer_error(exc):
+    msg = str(exc or "")
+    low = msg.lower()
+    if "Session expired" in msg:
+        return True
+    return any(
+        token in low
+        for token in (
+            "connect call failed",
+            "cannot connect to host",
+            "server disconnected",
+            "connection reset",
+            "connection aborted",
+            "broken pipe",
+            "timed out",
+            "timeout",
+            "temporarily unavailable",
+            "devicecmd",
+            "/admin/devicecmd",
+        )
+    )
+
+
 def _with_reauth(sess, op, *, retries=1, label=""):
     for attempt in range(retries + 1):
         try:
             return op()
         except Exception as e:
-            msg = str(e)
-            if "Session expired" in msg and attempt < retries:
-                logging.info("Session expired during %s. Re-authenticating and retrying...", label or op.__name__)
-                if _reauth(sess):
-                    continue
+            if attempt < retries and _is_retriable_filer_error(e):
+                logging.info(
+                    "Retriable error during %s (%s). Re-authenticating and retrying...",
+                    label or getattr(op, "__name__", "op"),
+                    e,
+                )
+                _reauth(sess)
+                time.sleep(min(1.5 * (attempt + 1), 4.0))
+                continue
             raise
 
 def _ensure_session_alive(sess):
@@ -348,55 +376,6 @@ def _filer_stub_row(tenant, name, connected: bool):
     return [tenant or "Unknown", name or "?", _filer_connected_csv(connected)] + empties
 
 
-def _previous_filer_csv_path(out_path):
-    """When writing to dest.csv.tmp.<pid>, previous live file is dest.csv."""
-    path = str(out_path or "")
-    match = re.match(r"^(.*)\.tmp\.\d+$", path)
-    if match:
-        return match.group(1)
-    return path
-
-
-def _load_filer_rows_by_name(path):
-    rows = {}
-    if not path or not os.path.exists(path):
-        return rows
-    try:
-        with open(path, newline="", encoding="utf-8-sig") as handle:
-            reader = csv.DictReader(handle)
-            for row in reader:
-                name = str(row.get("Filer Name") or "").strip()
-                if name:
-                    rows[name] = row
-    except Exception as exc:
-        logging.debug("Could not load previous filer CSV %s: %s", path, exc)
-    return rows
-
-
-def _filer_row_has_metrics(row):
-    if not row:
-        return False
-    if isinstance(row, dict):
-        for key in ("CloudSync Status", "CurrentFirmware", "Current Performance", "Max CPU", "IP Config", "SN"):
-            if str(row.get(key) or "").strip():
-                return True
-        return False
-    # list aligned to FILER_CSV_HEADER
-    if len(row) < 4:
-        return False
-    return any(str(cell or "").strip() for cell in row[3:])
-
-
-def _filer_dict_to_row(row_dict, connected=None):
-    out = []
-    for key in FILER_CSV_HEADER:
-        if key == "Connected" and connected is not None:
-            out.append(_filer_connected_csv(bool(connected)))
-        else:
-            out.append(row_dict.get(key, "") if isinstance(row_dict, dict) else "")
-    return out
-
-
 def _format_collect_error(exc):
     parts = [type(exc).__name__]
     msg = str(exc or "").strip()
@@ -418,7 +397,6 @@ def _append_filer_row(p_filename, row):
 def write_status(self, p_filename, all_tenants):
     get_list = ['config', 'status', 'proc/cloudsync', 'proc/time/', 'proc/storage/summary', 'proc/perfMonitor']
     logging.info("Gathering status for all filers...")
-    previous_rows = _load_filer_rows_by_name(_previous_filer_csv_path(p_filename))
 
     # Soft budgets only (module-level _with_timeout runs on this thread / event loop).
     # Do not use worker threads (different-loop errors) or SIGALRM (wedges asyncio).
@@ -432,7 +410,7 @@ def write_status(self, p_filename, all_tenants):
     def api_get_multi_safe(self, filer, path, lst, label="get_multi"):
         return _with_timeout(
             TIMEOUT_API, label,
-            lambda: _with_reauth(self, lambda: filer.api.get_multi(path, lst), retries=3, label=label)
+            lambda: _with_reauth(self, lambda: filer.api.get_multi(path, lst), retries=4, label=label)
         )
 
     def cli_safe(self, filer, cmd):
@@ -482,7 +460,9 @@ def write_status(self, p_filename, all_tenants):
         return str(result) if result is not None else ""
 
     # ---------- filer loop (same-thread SDK calls + soft budgets) ----------
-    for filer in (get_filers(self, all_tenants) or []):
+    filer_queue = [(filer, 0) for filer in (get_filers(self, all_tenants) or [])]
+    while filer_queue:
+        filer, attempt = filer_queue.pop(0)
         name = getattr(filer, "name", "?")
         connected = bool(getattr(filer, "_md_connected", _filer_is_connected(filer)))
         try:
@@ -503,7 +483,7 @@ def write_status(self, p_filename, all_tenants):
             start = time.monotonic()
             _ensure_session_alive(self)
 
-            logging.info("Gathering status for %s (connected)...", name)
+            logging.info("Gathering status for %s (connected)%s...", name, f" retry={attempt}" if attempt else "")
 
             def _budget_ok():
                 return (time.monotonic() - start) < BUDGET_PER_FILER
@@ -803,7 +783,7 @@ def write_status(self, p_filename, all_tenants):
 
         except Exception as e:
             logging.warning(
-                "Metrics collection failed for %s (portal connected=%s): %s; writing stub row",
+                "Metrics collection failed for %s (portal connected=%s): %s",
                 name,
                 connected,
                 _format_collect_error(e),
@@ -812,16 +792,17 @@ def write_status(self, p_filename, all_tenants):
                 telnet_disable_safe(self, filer)  # timed cleanup
             except Exception:
                 pass
+            # Requeue once for transient portal/device-command failures so we still
+            # try for *current* metrics (do not reuse stale rows).
+            if attempt < 1 and _is_retriable_filer_error(e):
+                logging.info("Re-auth and requeue %s for a live metrics retry", name)
+                _ensure_session_alive(self)
+                time.sleep(2.0)
+                filer_queue.append((filer, attempt + 1))
+                continue
+            logging.warning("Writing stub row for %s after live collect failure", name)
             try:
-                prev = previous_rows.get(name)
-                if _filer_row_has_metrics(prev):
-                    logging.warning(
-                        "Keeping previous metrics for %s after collect failure (avoid blank Online stub)",
-                        name,
-                    )
-                    _append_filer_row(p_filename, _filer_dict_to_row(prev, connected=connected))
-                else:
-                    _append_filer_row(p_filename, _filer_stub_row(tenant, name, connected))
+                _append_filer_row(p_filename, _filer_stub_row(tenant, name, connected))
             except Exception as write_err:
                 logging.warning("Failed writing fallback row for %s: %s", name, write_err)
             _ensure_session_alive(self)
