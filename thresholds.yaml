@@ -91,6 +91,7 @@ servers_health:
       CollectionError:
         crit: { ne: "" }
       State:
+        # Anything not running is critical, except docker "created" (never started) which is ignored in code.
         crit: { ne: running }
       Health:
         warn: { eq: starting }
