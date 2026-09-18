@@ -83,15 +83,32 @@ mkdir -p "${FEATHERDASH_DATA_DIR}"
 
 source "${SCRIPT_DIR}/venv/bin/activate"
 
-# CTERA (no -p flag)
-rm -f "${FEATHERDASH_DATA_DIR}/filer.csv"
+# Write to temp and replace only on success so a failed collect cannot blank the UI.
+collect_replace() {
+  local dest="$1"
+  local out_flag="$2"
+  shift 2
+  local tmp="${dest}.tmp.$$"
+  rm -f "${tmp}"
+  if "$@" "${out_flag}" "${tmp}"; then
+    mv -f "${tmp}" "${dest}"
+    return 0
+  fi
+  local rc=$?
+  rm -f "${tmp}"
+  echo "WARNING: collect failed for ${dest}; keeping previous file if present (exit ${rc})" >&2
+  return "${rc}"
+}
+
 FILER_COLLECT_TIMEOUT_SEC="${FILER_COLLECT_TIMEOUT_SEC:-3600}"
-COLLECT_CMD=(python ctera_collect.py -H "${CTERA_HOST}" -u "${CTERA_USERNAME}" -p "${CTERA_PASSWORD}" --mode filers --all-tenants --global-admin -o "${FEATHERDASH_DATA_DIR}/filer.csv")
+COLLECT_CMD=(python ctera_collect.py -H "${CTERA_HOST}" -u "${CTERA_USERNAME}" -p "${CTERA_PASSWORD}" --mode filers --all-tenants --global-admin)
 if command -v timeout >/dev/null 2>&1; then
   # Hard ceiling so a wedged collector cannot leave the UI stuck on Running forever.
-  timeout --foreground --signal=TERM --kill-after=45 "${FILER_COLLECT_TIMEOUT_SEC}" "${COLLECT_CMD[@]}"
+  collect_replace "${FEATHERDASH_DATA_DIR}/filer.csv" -o \
+    timeout --foreground --signal=TERM --kill-after=45 "${FILER_COLLECT_TIMEOUT_SEC}" "${COLLECT_CMD[@]}"
 else
-  "${COLLECT_CMD[@]}"
+  collect_replace "${FEATHERDASH_DATA_DIR}/filer.csv" -o \
+    "${COLLECT_CMD[@]}"
 fi
 
 PORT="${PORT:-8080}"
