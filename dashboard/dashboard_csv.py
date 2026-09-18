@@ -2,7 +2,7 @@
 # dashboard_csv.py — Edge + Portal + Postgres (with sub-tabs) + Servers Health
 # VERSION: 2025-11-20 r10 (AI summary styled + bugfix)
 
-import os, csv, re, base64, mimetypes, subprocess, shlex, sqlite3, smtplib, ssl, ipaddress, socket, tempfile
+import os, csv, re, base64, mimetypes, subprocess, shlex, sqlite3, smtplib, ssl, ipaddress, socket, tempfile, gzip
 import paramiko
 import requests
 from flask import Flask, render_template_string, jsonify, request, session, redirect, url_for
@@ -1107,13 +1107,20 @@ def resolve_brand(cfg):
     logo_height = int(b.get("logo_height", 40))
     logo_data_uri = None
     path = b.get("logo_path")
+    # Keep logos small — large base64 logos bloat every `/` response and break flaky client paths.
+    max_logo_bytes = int(os.environ.get("FEATHERDASH_MAX_LOGO_BYTES", str(48 * 1024)))
     if path and os.path.exists(path):
-        mime, _ = mimetypes.guess_type(path)
-        if not mime:
-            ext = os.path.splitext(path)[1].lower()
-            mime = "image/png" if ext == ".png" else ("image/svg+xml" if ext == ".svg" else "image/jpeg")
-        with open(path, "rb") as f:
-            logo_data_uri = f"data:{mime};base64,{base64.b64encode(f.read()).decode('ascii')}"
+        try:
+            size = os.path.getsize(path)
+        except OSError:
+            size = 0
+        if 0 < size <= max_logo_bytes:
+            mime, _ = mimetypes.guess_type(path)
+            if not mime:
+                ext = os.path.splitext(path)[1].lower()
+                mime = "image/png" if ext == ".png" else ("image/svg+xml" if ext == ".svg" else "image/jpeg")
+            with open(path, "rb") as f:
+                logo_data_uri = f"data:{mime};base64,{base64.b64encode(f.read()).decode('ascii')}"
     return {"title": title, "logo": logo_data_uri, "icon": logo_data_uri, "logo_height": logo_height}
 
 
@@ -1133,6 +1140,10 @@ def _is_heavy_debug_column(header):
     if name in {"rawoutput", "rawjson", "rawjsonson", "rawresponse", "rawpayload"}:
         return True
     return ("raw" in name and "row" not in name) or ("json" in name and name not in {"pg_json_stats"})
+
+
+def _display_headers(headers):
+    return [h for h in (headers or []) if not _is_heavy_debug_column(h)]
 
 
 def read_csv_rows(csv_path):
@@ -9273,6 +9284,35 @@ app.config["SESSION_COOKIE_HTTPONLY"] = True
 app.config["SESSION_COOKIE_SAMESITE"] = "Lax"
 
 
+@app.after_request
+def _compress_response(response):
+    """Gzip large HTML/JSON so flaky client paths are less likely to stall mid-transfer."""
+    if response.direct_passthrough:
+        return response
+    if response.status_code < 200 or response.status_code >= 300:
+        return response
+    if response.headers.get("Content-Encoding"):
+        return response
+    accept = (request.headers.get("Accept-Encoding") or "").lower()
+    if "gzip" not in accept:
+        return response
+    ctype = (response.content_type or "").lower()
+    if not any(token in ctype for token in ("text/html", "application/json", "text/css", "javascript", "text/plain")):
+        return response
+    data = response.get_data()
+    if not data or len(data) < 1024:
+        return response
+    compressed = gzip.compress(data, compresslevel=6)
+    if len(compressed) >= len(data):
+        return response
+    response.set_data(compressed)
+    response.headers["Content-Encoding"] = "gzip"
+    response.headers["Content-Length"] = str(len(compressed))
+    vary = response.headers.get("Vary")
+    response.headers["Vary"] = "Accept-Encoding" if not vary else f"{vary}, Accept-Encoding"
+    return response
+
+
 def _auth_mode():
     return str(_load_app_settings().get("auth_mode") or "none").strip().lower() or "none"
 
@@ -10634,6 +10674,18 @@ def index():
         {"label": "Servers Health", "updated_utc": metrics_mtime},
         {"label": "Docker", "updated_utc": docker_mtime},
     ]
+
+    # Drop bulky raw/json columns from HTML tables — they balloon `/` past 1MB and
+    # break browsers on constrained network paths (stuck Send-Q / empty response).
+    headers = _display_headers(headers)
+    tenants_headers = _display_headers(tenants_headers)
+    servers_headers = _display_headers(servers_headers)
+    storage_headers = _display_headers(storage_headers)
+    tasks_headers = _display_headers(tasks_headers)
+    hosts_headers = _display_headers(hosts_headers)
+    nomad_headers = _display_headers(nomad_headers)
+    consul_headers = _display_headers(consul_headers)
+    docker_headers = _display_headers(docker_headers)
 
     return render_template_string(
         HTML,
