@@ -94,7 +94,7 @@ servers_health:
         crit: { ne: running }
       Health:
         warn: { eq: starting }
-        warn: { eq: unhealthy }
+        crit: { eq: unhealthy }
       RestartDelta:
         warn: { ge: 1 }
         crit: { ge: 3 }

@@ -1202,6 +1202,12 @@ def display_cell(header, value):
             if parts:
                 return parts[-1]
         return text
+    if h in {"startedat", "finishedat"}:
+        text = str(value or "").strip()
+        # Docker uses Go zero-time for "never finished / unset".
+        if (not text) or text.startswith("0001-01-01"):
+            return "—"
+        return text
     if _looks_like_duration_header(h):
         return format_duration(value)
     if _looks_like_bytes_header(h):
@@ -10031,6 +10037,40 @@ def _cluster_status_chart(rows, field_name):
     return _with_status_tones(_top_counts(rows, [field_name], limit=8, empty_label="Unknown"))
 
 
+def _docker_field_severity(row, header, warn_fn=None):
+    """Severity for one Docker cell only — never paint uptime / lifetime restart count."""
+    name = str(header or "").strip()
+    if name == "CollectionError":
+        return "bad" if str(row.get(name) or "").strip() else ""
+    if name not in {"State", "Health", "RestartDelta", "GraceState"}:
+        return ""
+    recently_booted = str(row.get("RecentlyBooted") or "").strip().lower() in {"true", "1", "yes", "y", "on"}
+    if recently_booted:
+        return ""
+    if warn_fn:
+        return warn_fn(name, row.get(name, ""), row) or ""
+    state = str(row.get("State") or "").strip().lower()
+    health = str(row.get("Health") or "").strip().lower()
+    restart_delta = _safe_int(row.get("RestartDelta"), 0) or 0
+    if name == "State":
+        if state in {"restarting", "dead", "removing", "exited", "error"}:
+            return "bad"
+        return ""
+    if name == "Health":
+        if health == "unhealthy":
+            return "bad"
+        if health == "starting":
+            return "warn"
+        return ""
+    if name == "RestartDelta":
+        if restart_delta >= 3:
+            return "bad"
+        if restart_delta > 0:
+            return "warn"
+        return ""
+    return ""
+
+
 def _docker_row_severity(row, warn_fn=None):
     error = str(row.get("CollectionError") or "").strip()
     if error:
@@ -10038,45 +10078,24 @@ def _docker_row_severity(row, warn_fn=None):
     recently_booted = str(row.get("RecentlyBooted") or "").strip().lower() in {"true", "1", "yes", "y", "on"}
     if recently_booted:
         return ""
-    if warn_fn:
-        saw_warn = False
-        for field in ("State", "Health", "RestartDelta"):
-            sev = warn_fn(field, row.get(field, ""), row)
-            if sev == "bad":
-                return "bad"
-            if sev == "warn":
-                saw_warn = True
-        if saw_warn:
-            return "warn"
-    else:
-        state = str(row.get("State") or "").strip().lower()
-        health = str(row.get("Health") or "").strip().lower()
-        status_text = str(row.get("StatusText") or "").strip().lower()
-        restart_delta = _safe_int(row.get("RestartDelta"), 0) or 0
-        if state in {"restarting", "dead", "removing", "exited"}:
+    saw_warn = False
+    for field in ("State", "Health", "RestartDelta"):
+        sev = _docker_field_severity(row, field, warn_fn=warn_fn)
+        if sev == "bad":
             return "bad"
-        if "restarting" in status_text:
-            return "bad"
-        if health == "unhealthy":
-            return "bad"
-        if restart_delta >= 3:
-            return "bad"
-        if health == "starting":
-            return "warn"
-        if restart_delta > 0:
-            return "warn"
-    return ""
+        if sev == "warn":
+            saw_warn = True
+    return "warn" if saw_warn else ""
 
 
 def _docker_row_class(row, header, warn_fn=None):
-    sev = _docker_row_severity(row, warn_fn=warn_fn)
-    if header == "CollectionError" and str(row.get(header) or "").strip():
+    # Only color the problem field. StatusText like "Up 4 months" and lifetime
+    # RestartCount must stay neutral — long uptime is not a failure.
+    sev = _docker_field_severity(row, header, warn_fn=warn_fn)
+    if sev == "bad":
         return "sev-critical"
-    if header in {"State", "Health", "RestartCount", "RestartDelta", "GraceState", "StatusText"}:
-        if sev == "bad":
-            return "sev-critical"
-        if sev == "warn":
-            return "sev-warning"
+    if sev == "warn":
+        return "sev-warning"
     return ""
 
 
