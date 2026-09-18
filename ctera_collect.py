@@ -150,6 +150,13 @@ def _is_retriable_filer_error(exc):
             "temporarily unavailable",
             "devicecmd",
             "/admin/devicecmd",
+            "forbidden",
+            "unauthorized",
+            "not logged in",
+            "not authenticated",
+            "session",
+            "401",
+            "403",
         )
     )
 
@@ -312,21 +319,13 @@ def get_filers(self, all_tenants=False, tenant=None):
         )
         return discovered
     except CTERAException as error:
-        logging.debug(error)
-        logging.error("Error getting Filers.")
+        logging.error("Error getting Filers: %s", _format_collect_error(error))
+        logging.debug("Filer discovery CTERAException", exc_info=True)
         return None
     except Exception as error:
-        logging.warning("Unexpected error getting Filers: %s", error)
-        return []
-
-def _ensure_session_alive(self):
-    """Lightweight poke; if session is gone, re-browse GA to refresh it."""
-    try:
-        # any cheap call that needs a valid session
-        _ = self.users.session().current_tenant()
-    except Exception as e:
-        logging.info("Session looks expired (%s). Re-initializing context...", e)
-        _reauth(self)
+        logging.error("Unexpected error getting Filers: %s", _format_collect_error(error))
+        logging.debug("Filer discovery traceback", exc_info=True)
+        return None
 
 
 # -------------------- Filers CSV --------------------
@@ -510,7 +509,10 @@ def write_status(self, p_filename, all_tenants):
             return True
 
     # ---------- filer loop (same-thread SDK calls + soft budgets) ----------
-    filer_queue = [(filer, 0) for filer in (get_filers(self, all_tenants) or [])]
+    discovered = get_filers(self, all_tenants)
+    if discovered is None:
+        raise RuntimeError("Filer discovery failed; not replacing filer.csv")
+    filer_queue = [(filer, 0) for filer in discovered]
     while filer_queue:
         filer, attempt = filer_queue.pop(0)
         name = getattr(filer, "name", "?")
@@ -881,7 +883,8 @@ def run_filers(self, filename, all_tenants):
     try:
         write_status(self, filename, all_tenants)
     except Exception as e:
-        logging.warning("An error occurred: " + str(e))
+        logging.error("Filers task failed: %s", _format_collect_error(e))
+        raise
     logging.info('Finished filers task.')
 
 
@@ -1814,7 +1817,16 @@ def main():
         sess._featherdash_verify_ssl = bool(args.verify_ssl)
 
         if args.mode == "filers":
-            if args.global_admin and args.tenant and not args.all_tenants:
+            if args.global_admin and args.all_tenants:
+                try:
+                    sess.portals.browse_global_admin()
+                    logging.info("Browsed global admin context after login")
+                except Exception as e:
+                    logging.warning(
+                        "browse_global_admin after login failed (%s); get_filers will retry",
+                        _format_collect_error(e),
+                    )
+            elif args.global_admin and args.tenant and not args.all_tenants:
                 sess.portals.browse(args.tenant)
             if args.ensure_remote:
                 flist = get_filers(sess, all_tenants=args.all_tenants, tenant=args.tenant)
