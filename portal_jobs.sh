@@ -202,14 +202,32 @@ export LOCAL_MAINDB_SSH_PORT
 export SERVER_METRICS_JUMP_HOST
 export SERVER_METRICS_JUMP_USER
 
-rm -f "${FEATHERDASH_DATA_DIR}/storage.csv"
-python ctera_collect.py -H "${CTERA_HOST}" -u "${CTERA_USERNAME}" -p "${CTERA_PASSWORD}" --mode storage --global-admin -o "${FEATHERDASH_DATA_DIR}/storage.csv"
+# Write to a temp file and only replace the live CSV on success so a failed
+# collect cannot blank dashboard freshness (rm-then-fail left "-" forever).
+collect_replace() {
+  local dest="$1"
+  local out_flag="$2"
+  shift 2
+  local tmp="${dest}.tmp.$$"
+  rm -f "${tmp}"
+  if "$@" "${out_flag}" "${tmp}"; then
+    mv -f "${tmp}" "${dest}"
+    return 0
+  fi
+  local rc=$?
+  rm -f "${tmp}"
+  echo "WARNING: collect failed for ${dest}; keeping previous file if present (exit ${rc})" >&2
+  return "${rc}"
+}
 
-rm -f "${FEATHERDASH_DATA_DIR}/servers.csv"
-python ctera_collect.py -H "${CTERA_HOST}" -u "${CTERA_USERNAME}" -p "${CTERA_PASSWORD}" --mode servers --global-admin -o "${FEATHERDASH_DATA_DIR}/servers.csv"
+collect_replace "${FEATHERDASH_DATA_DIR}/storage.csv" -o \
+  python ctera_collect.py -H "${CTERA_HOST}" -u "${CTERA_USERNAME}" -p "${CTERA_PASSWORD}" --mode storage --global-admin
 
-rm -f "${FEATHERDASH_DATA_DIR}/tasks.csv"
-python ctera_collect.py -H "${CTERA_HOST}" -u "${CTERA_USERNAME}" -p "${CTERA_PASSWORD}" --mode tasks --global-admin -o "${FEATHERDASH_DATA_DIR}/tasks.csv"
+collect_replace "${FEATHERDASH_DATA_DIR}/servers.csv" -o \
+  python ctera_collect.py -H "${CTERA_HOST}" -u "${CTERA_USERNAME}" -p "${CTERA_PASSWORD}" --mode servers --global-admin
+
+collect_replace "${FEATHERDASH_DATA_DIR}/tasks.csv" -o \
+  python ctera_collect.py -H "${CTERA_HOST}" -u "${CTERA_USERNAME}" -p "${CTERA_PASSWORD}" --mode tasks --global-admin
 
 rm -f "${FEATHERDASH_DB_DIR}"/*
 python pg_healthcheck.py --host "${LOCAL_PGHOST}" --port "${LOCAL_PGPORT}" --dbname "${PGDATABASE}" --user "${PGUSER}" --password "${PGPASSWORD}" --min-age-seconds 60 --format csv --outdir "${FEATHERDASH_DB_DIR}" --bloat-method community
@@ -274,8 +292,8 @@ SSH key missing,,,,,,,,"",ERROR,,,,,,,ROOT_KEY is not set or not readable: ${ROO
 EOF
 fi
 
-rm -f "${FEATHERDASH_DATA_DIR}/tenants.csv"
-python pg_collect_tenants.py --pg-host "${LOCAL_PGHOST}" --pg-port "${LOCAL_PGPORT}" --pg-db "${PGDATABASE}" --pg-user "${PGUSER}" --pg-password "${PGPASSWORD}" --out "${FEATHERDASH_DATA_DIR}/tenants.csv"
+collect_replace "${FEATHERDASH_DATA_DIR}/tenants.csv" --out \
+  python pg_collect_tenants.py --pg-host "${LOCAL_PGHOST}" --pg-port "${LOCAL_PGPORT}" --pg-db "${PGDATABASE}" --pg-user "${PGUSER}" --pg-password "${PGPASSWORD}"
 
 PORT="${PORT:-8080}"
 if command -v curl >/dev/null 2>&1; then
