@@ -1678,6 +1678,8 @@ def make_docker_warn_fn(ext):
         # Leftover docker create (never started) — ignore, not an outage.
         if str(col) == "State" and str(val or "").strip().lower() == "created":
             return ""
+        if str(col) == "State" and _docker_ignore_stale_exited(row):
+            return ""
         rule = _rules(row).get(col)
         return eval_level(val, rule) if rule else ''
 
@@ -10085,6 +10087,39 @@ def _cluster_status_chart(rows, field_name):
     return _with_status_tones(_top_counts(rows, [field_name], limit=8, empty_label="Unknown"))
 
 
+def _docker_parse_inspect_time(value):
+    raw = str(value or "").strip()
+    if not raw or raw in {"-", "0001-01-01T00:00:00Z", "0001-01-01T00:00:00"}:
+        return None
+    try:
+        raw = re.sub(r"(\.\d{6})\d+", r"\1", raw)
+        if raw.endswith("Z"):
+            raw = raw[:-1] + "+00:00"
+        dt = datetime.fromisoformat(raw)
+        if dt.tzinfo is not None:
+            from datetime import timezone
+            dt = dt.astimezone(timezone.utc).replace(tzinfo=None)
+        return dt
+    except Exception:
+        return None
+
+
+def _docker_ignore_stale_exited(row):
+    """Old leftover exited containers (RestartPolicy=no) are inventory, not an outage."""
+    state = str(row.get("State") or "").strip().lower()
+    if state != "exited":
+        return False
+    policy = str(row.get("RestartPolicy") or "").strip().lower()
+    if policy not in {"", "no", "none"}:
+        return False
+    finished = _docker_parse_inspect_time(row.get("FinishedAt"))
+    if finished is None:
+        return False
+    from datetime import timezone
+    now = datetime.now(timezone.utc).replace(tzinfo=None)
+    return (now - finished) > timedelta(hours=24)
+
+
 def _docker_field_severity(row, header, warn_fn=None):
     """Severity for one Docker cell only — never paint uptime / lifetime restart count."""
     name = str(header or "").strip()
@@ -10097,6 +10132,8 @@ def _docker_field_severity(row, header, warn_fn=None):
         return ""
     state = str(row.get("State") or "").strip().lower()
     if name == "State" and state in {"", "created"}:
+        return ""
+    if name == "State" and _docker_ignore_stale_exited(row):
         return ""
     if warn_fn:
         return warn_fn(name, row.get(name, ""), row) or ""
@@ -10170,7 +10207,8 @@ def _docker_summary(rows, warn_fn=None):
         restart_delta = _safe_int(row.get("RestartDelta"), 0) or 0
         recently_booted = str(row.get("RecentlyBooted") or "").strip().lower() in {"true", "1", "yes", "y", "on"}
         if state:
-            status_counts[state] += 1
+            if not (state == "exited" and _docker_ignore_stale_exited(row)):
+                status_counts[state] += 1
         if state == "restarting":
             restarting += 1
         if health == "unhealthy":
