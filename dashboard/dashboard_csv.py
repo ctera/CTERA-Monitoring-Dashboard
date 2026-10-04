@@ -1346,6 +1346,20 @@ def eval_rule(val, rule):
             s_val = str(val).strip().lower()
             same = (s_val == s_thr)
             return same if op == "eq" else (not same)
+        if op in ("in", "not_in"):
+            items = [_normalize_cmp_text(item) for item in (thr if isinstance(thr, (list, tuple, set)) else [thr])]
+            present = _normalize_cmp_text(val) in items
+            return present if op == "in" else (not present)
+        if op == "older_than_hours":
+            hours = _num(thr)
+            if hours is None:
+                continue
+            dt = _parse_threshold_timestamp(val)
+            if dt is None:
+                continue
+            from datetime import timezone
+            now = datetime.now(timezone.utc).replace(tzinfo=None)
+            return (now - dt) > timedelta(hours=hours)
         if op in ("gt", "ge", "lt", "le"):
             vn = _num(val)
             tn = _num(thr)
@@ -1360,10 +1374,35 @@ def eval_rule(val, rule):
 # ------------------------------
 # Threshold evaluation (value-aware)
 # ------------------------------
+def _normalize_cmp_text(value):
+    if value is False:
+        return "no"
+    if value is True:
+        return "yes"
+    return str(value or "").strip().lower()
+
+
+def _parse_threshold_timestamp(value):
+    raw = str(value or "").strip()
+    if not raw or raw in {"-", "0001-01-01T00:00:00Z", "0001-01-01T00:00:00"}:
+        return None
+    try:
+        raw = re.sub(r"(\.\d{6})\d+", r"\1", raw)
+        if raw.endswith("Z"):
+            raw = raw[:-1] + "+00:00"
+        dt = datetime.fromisoformat(raw)
+        if dt.tzinfo is not None:
+            from datetime import timezone
+            dt = dt.astimezone(timezone.utc).replace(tzinfo=None)
+        return dt
+    except Exception:
+        return None
+
+
 def _cmp_ok(val, op, rhs):
     """
     Single operator comparison for numeric or string.
-    Operators supported: gt ge lt le eq ne
+    Operators supported: gt ge lt le eq ne in not_in older_than_hours
     """
     if op in ("eq", "ne"):
         rhs_bool = rhs if isinstance(rhs, bool) else _boolish(rhs)
@@ -1375,6 +1414,22 @@ def _cmp_ok(val, op, rhs):
         rhs_text = str(rhs).strip().lower()
         same = (lhs == rhs_text)
         return same if op == "eq" else (not same)
+
+    if op in ("in", "not_in"):
+        items = [_normalize_cmp_text(item) for item in (rhs if isinstance(rhs, (list, tuple, set)) else [rhs])]
+        present = _normalize_cmp_text(val) in items
+        return present if op == "in" else (not present)
+
+    if op == "older_than_hours":
+        hours = _num(rhs)
+        if hours is None:
+            return False
+        dt = _parse_threshold_timestamp(val)
+        if dt is None:
+            return False
+        from datetime import timezone
+        now = datetime.now(timezone.utc).replace(tzinfo=None)
+        return (now - dt) > timedelta(hours=hours)
 
     # numeric comparisons: coerce both sides
     def _ton(x):
@@ -1406,10 +1461,36 @@ def _cmp_ok(val, op, rhs):
     return False
 
 
-def _all_ops_ok(value, rules_dict):
-    """Return True only if all present operators match the given value."""
-    for k in ("gt", "ge", "lt", "le", "eq", "ne"):
+def _all_ops_ok(value, rules_dict, row=None):
+    """Return True only if all present operators match the given value (and optional unless/when)."""
+    if not isinstance(rules_dict, dict):
+        return False
+    unless = rules_dict.get("unless")
+    if unless and _unless_matches(unless, row):
+        return False
+    when = rules_dict.get("when")
+    if when and not _unless_matches(when, row):
+        return False
+    for k in ("gt", "ge", "lt", "le", "eq", "ne", "in", "not_in", "older_than_hours"):
         if k in rules_dict and not _cmp_ok(value, k, rules_dict[k]):
+            return False
+    return True
+
+
+def _unless_matches(unless, row):
+    """True when unless/when matches the row. A list is OR; a map is AND of fields."""
+    if not isinstance(row, dict) or unless in (None, False, ""):
+        return False
+    if isinstance(unless, list):
+        return any(_unless_matches(item, row) for item in unless)
+    if not isinstance(unless, dict):
+        return False
+    for field, cond in unless.items():
+        cell = row.get(field)
+        if isinstance(cond, dict):
+            if not _all_ops_ok(cell, cond, row=None):
+                return False
+        elif not _cmp_ok(cell, "eq", cond):
             return False
     return True
 
@@ -1427,13 +1508,13 @@ def _style_from_rule(rule, val=None):
     if style not in ("critical", "warning", "ok", "muted", "info"):
         return ""
 
-    cmps = {k: rule[k] for k in ("gt", "ge", "lt", "le", "eq", "ne") if k in rule}
-    if not cmps:
+    cmps = {k: rule[k] for k in ("gt", "ge", "lt", "le", "eq", "ne", "in", "not_in", "older_than_hours", "unless", "when") if k in rule}
+    if not {k: v for k, v in cmps.items() if k not in {"unless", "when"}}:
         return f"sev-{style}"
     return f"sev-{style}" if _all_ops_ok(val, cmps) else ""
 
 
-def eval_level(val, rule):
+def eval_level(val, rule, row=None):
     """
     Returns: 'bad' (critical) | 'warn' (warning) | '' (ok)
     Supports:
@@ -1445,17 +1526,17 @@ def eval_level(val, rule):
         return ''
     # explicit single-level style
     style = rule.get('style')
-    base = {k: v for k, v in rule.items() if k in ('gt', 'ge', 'lt', 'le', 'eq', 'ne')}
+    base = {k: v for k, v in rule.items() if k in ('gt', 'ge', 'lt', 'le', 'eq', 'ne', 'in', 'not_in', 'older_than_hours', 'unless', 'when')}
     if style and base:
-        return style if _all_ops_ok(val, base) else ''
+        return style if _all_ops_ok(val, base, row=row) else ''
 
     # nested levels
     if any(k in rule for k in ('crit', 'critical', 'warn', 'warning')):
         crit_rule = rule.get('crit') or rule.get('critical')
-        if isinstance(crit_rule, dict) and _all_ops_ok(val, crit_rule):
+        if isinstance(crit_rule, dict) and _all_ops_ok(val, crit_rule, row=row):
             return 'bad'
         warn_rule = rule.get('warn') or rule.get('warning')
-        if isinstance(warn_rule, dict) and _all_ops_ok(val, warn_rule):
+        if isinstance(warn_rule, dict) and _all_ops_ok(val, warn_rule, row=row):
             return 'warn'
         return ''
 
@@ -1497,7 +1578,7 @@ def make_edge_warn_fn(base_cfg, ext):
         if _edge_filer_offline(row) and str(col) != "Connected":
             return ''
         rule = _resolve(row).get(col)
-        return eval_level(val, rule) if rule else ''
+        return eval_level(val, rule, row=row) if rule else ''
 
     return warn
 
@@ -1572,7 +1653,7 @@ def make_portal_warn_fn(ext, section):
         # YAML rule for this column?
         rule = rules.get(col)
         if rule:
-            return eval_level(val, rule) or ''
+            return eval_level(val, rule, row=row) or ''
 
         # built-ins (backstop)
         if section == "servers" and c == "connected":
@@ -1621,7 +1702,7 @@ def make_pg_warn_fn(ext):
 
     def warn(topic, col, val, row):
         rule = _rules(topic, row).get(col)
-        return eval_level(val, rule) if rule else ''
+        return eval_level(val, rule, row=row) if rule else ''
 
     return warn
 
@@ -1657,7 +1738,7 @@ def make_servers_health_warn_fn(ext):
 
     def warn(col, val, row):
         rule = _rules(row).get(col)
-        return eval_level(val, rule) if rule else ''
+        return eval_level(val, rule, row=row) if rule else ''
 
     return warn
 
@@ -1675,13 +1756,8 @@ def make_docker_warn_fn(ext):
         return eff
 
     def warn(col, val, row):
-        # Leftover docker create (never started) — ignore, not an outage.
-        if str(col) == "State" and str(val or "").strip().lower() == "created":
-            return ""
-        if str(col) == "State" and _docker_ignore_stale_exited(row):
-            return ""
         rule = _rules(row).get(col)
-        return eval_level(val, rule) if rule else ''
+        return eval_level(val, rule, row=row) if rule else ''
 
     return warn
 
@@ -1730,7 +1806,7 @@ def make_tenants_warn_fn(ext):
 
     def warn(col, val, row):
         rule = _rules(row).get(col)
-        return eval_level(val, rule) if rule else ''
+        return eval_level(val, rule, row=row) if rule else ''
 
     return warn
 
@@ -10087,56 +10163,22 @@ def _cluster_status_chart(rows, field_name):
     return _with_status_tones(_top_counts(rows, [field_name], limit=8, empty_label="Unknown"))
 
 
-def _docker_parse_inspect_time(value):
-    raw = str(value or "").strip()
-    if not raw or raw in {"-", "0001-01-01T00:00:00Z", "0001-01-01T00:00:00"}:
-        return None
-    try:
-        raw = re.sub(r"(\.\d{6})\d+", r"\1", raw)
-        if raw.endswith("Z"):
-            raw = raw[:-1] + "+00:00"
-        dt = datetime.fromisoformat(raw)
-        if dt.tzinfo is not None:
-            from datetime import timezone
-            dt = dt.astimezone(timezone.utc).replace(tzinfo=None)
-        return dt
-    except Exception:
-        return None
-
-
-def _docker_ignore_stale_exited(row):
-    """Old leftover exited containers (RestartPolicy=no) are inventory, not an outage."""
-    state = str(row.get("State") or "").strip().lower()
-    if state != "exited":
-        return False
-    policy = str(row.get("RestartPolicy") or "").strip().lower()
-    if policy not in {"", "no", "none"}:
-        return False
-    finished = _docker_parse_inspect_time(row.get("FinishedAt"))
-    if finished is None:
-        return False
-    from datetime import timezone
-    now = datetime.now(timezone.utc).replace(tzinfo=None)
-    return (now - finished) > timedelta(hours=24)
-
-
 def _docker_field_severity(row, header, warn_fn=None):
     """Severity for one Docker cell only — never paint uptime / lifetime restart count."""
     name = str(header or "").strip()
     if name == "CollectionError":
+        if warn_fn:
+            return warn_fn(name, row.get(name, ""), row) or ""
         return "bad" if str(row.get(name) or "").strip() else ""
     if name not in {"State", "Health", "RestartDelta", "GraceState"}:
         return ""
     recently_booted = str(row.get("RecentlyBooted") or "").strip().lower() in {"true", "1", "yes", "y", "on"}
     if recently_booted:
         return ""
-    state = str(row.get("State") or "").strip().lower()
-    if name == "State" and state in {"", "created"}:
-        return ""
-    if name == "State" and _docker_ignore_stale_exited(row):
-        return ""
     if warn_fn:
         return warn_fn(name, row.get(name, ""), row) or ""
+    # Fallback only if thresholds.yaml has no docker rules loaded.
+    state = str(row.get("State") or "").strip().lower()
     health = str(row.get("Health") or "").strip().lower()
     restart_delta = _safe_int(row.get("RestartDelta"), 0) or 0
     if name == "State":
@@ -10207,8 +10249,7 @@ def _docker_summary(rows, warn_fn=None):
         restart_delta = _safe_int(row.get("RestartDelta"), 0) or 0
         recently_booted = str(row.get("RecentlyBooted") or "").strip().lower() in {"true", "1", "yes", "y", "on"}
         if state:
-            if not (state == "exited" and _docker_ignore_stale_exited(row)):
-                status_counts[state] += 1
+            status_counts[state] += 1
         if state == "restarting":
             restarting += 1
         if health == "unhealthy":

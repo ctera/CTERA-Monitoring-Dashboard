@@ -428,7 +428,7 @@ Source files: `ssh_collect_from_pg.py`
 | ContainerID | Yes |  |  |  |
 | ContainerName | Yes |  |  |  |
 | Image | Yes |  |  |  |
-| State | Yes |  | ne running |  |
+| State | Yes |  | in exited/dead/restarting/removing/error/paused unless created, or leftover exited (RestartPolicy no + FinishedAt older than 24h) | Thresholds in `thresholds.yaml` `servers_health.docker.default.State`. |
 | Health | Yes | eq starting | eq unhealthy |  |
 | RestartCount | Yes |  |  |  |
 | RestartDelta | Yes | ge 1 | ge 3 |  |
