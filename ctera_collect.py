@@ -202,9 +202,26 @@ def _discover_filers_with_retry(sess, all_tenants, *, attempts=3):
     return None
 
 
+def _is_device_command_error(exc):
+    """Portal device-cmd / CLI failures are often permission or filer-side, not a dead session."""
+    msg = str(exc or "").lower()
+    return any(
+        token in msg
+        for token in (
+            "devicecmd",
+            "/admin/devicecmd",
+            "cli_command",
+            "starttelnetd",
+            "stoptelnetd",
+        )
+    )
+
+
 def _is_retriable_filer_error(exc):
     msg = str(exc or "")
     low = msg.lower()
+    if _is_device_command_error(exc) and "session expired" not in msg:
+        return False
     if "Session expired" in msg:
         return True
     return any(
@@ -219,18 +236,10 @@ def _is_retriable_filer_error(exc):
             "timed out",
             "timeout",
             "temporarily unavailable",
-            "devicecmd",
-            "/admin/devicecmd",
-            "forbidden",
-            "unauthorized",
             "not logged in",
             "not authenticated",
-            "session",
+            "session expired",
             "401",
-            "403",
-            "500",
-            "internalservererror",
-            "internal server error",
             "currentportal",
         )
     )
@@ -519,6 +528,7 @@ def write_status(self, p_filename, all_tenants):
     TIMEOUT_SHELL = 8
     TIMEOUT_TEL   = 5
     BUDGET_PER_FILER = 30  # hard ceiling per filer
+    skip_privileged = {"cli": False, "shell": False, "sso": False}
 
     def api_get_multi_safe(self, filer, path, lst, label="get_multi"):
         return _with_timeout(
@@ -528,10 +538,12 @@ def write_status(self, p_filename, all_tenants):
 
     def cli_safe(self, filer, cmd):
         lab = f"cli:{cmd}"
+        if skip_privileged["cli"]:
+            return "Not Applicable"
         try:
             result = _with_timeout(
                 TIMEOUT_CLI, lab,
-                lambda: _with_reauth(self, lambda: filer.cli.run_command(cmd), retries=2, label=lab)
+                lambda: filer.cli.run_command(cmd)
             )
             if isinstance(result, str):
                 return result
@@ -543,26 +555,49 @@ def write_status(self, p_filename, all_tenants):
         except AttributeError:
             return "Not Applicable"
         except Exception as e:
-            logging.debug("CLI command failed for %s: %s, error: %s", getattr(filer, "name", "?"), cmd, e)
+            if _is_device_command_error(e):
+                skip_privileged["cli"] = True
+                logging.info(
+                    "CLI/device-cmd unavailable for this account (%s); skipping remaining CLI commands this run",
+                    _format_collect_error(e),
+                )
+            else:
+                logging.debug("CLI command failed for %s: %s, error: %s", getattr(filer, "name", "?"), cmd, e)
             return "Not Applicable"
 
     def telnet_enable_safe(self, filer, secret):
+        if skip_privileged["shell"]:
+            raise PermissionError("telnet/shell skipped for this account")
         return _with_timeout(
             TIMEOUT_TEL, "telnet.enable",
-            lambda: _with_reauth(self, lambda: filer.telnet.enable(secret), retries=2, label="telnet.enable")
+            lambda: filer.telnet.enable(secret)
         )
 
     def telnet_disable_safe(self, filer):
-        return _with_timeout(
-            TIMEOUT_TEL, "telnet.disable",
-            lambda: _with_reauth(self, lambda: filer.telnet.disable(), retries=2, label="telnet.disable")
-        )
+        if skip_privileged["shell"]:
+            return None
+        try:
+            return _with_timeout(
+                TIMEOUT_TEL, "telnet.disable",
+                lambda: filer.telnet.disable()
+            )
+        except Exception as e:
+            if _is_device_command_error(e):
+                skip_privileged["shell"] = True
+                logging.info(
+                    "telnet.disable unavailable for this account (%s); skipping remaining shell/telnet this run",
+                    _format_collect_error(e),
+                )
+                return None
+            raise
 
     def shell_safe(self, filer, cmd):
         lab = f"shell:{cmd.split()[0]}"
+        if skip_privileged["shell"]:
+            return ""
         result = _with_timeout(
             TIMEOUT_SHELL, lab,
-            lambda: _with_reauth(self, lambda: filer.shell.run_command(cmd), retries=2, label=lab)
+            lambda: filer.shell.run_command(cmd)
         )
         if isinstance(result, str):
             return result
@@ -574,13 +609,13 @@ def write_status(self, p_filename, all_tenants):
 
     def ensure_admin_remote_access_sso(self, filer, name):
         """Portal device-cmd needs /config/gui/adminRemoteAccessSSO true; enable if false."""
+        if skip_privileged["sso"] or skip_privileged["cli"]:
+            return False
         try:
             enabled = _with_timeout(
                 TIMEOUT_API,
                 "sso_enabled",
-                lambda: _with_reauth(
-                    self, lambda: filer.services.sso_enabled(), retries=2, label="sso_enabled"
-                ),
+                lambda: filer.services.sso_enabled(),
             )
             if _config_is_true(enabled):
                 logging.debug("adminRemoteAccessSSO already true on %s", name)
@@ -592,12 +627,18 @@ def write_status(self, p_filename, all_tenants):
             _with_timeout(
                 TIMEOUT_API,
                 "enable_sso",
-                lambda: _with_reauth(
-                    self, lambda: filer.services.enable_sso(), retries=2, label="enable_sso"
-                ),
+                lambda: filer.services.enable_sso(),
             )
             return True
         except Exception as e:
+            if _is_device_command_error(e):
+                skip_privileged["sso"] = True
+                logging.info(
+                    "Cannot read/set adminRemoteAccessSSO on %s (%s); skipping SSO enable for remaining filers",
+                    name,
+                    _format_collect_error(e),
+                )
+                return False
             logging.warning(
                 "Could not read/enable adminRemoteAccessSSO on %s via API (%s); trying CLI",
                 name,
@@ -791,6 +832,8 @@ def write_status(self, p_filename, all_tenants):
                 return m.group(1) if m else ''
 
             def get_shell_fallback_metrics():
+                if skip_privileged["shell"]:
+                    return {}
                 if not _budget_ok():
                     logging.warning("Per-filer budget exceeded before shell fallback; skipping.")
                     return {}
@@ -858,12 +901,19 @@ def write_status(self, p_filename, all_tenants):
                     logging.warning("Shell fallback timed out for %s: %s", getattr(filer, 'name', '?'), te)
                 except Exception as e:
                     reason = str(e).strip() or e.__class__.__name__
-                    logging.warning(
-                        "Shell fallback failed for %s: %s",
-                        getattr(filer, 'name', '?'),
-                        reason,
-                    )
-                    _ensure_session_alive(self)
+                    if _is_device_command_error(e):
+                        skip_privileged["shell"] = True
+                        logging.info(
+                            "Shell/telnet unavailable for this account (%s); skipping remaining shell fallbacks this run",
+                            _format_collect_error(e),
+                        )
+                    else:
+                        logging.warning(
+                            "Shell fallback failed for %s: %s",
+                            getattr(filer, 'name', '?'),
+                            reason,
+                        )
+                        _ensure_session_alive(self)
 
                 return metrics
 
@@ -902,7 +952,11 @@ def write_status(self, p_filename, all_tenants):
             )
 
             if not _budget_ok():
-                raise TimeoutError(f"Per-filer budget {BUDGET_PER_FILER}s exceeded")
+                logging.warning(
+                    "Per-filer budget %ss exceeded for %s after API collect; keeping API metrics and skipping remaining privileged calls",
+                    BUDGET_PER_FILER,
+                    name,
+                )
 
             _append_filer_row(
                 p_filename,
@@ -955,7 +1009,7 @@ def write_status(self, p_filename, all_tenants):
                 pass
             # Requeue once for transient portal/device-command failures so we still
             # try for *current* metrics (do not reuse stale rows).
-            if attempt < 1 and _is_retriable_filer_error(e):
+            if attempt < 1 and _is_retriable_filer_error(e) and not _is_device_command_error(e):
                 logging.info("Re-auth and requeue %s for a live metrics retry", name)
                 _ensure_session_alive(self)
                 time.sleep(2.0)
