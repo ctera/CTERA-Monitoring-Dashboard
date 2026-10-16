@@ -200,9 +200,12 @@ fi
 # This collector uses password auth only (no mTLS certs). Use disable for both direct
 # MainDB IP and SSH-tunneled loopback connections unless PG_SSLMODE is set explicitly.
 PG_SSLMODE="${PG_SSLMODE:-disable}"
+# libpq env vars can override DSN sslmode; force collector behavior.
+unset PGSSLMODE PGSSLCERT PGSSLKEY PGSSLROOTCERT PGSSLCRL
 
 export LOCAL_PGHOST
 export PG_SSLMODE
+export PGSSLMODE="${PG_SSLMODE}"
 export LOCAL_PGPORT
 export LOCAL_MAINDB_SSH_PORT
 export SERVER_METRICS_JUMP_HOST

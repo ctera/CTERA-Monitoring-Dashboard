@@ -49,9 +49,9 @@ def parse_args():
     p.add_argument("--dbname", default="postgres", help="Database name (default: postgres)")
     p.add_argument("--user", required=True, help="DB user")
     p.add_argument("--password", help="DB password (will prompt if omitted)")
-    p.add_argument("--sslmode", default="prefer",
+    p.add_argument("--sslmode", default="disable",
                    choices=["disable","allow","prefer","require","verify-ca","verify-full"],
-                   help="SSL mode (default: prefer)")
+                   help="SSL mode (default: disable; CTERA collectors use password auth, not client certs)")
 
     p.add_argument("--min-age-seconds", type=int, default=60,
                    help="Min runtime for 'long-running' queries (default: 60s)")
