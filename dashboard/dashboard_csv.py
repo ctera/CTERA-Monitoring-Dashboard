@@ -3094,6 +3094,29 @@ def _install_runtime_public_key_via_jump(jump_client, target_host, target_user, 
         raise ValueError(f"Could not install the dashboard SSH key on MainDB via the jump host. {exc}") from exc
 
 
+def _portal_cfg_encrypted_pg_pass_shell():
+    # Encrypted values may contain '='; do not use cut -f2.
+    return (
+        "$(awk -F= '/^[[:space:]]*CTERA_LOCAL_POSTGRES_PASS[[:space:]]*=/ "
+        "{ sub(/^[^=]*=/, \"\"); gsub(/^[[:space:]]+|[[:space:]]+$/, \"\"); print; exit }' "
+        "/etc/ctera/portal.cfg)"
+    )
+
+
+def _parse_revealed_pg_password(output):
+    lines = [line.strip() for line in output.replace("\r", "").splitlines() if line.strip()]
+    if not lines:
+        raise ValueError("Could not retrieve the Postgres password from MainDB.")
+    for line in reversed(lines):
+        low = line.lower()
+        if low.startswith(("exception", "error:", "at com.", "at java.")):
+            continue
+        if "postgrespasswordtool" in low:
+            continue
+        return line
+    return lines[-1]
+
+
 def _reveal_postgres_password(client, env):
     use_sudo = bool(env.get("sudo_required")) or str(env.get("ssh_username") or "root").strip() != "root"
     reveal_cmd = (
@@ -3101,16 +3124,13 @@ def _reveal_postgres_password(client, env):
         "'/usr/local/ctera/apache-tomcat/lib/portal/*:/usr/local/ctera/apache-tomcat/lib/common.jar' "
         "com.ctera.utils.password.PostgresPasswordTool "
         "$(cat /etc/ctera/portal_key) "
-        "$(grep CTERA_LOCAL_POSTGRES_PASS /etc/ctera/portal.cfg | cut -d '=' -f2) reveal"
+        f"{_portal_cfg_encrypted_pg_pass_shell()} reveal"
     )
     try:
         output = _exec_ssh_command(client, reveal_cmd, use_sudo=use_sudo, sudo_password=str(env.get("ssh_password") or ""))
     except Exception as exc:
         raise ValueError(f"Could not retrieve the Postgres password from MainDB. {exc}") from exc
-    lines = [line.strip() for line in output.replace("\r", "").splitlines() if line.strip()]
-    if not lines:
-        raise ValueError("Could not retrieve the Postgres password from MainDB.")
-    return lines[-1]
+    return _parse_revealed_pg_password(output)
 
 
 def _reveal_postgres_password_via_jump(jump_client, env, target_user):
@@ -3120,7 +3140,7 @@ def _reveal_postgres_password_via_jump(jump_client, env, target_user):
         "'/usr/local/ctera/apache-tomcat/lib/portal/*:/usr/local/ctera/apache-tomcat/lib/common.jar' "
         "com.ctera.utils.password.PostgresPasswordTool "
         "$(cat /etc/ctera/portal_key) "
-        "$(grep CTERA_LOCAL_POSTGRES_PASS /etc/ctera/portal.cfg | cut -d '=' -f2) reveal"
+        f"{_portal_cfg_encrypted_pg_pass_shell()} reveal"
     )
     try:
         output = _jump_to_target_exec(
@@ -3133,10 +3153,7 @@ def _reveal_postgres_password_via_jump(jump_client, env, target_user):
         )
     except Exception as exc:
         raise ValueError(f"Could not retrieve the Postgres password from MainDB via the jump host. {exc}") from exc
-    lines = [line.strip() for line in output.replace("\r", "").splitlines() if line.strip()]
-    if not lines:
-        raise ValueError("Could not retrieve the Postgres password from MainDB via the jump host.")
-    return lines[-1]
+    return _parse_revealed_pg_password(output)
 
 
 def _bootstrap_environment_runtime(env_id):
