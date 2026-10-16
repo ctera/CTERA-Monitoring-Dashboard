@@ -194,6 +194,30 @@ if [[ "${JUMP_HOST_ENABLED}" =~ ^(1|true|yes|on)$ ]]; then
   LOCAL_PGHOST="127.0.0.1"
   SERVER_METRICS_JUMP_HOST="127.0.0.1"
   SERVER_METRICS_JUMP_USER="${SERVER_SSH_USER}"
+elif [[ -n "${ROOT_KEY:-}" && -r "${ROOT_KEY}" ]]; then
+  # CTERA MainDB Postgres is intended for localhost on MainDB (SSH in, then psql).
+  # Do not connect to the DB service IP from the monitoring host unless tunneling.
+  LOCAL_PGPORT="$(choose_free_port)"
+  LOCAL_MAINDB_SSH_PORT="$(choose_free_port)"
+  TUNNEL_SOCKET="/tmp/ctera-monitoring-dashboard-${RANDOM}-${RANDOM}.sock"
+  TUNNEL_TARGET="${SERVER_SSH_USER}@${PGHOST}"
+  ssh -M -S "${TUNNEL_SOCKET}" -fnNT \
+    -o BatchMode=yes \
+    -o ExitOnForwardFailure=yes \
+    -o StrictHostKeyChecking=no \
+    -o UserKnownHostsFile=/dev/null \
+    -o IdentitiesOnly=yes \
+    -p "${SERVER_SSH_PORT}" \
+    -i "${ROOT_KEY}" \
+    -L "127.0.0.1:${LOCAL_PGPORT}:127.0.0.1:${PGPORT}" \
+    -L "127.0.0.1:${LOCAL_MAINDB_SSH_PORT}:127.0.0.1:${SERVER_SSH_PORT}" \
+    "${TUNNEL_TARGET}"
+  LOCAL_PGHOST="127.0.0.1"
+  SERVER_METRICS_JUMP_HOST="127.0.0.1"
+  SERVER_METRICS_JUMP_USER="${SERVER_SSH_USER}"
+  echo "MainDB Postgres via SSH tunnel (${TUNNEL_TARGET} -> remote 127.0.0.1:${PGPORT}, local ${LOCAL_PGHOST}:${LOCAL_PGPORT})"
+else
+  echo "WARNING: ROOT_KEY is missing or unreadable; Postgres will connect directly to ${PGHOST}:${PGPORT} from this host." >&2
 fi
 
 # CTERA MainDB often requires a client certificate when SSL is negotiated (sslmode=prefer).

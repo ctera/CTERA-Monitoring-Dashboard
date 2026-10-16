@@ -3170,7 +3170,8 @@ def _bootstrap_environment_runtime(env_id):
         jump_mode_current in {"root_password", "user_password"}
         or not (str(env.get("jump_ssh_key_path") or "").strip() and os.path.exists(str(env.get("jump_ssh_key_path") or "").strip()))
     )
-    needs_pg_password = not str(env.get("pg_password") or "").strip()
+    # Always re-read postgres password on bootstrap (stale/wrong saved values break collectors).
+    needs_pg_password = True
     preconfigured_jump = bool(env.get("jump_host_enabled")) and bool(env.get("main_db_via_jump_preconfigured"))
     if not needs_key_install and not needs_jump_key_install and not needs_pg_password:
         return env
