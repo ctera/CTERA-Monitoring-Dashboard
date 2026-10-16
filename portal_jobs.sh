@@ -217,7 +217,9 @@ elif [[ -n "${ROOT_KEY:-}" && -r "${ROOT_KEY}" ]]; then
   SERVER_METRICS_JUMP_USER="${SERVER_SSH_USER}"
   echo "MainDB Postgres via SSH tunnel (${TUNNEL_TARGET} -> remote 127.0.0.1:${PGPORT}, local ${LOCAL_PGHOST}:${LOCAL_PGPORT})"
 else
-  echo "WARNING: ROOT_KEY is missing or unreadable; Postgres will connect directly to ${PGHOST}:${PGPORT} from this host." >&2
+  echo "ERROR: MainDB Postgres must be reached via SSH to localhost on MainDB (ROOT_KEY missing or unreadable: ${ROOT_KEY:-unset})." >&2
+  echo "Run Save and Run Bootstrap for this portal environment, then retry." >&2
+  exit 1
 fi
 
 # CTERA MainDB often requires a client certificate when SSL is negotiated (sslmode=prefer).
