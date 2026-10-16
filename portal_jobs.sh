@@ -237,6 +237,31 @@ export LOCAL_MAINDB_SSH_PORT
 export SERVER_METRICS_JUMP_HOST
 export SERVER_METRICS_JUMP_USER
 
+if [[ -n "${LOCAL_MAINDB_SSH_PORT:-}" && -n "${ROOT_KEY:-}" && -r "${ROOT_KEY}" ]]; then
+  REVEAL_SSH=(ssh -o BatchMode=yes -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o IdentitiesOnly=yes
+    -i "${ROOT_KEY}" -p "${LOCAL_MAINDB_SSH_PORT}" "${SERVER_SSH_USER}@127.0.0.1")
+  if [[ "${SERVER_SSH_USER}" != "root" && "${SERVER_METRICS_SUDO}" =~ ^(1|true|yes|on)$ ]]; then
+    REVEAL_REMOTE=(sudo -n bash -s)
+  else
+    REVEAL_REMOTE=(bash -s)
+  fi
+  REVEALED_PG_PASSWORD="$(
+    "${REVEAL_SSH[@]}" "${REVEAL_REMOTE[@]}" <<'EOF'
+enc=$(awk -F= '/^[[:space:]]*CTERA_LOCAL_POSTGRES_PASS[[:space:]]*=/ { sub(/^[^=]*=/, ""); gsub(/^[[:space:]]+|[[:space:]]+$/, ""); print; exit }' /etc/ctera/portal.cfg)
+/usr/local/ctera/jdk/bin/java -cp '/usr/local/ctera/apache-tomcat/lib/portal/*:/usr/local/ctera/apache-tomcat/lib/common.jar' \
+  com.ctera.utils.password.PostgresPasswordTool "$(cat /etc/ctera/portal_key)" "$enc" reveal
+EOF
+  )"
+  REVEALED_PG_PASSWORD="$(printf '%s' "${REVEALED_PG_PASSWORD}" | sed '/^[[:space:]]*$/d' | tail -1 | tr -d '\r')"
+  if [[ -n "${REVEALED_PG_PASSWORD}" ]]; then
+    PGPASSWORD="${REVEALED_PG_PASSWORD}"
+    export PGPASSWORD
+    echo "Refreshed Postgres password from MainDB via SSH (length ${#PGPASSWORD})."
+  else
+    echo "WARNING: Could not refresh Postgres password from MainDB; using saved runtime value (length ${#PGPASSWORD})." >&2
+  fi
+fi
+
 # Write to a temp file and only replace the live CSV on success so a failed
 # collect cannot blank dashboard freshness (rm-then-fail left "-" forever).
 collect_replace() {
