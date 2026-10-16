@@ -3094,12 +3094,14 @@ def _install_runtime_public_key_via_jump(jump_client, target_host, target_user, 
         raise ValueError(f"Could not install the dashboard SSH key on MainDB via the jump host. {exc}") from exc
 
 
-def _portal_cfg_encrypted_pg_pass_shell():
-    # Encrypted values may contain '='; do not use cut -f2.
+def _postgres_reveal_bash_oneliner():
+    """Same reveal path as install_featherdash.sh / portal_jobs.sh (bash -lc expands portal/* cp)."""
     return (
-        "$(awk -F= '/^[[:space:]]*CTERA_LOCAL_POSTGRES_PASS[[:space:]]*=/ "
-        "{ sub(/^[^=]*=/, \"\"); gsub(/^[[:space:]]+|[[:space:]]+$/, \"\"); print; exit }' "
-        "/etc/ctera/portal.cfg)"
+        "enc=$(awk -F= '/^[[:space:]]*CTERA_LOCAL_POSTGRES_PASS[[:space:]]*=/ { sub(/^[^=]*=/, \"\"); "
+        "gsub(/^[[:space:]]+|[[:space:]]+$/, \"\"); print; exit }' /etc/ctera/portal.cfg); "
+        "enc=\"${enc%\\\"}\"; enc=\"${enc#\\\"}\"; enc=\"${enc%\\'}\"; enc=\"${enc#\\'}\"; "
+        "/usr/local/ctera/jdk/bin/java -cp '/usr/local/ctera/apache-tomcat/lib/portal/*:/usr/local/ctera/apache-tomcat/lib/common.jar' "
+        "com.ctera.utils.password.PostgresPasswordTool \"$(cat /etc/ctera/portal_key)\" \"$enc\" reveal"
     )
 
 
@@ -3134,13 +3136,9 @@ def _parse_revealed_pg_password(output):
 
 def _reveal_postgres_password(client, env):
     use_sudo = bool(env.get("sudo_required")) or str(env.get("ssh_username") or "root").strip() != "root"
-    reveal_cmd = (
-        "/usr/local/ctera/jdk/bin/java -cp "
-        "'/usr/local/ctera/apache-tomcat/lib/portal/*:/usr/local/ctera/apache-tomcat/lib/common.jar' "
-        "com.ctera.utils.password.PostgresPasswordTool "
-        "$(cat /etc/ctera/portal_key) "
-        f"{_portal_cfg_encrypted_pg_pass_shell()} reveal"
-    )
+    reveal_cmd = _postgres_reveal_bash_oneliner()
+    if not use_sudo:
+        reveal_cmd = f"bash -lc {_shell_quote(reveal_cmd)}"
     try:
         output = _exec_ssh_command(client, reveal_cmd, use_sudo=use_sudo, sudo_password=str(env.get("ssh_password") or ""))
     except Exception as exc:
@@ -3150,13 +3148,9 @@ def _reveal_postgres_password(client, env):
 
 def _reveal_postgres_password_via_jump(jump_client, env, target_user):
     use_sudo = bool(env.get("sudo_required")) or str(target_user or "root").strip() != "root"
-    reveal_cmd = (
-        "/usr/local/ctera/jdk/bin/java -cp "
-        "'/usr/local/ctera/apache-tomcat/lib/portal/*:/usr/local/ctera/apache-tomcat/lib/common.jar' "
-        "com.ctera.utils.password.PostgresPasswordTool "
-        "$(cat /etc/ctera/portal_key) "
-        f"{_portal_cfg_encrypted_pg_pass_shell()} reveal"
-    )
+    reveal_cmd = _postgres_reveal_bash_oneliner()
+    if not use_sudo:
+        reveal_cmd = f"bash -lc {_shell_quote(reveal_cmd)}"
     try:
         output = _jump_to_target_exec(
             jump_client,
