@@ -1003,11 +1003,11 @@ def _launch_job(job_name, environment_id=None):
     ssh_key_path = str(env.get("ssh_key_path") or "").strip()
     jump_enabled = bool(env.get("jump_host_enabled"))
     jump_key_path = str(env.get("jump_ssh_key_path") or "").strip()
-    pg_password = str(env.get("pg_password") or "").strip()
-    if not ssh_key_path or not os.path.exists(ssh_key_path) or not pg_password:
+    if not ssh_key_path or not os.path.exists(ssh_key_path):
         raise ValueError(
             "This environment is saved but not bootstrapped yet. "
-            "Use 'Save and Run Bootstrap' first so the dashboard can install its SSH key and capture the database password."
+            "Use 'Save and Run Bootstrap' first so the dashboard can install its SSH key on MainDB. "
+            "Postgres credentials are resolved on each collector run via SSH (not stored)."
         )
     if jump_enabled and (not jump_key_path or not os.path.exists(jump_key_path)):
         raise ValueError(
@@ -2736,7 +2736,7 @@ def _list_environments(include_secret=False):
             "pg_database": row["pg_database"],
             "pg_user": row["pg_user"],
             "pg_password": row["pg_password"] if include_secret else "",
-            "pg_password_set": bool(row["pg_password"]),
+            "pg_password_set": False,
             "openai_key": row["openai_key"] if include_secret else "",
             "openai_key_set": bool(row["openai_key"]),
             "portal_schedule_minutes": int(row["portal_schedule_minutes"] or 60),
@@ -3107,14 +3107,29 @@ def _parse_revealed_pg_password(output):
     lines = [line.strip() for line in output.replace("\r", "").splitlines() if line.strip()]
     if not lines:
         raise ValueError("Could not retrieve the Postgres password from MainDB.")
-    for line in reversed(lines):
+    junk_prefixes = ("exception", "error:", "at com.", "at java.", "picked up _java_options")
+    candidates = []
+    for line in lines:
         low = line.lower()
-        if low.startswith(("exception", "error:", "at com.", "at java.")):
+        if any(low.startswith(prefix) for prefix in junk_prefixes):
+            continue
+        if low in ("true", "false"):
             continue
         if "postgrespasswordtool" in low:
             continue
-        return line
-    return lines[-1]
+        candidates.append(line)
+    if not candidates:
+        raise ValueError(
+            "PostgresPasswordTool did not return a password on MainDB "
+            "(output looked like a failed reveal; check portal_key and CTERA_LOCAL_POSTGRES_PASS)."
+        )
+    best = max(candidates, key=len)
+    if len(best) < 8:
+        raise ValueError(
+            f"PostgresPasswordTool returned unusable output on MainDB (length {len(best)}). "
+            "Re-run reveal on MainDB or fix portal.cfg / portal_key."
+        )
+    return best
 
 
 def _reveal_postgres_password(client, env):
@@ -3174,7 +3189,7 @@ def _bootstrap_environment_runtime(env_id):
             ssh_password=normalized_before.get("ssh_password") or "",
             jump_ssh_mode=normalized_before.get("jump_ssh_mode") or "",
             jump_ssh_password=normalized_before.get("jump_ssh_password") or "",
-            pg_password=normalized_before.get("pg_password") or "",
+            pg_password="",
         )
     runtime_key_path = _ensure_runtime_keypair(env)
     ssh_mode_current = str(env.get("ssh_mode") or "root_password").strip()
@@ -3187,10 +3202,10 @@ def _bootstrap_environment_runtime(env_id):
         jump_mode_current in {"root_password", "user_password"}
         or not (str(env.get("jump_ssh_key_path") or "").strip() and os.path.exists(str(env.get("jump_ssh_key_path") or "").strip()))
     )
-    # Always re-read postgres password on bootstrap (stale/wrong saved values break collectors).
-    needs_pg_password = True
+    # Validate PostgresPasswordTool on bootstrap; password is never persisted (resolved each portal job).
+    needs_pg_reveal_check = True
     preconfigured_jump = bool(env.get("jump_host_enabled")) and bool(env.get("main_db_via_jump_preconfigured"))
-    if not needs_key_install and not needs_jump_key_install and not needs_pg_password:
+    if not needs_key_install and not needs_jump_key_install and not needs_pg_reveal_check:
         return env
     if preconfigured_jump:
         jump_host = str(env.get("jump_host") or "").strip()
@@ -3229,8 +3244,8 @@ def _bootstrap_environment_runtime(env_id):
                 env["ssh_mode"] = "root_key" if target_user == "root" else "user_key_sudo"
                 env["ssh_password"] = ""
                 env["sudo_required"] = 0 if target_user == "root" else 1
-            if needs_pg_password:
-                env["pg_password"] = _reveal_postgres_password_via_jump(jump_client, env, target_user)
+            if needs_pg_reveal_check:
+                _reveal_postgres_password_via_jump(jump_client, env, target_user)
         finally:
             try:
                 jump_client.close()
@@ -3246,7 +3261,7 @@ def _bootstrap_environment_runtime(env_id):
             ssh_password=env.get("ssh_password") or "",
             jump_ssh_mode=env.get("jump_ssh_mode") or "",
             jump_ssh_password=env.get("jump_ssh_password") or "",
-            pg_password=env.get("pg_password") or "",
+            pg_password="",
         )
     clients = _connect_bootstrap_ssh(env)
     main_client = clients["main"]
@@ -3262,8 +3277,8 @@ def _bootstrap_environment_runtime(env_id):
             env["ssh_key_path"] = runtime_key_path
             env["ssh_mode"] = "root_key" if str(env.get("ssh_username") or "root").strip() == "root" else "user_key_sudo"
             env["ssh_password"] = ""
-        if needs_pg_password:
-            env["pg_password"] = _reveal_postgres_password(main_client, env)
+        if needs_pg_reveal_check:
+            _reveal_postgres_password(main_client, env)
     finally:
         try:
             main_client.close()
@@ -3283,7 +3298,7 @@ def _bootstrap_environment_runtime(env_id):
         ssh_password=env.get("ssh_password") or "",
         jump_ssh_mode=env.get("jump_ssh_mode") or "",
         jump_ssh_password=env.get("jump_ssh_password") or "",
-        pg_password=env.get("pg_password") or "",
+        pg_password="",
     )
 
 
@@ -3312,7 +3327,6 @@ def _write_runtime_env_file(env):
         "PGPORT='5432'",
         "PGDATABASE='postgres'",
         "PGUSER='postgres'",
-        f"PGPASSWORD={_env_quote_line(env.get('pg_password') or '')}",
         f"PG_SSLMODE={_env_quote_line((str(env.get('pg_sslmode') or '').strip() or 'disable'))}",
         f"SERVER_SSH_USER={_env_quote_line(ssh_user)}",
         f"SERVER_SSH_PORT={_env_quote_line(main_db_ssh_port)}",
@@ -3389,7 +3403,7 @@ def _save_environment(payload):
     jump_key_name = str(payload.get("jump_ssh_private_key_name") or "")
     if jump_key_content.strip():
         merged["jump_ssh_key_path"] = _store_environment_key_material(f"{name}-jump", jump_key_name, jump_key_content)
-    for secret_key in ("ctera_password", "ssh_password", "jump_ssh_password", "pg_password", "openai_key"):
+    for secret_key in ("ctera_password", "ssh_password", "jump_ssh_password", "openai_key"):
         incoming = str(payload.get(secret_key) or "")
         if incoming.strip():
             merged[secret_key] = incoming
@@ -3397,6 +3411,7 @@ def _save_environment(payload):
             merged[secret_key] = current.get(secret_key, "")
         else:
             merged[secret_key] = ""
+    merged["pg_password"] = ""
     portal_fqdn = str(merged.get("portal_fqdn") or "").strip()
     ctera_username = str(merged.get("ctera_username") or "").strip()
     main_db_ip = str(merged.get("main_db_ip") or "").strip()
