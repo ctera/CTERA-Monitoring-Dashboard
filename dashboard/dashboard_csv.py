@@ -3295,6 +3295,7 @@ def _write_runtime_env_file(env):
         "PGDATABASE='postgres'",
         "PGUSER='postgres'",
         f"PGPASSWORD={_env_quote_line(env.get('pg_password') or '')}",
+        f"PG_SSLMODE={_env_quote_line((str(env.get('pg_sslmode') or '').strip() or 'disable'))}",
         f"SERVER_SSH_USER={_env_quote_line(ssh_user)}",
         f"SERVER_SSH_PORT={_env_quote_line(main_db_ssh_port)}",
         f"ROOT_KEY={_env_quote_line(root_key)}",

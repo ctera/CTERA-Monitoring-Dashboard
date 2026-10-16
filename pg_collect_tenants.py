@@ -99,7 +99,7 @@ def main():
     ap.add_argument("--pg-password", required=True)
     ap.add_argument("--pg-sslmode",
                     choices=["disable","allow","prefer","require","verify-ca","verify-full"],
-                    default="prefer")
+                    default="disable")
     ap.add_argument("--out", required=True, help="Output CSV path")
 
     # optional SSH-tunnel knobs (CLI-compatible with your other collector)

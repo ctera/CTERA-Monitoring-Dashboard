@@ -750,7 +750,7 @@ def main():
     ap.add_argument("--pg-db", default="postgres")
     ap.add_argument("--pg-user", required=True)
     ap.add_argument("--pg-password", required=True)
-    ap.add_argument("--pg-sslmode", choices=["disable","allow","prefer","require","verify-ca","verify-full"], default="prefer")
+    ap.add_argument("--pg-sslmode", choices=["disable","allow","prefer","require","verify-ca","verify-full"], default="disable")
 
     ap.add_argument("--only-connected", action="store_true", help="Only collect from rows where servers.connected = true")
 
