@@ -196,7 +196,13 @@ if [[ "${JUMP_HOST_ENABLED}" =~ ^(1|true|yes|on)$ ]]; then
   SERVER_METRICS_JUMP_USER="${SERVER_SSH_USER}"
 fi
 
+# CTERA MainDB often requires a client certificate when SSL is negotiated (sslmode=prefer).
+# This collector uses password auth only (no mTLS certs). Use disable for both direct
+# MainDB IP and SSH-tunneled loopback connections unless PG_SSLMODE is set explicitly.
+PG_SSLMODE="${PG_SSLMODE:-disable}"
+
 export LOCAL_PGHOST
+export PG_SSLMODE
 export LOCAL_PGPORT
 export LOCAL_MAINDB_SSH_PORT
 export SERVER_METRICS_JUMP_HOST
@@ -234,7 +240,7 @@ collect_replace "${FEATHERDASH_DATA_DIR}/tasks.csv" -o \
   python ctera_collect.py -H "${CTERA_HOST}" -u "${CTERA_USERNAME}" -p "${CTERA_PASSWORD}" --mode tasks --global-admin
 
 rm -f "${FEATHERDASH_DB_DIR}"/*
-python pg_healthcheck.py --host "${LOCAL_PGHOST}" --port "${LOCAL_PGPORT}" --dbname "${PGDATABASE}" --user "${PGUSER}" --password "${PGPASSWORD}" --min-age-seconds 60 --format csv --outdir "${FEATHERDASH_DB_DIR}" --bloat-method community
+python pg_healthcheck.py --host "${LOCAL_PGHOST}" --port "${LOCAL_PGPORT}" --dbname "${PGDATABASE}" --user "${PGUSER}" --password "${PGPASSWORD}" --sslmode "${PG_SSLMODE}" --min-age-seconds 60 --format csv --outdir "${FEATHERDASH_DB_DIR}" --bloat-method community
 
 if [[ -n "${ROOT_KEY:-}" && -r "${ROOT_KEY}" ]]; then
   rm -f "${FEATHERDASH_DATA_DIR}/server_metrics.csv"
@@ -244,6 +250,7 @@ if [[ -n "${ROOT_KEY:-}" && -r "${ROOT_KEY}" ]]; then
     --pg-db "${PGDATABASE}"
     --pg-user "${PGUSER}"
     --pg-password "${PGPASSWORD}"
+    --pg-sslmode "${PG_SSLMODE}"
     --out "${FEATHERDASH_DATA_DIR}/server_metrics.csv"
     --nomad-out "${FEATHERDASH_DATA_DIR}/nomad_nodes.csv"
     --consul-out "${FEATHERDASH_DATA_DIR}/consul_members.csv"
@@ -297,7 +304,7 @@ EOF
 fi
 
 collect_replace "${FEATHERDASH_DATA_DIR}/tenants.csv" --out \
-  python pg_collect_tenants.py --pg-host "${LOCAL_PGHOST}" --pg-port "${LOCAL_PGPORT}" --pg-db "${PGDATABASE}" --pg-user "${PGUSER}" --pg-password "${PGPASSWORD}"
+  python pg_collect_tenants.py --pg-host "${LOCAL_PGHOST}" --pg-port "${LOCAL_PGPORT}" --pg-db "${PGDATABASE}" --pg-user "${PGUSER}" --pg-password "${PGPASSWORD}" --pg-sslmode "${PG_SSLMODE}"
 
 PORT="${PORT:-8080}"
 if command -v curl >/dev/null 2>&1; then
