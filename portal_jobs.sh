@@ -64,6 +64,7 @@ require_var CTERA_HOST
 require_var CTERA_USERNAME
 require_var CTERA_PASSWORD
 require_var PGHOST
+require_var PGPASSWORD
 
 mkdir -p "${FEATHERDASH_DATA_DIR}" "${FEATHERDASH_DB_DIR}"
 
@@ -236,45 +237,6 @@ export LOCAL_MAINDB_SSH_PORT
 export SERVER_METRICS_JUMP_HOST
 export SERVER_METRICS_JUMP_USER
 
-if [[ -n "${LOCAL_MAINDB_SSH_PORT:-}" && -n "${ROOT_KEY:-}" && -r "${ROOT_KEY}" ]]; then
-  REVEAL_SSH=(ssh -o BatchMode=yes -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o IdentitiesOnly=yes
-    -i "${ROOT_KEY}" -p "${LOCAL_MAINDB_SSH_PORT}" "${SERVER_SSH_USER}@127.0.0.1")
-  if [[ "${SERVER_SSH_USER}" != "root" && "${SERVER_METRICS_SUDO}" =~ ^(1|true|yes|on)$ ]]; then
-    REVEAL_REMOTE=(sudo -n bash -s)
-  else
-    REVEAL_REMOTE=(bash -s)
-  fi
-  REVEALED_PG_PASSWORD="$(
-    "${REVEAL_SSH[@]}" "${REVEAL_REMOTE[@]}" 2>&1 <<'EOF'
-set -euo pipefail
-enc=$(awk -F= '/^[[:space:]]*CTERA_LOCAL_POSTGRES_PASS[[:space:]]*=/ { sub(/^[^=]*=/, ""); gsub(/^[[:space:]]+|[[:space:]]+$/, ""); print; exit }' /etc/ctera/portal.cfg)
-enc="${enc%\"}"
-enc="${enc#\"}"
-enc="${enc%\'}"
-enc="${enc#\'}"
-exec /usr/local/ctera/jdk/bin/java -cp '/usr/local/ctera/apache-tomcat/lib/portal/*:/usr/local/ctera/apache-tomcat/lib/common.jar' \
-  com.ctera.utils.password.PostgresPasswordTool "$(cat /etc/ctera/portal_key)" "$enc" reveal
-EOF
-  )" || REVEALED_PG_PASSWORD=""
-  REVEALED_PG_PASSWORD="$(
-    printf '%s' "${REVEALED_PG_PASSWORD}" | tr -d '\r' | sed '/^[[:space:]]*$/d' \
-      | grep -viE '^(exception|error:|at com\.|at java\.|picked up _java_options)' \
-      | grep -viE '^(true|false)$' | awk '{ print length, $0 }' | sort -rn | head -1 | cut -d' ' -f2-
-  )"
-  if [[ "${#REVEALED_PG_PASSWORD}" -lt 8 ]]; then
-    echo "ERROR: PostgresPasswordTool output too short (length ${#REVEALED_PG_PASSWORD}); reveal likely failed on MainDB." >&2
-    exit 1
-  fi
-  PGPASSWORD="${REVEALED_PG_PASSWORD}"
-  export PGPASSWORD
-  echo "Resolved Postgres password from MainDB via SSH (length ${#PGPASSWORD}); not read from saved config."
-else
-  echo "ERROR: Could not SSH to MainDB to resolve Postgres password (tunnel/ROOT_KEY missing)." >&2
-  exit 1
-fi
-
-require_var PGPASSWORD
-
 # Write to a temp file and only replace the live CSV on success so a failed
 # collect cannot blank dashboard freshness (rm-then-fail left "-" forever).
 collect_replace() {
@@ -307,7 +269,7 @@ collect_replace "${FEATHERDASH_DATA_DIR}/tasks.csv" -o \
   python ctera_collect.py -H "${CTERA_HOST}" -u "${CTERA_USERNAME}" -p "${CTERA_PASSWORD}" --mode tasks --global-admin
 
 rm -f "${FEATHERDASH_DB_DIR}"/*
-python pg_healthcheck.py --host "${LOCAL_PGHOST}" --port "${LOCAL_PGPORT}" --dbname "${PGDATABASE}" --user "${PGUSER}" --sslmode "${PG_SSLMODE}" --min-age-seconds 60 --format csv --outdir "${FEATHERDASH_DB_DIR}" --bloat-method community
+python pg_healthcheck.py --host "${LOCAL_PGHOST}" --port "${LOCAL_PGPORT}" --dbname "${PGDATABASE}" --user "${PGUSER}" --password "${PGPASSWORD}" --sslmode "${PG_SSLMODE}" --min-age-seconds 60 --format csv --outdir "${FEATHERDASH_DB_DIR}" --bloat-method community
 
 if [[ -n "${ROOT_KEY:-}" && -r "${ROOT_KEY}" ]]; then
   rm -f "${FEATHERDASH_DATA_DIR}/server_metrics.csv"
@@ -316,6 +278,7 @@ if [[ -n "${ROOT_KEY:-}" && -r "${ROOT_KEY}" ]]; then
     --pg-port "${LOCAL_PGPORT}"
     --pg-db "${PGDATABASE}"
     --pg-user "${PGUSER}"
+    --pg-password "${PGPASSWORD}"
     --pg-sslmode "${PG_SSLMODE}"
     --out "${FEATHERDASH_DATA_DIR}/server_metrics.csv"
     --nomad-out "${FEATHERDASH_DATA_DIR}/nomad_nodes.csv"
@@ -370,7 +333,7 @@ EOF
 fi
 
 collect_replace "${FEATHERDASH_DATA_DIR}/tenants.csv" --out \
-  python pg_collect_tenants.py --pg-host "${LOCAL_PGHOST}" --pg-port "${LOCAL_PGPORT}" --pg-db "${PGDATABASE}" --pg-user "${PGUSER}" --pg-sslmode "${PG_SSLMODE}"
+  python pg_collect_tenants.py --pg-host "${LOCAL_PGHOST}" --pg-port "${LOCAL_PGPORT}" --pg-db "${PGDATABASE}" --pg-user "${PGUSER}" --pg-password "${PGPASSWORD}" --pg-sslmode "${PG_SSLMODE}"
 
 PORT="${PORT:-8080}"
 if command -v curl >/dev/null 2>&1; then
