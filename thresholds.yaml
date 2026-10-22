@@ -23,6 +23,15 @@ filers:
     "Max CPU":
       warn: { ge: 80 }
       crit: { ge: 95 }
+    "RansomProtect ongoingIncidents":
+      warn: { eq: true }
+      crit: { eq: true }
+    "RansomProtect errorState":
+      crit: { eq: true }
+    "AV errorState":
+      crit: { eq: true }
+    "AV warningState":
+      warn: { eq: true }
 
 tenants:
   default:
