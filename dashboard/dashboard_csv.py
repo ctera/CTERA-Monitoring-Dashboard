@@ -4481,6 +4481,9 @@ HTML = """
     .section-card .nums { display:flex; gap:10px; flex-wrap:wrap; color:var(--muted); font-size:13px; }
     .edge-table-shell { max-height:72vh; overflow:auto; border:1px solid var(--border); border-radius:8px; }
     .edge-table-shell table th { top:0; z-index:2; }
+    #edgeTable thead tr.edge-header-row th { position:sticky; top:0; z-index:3; background:var(--header); }
+    #edgeTable thead tr.edge-filter-row th { position:sticky; top:34px; z-index:2; background:var(--surface); padding:4px 6px; vertical-align:middle; }
+    #edgeTable .edge-col-filter { width:100%; min-width:64px; max-width:160px; font-size:11px; padding:3px 5px; box-sizing:border-box; border:1px solid var(--border); border-radius:4px; }
     @media (max-width: 900px) {
       .app-shell { grid-template-columns: 1fr; }
       .sidebar { border-right:none; border-bottom:1px solid rgba(148,163,184,0.18); }
@@ -4974,44 +4977,51 @@ HTML = """
     }
 
     
-    // Edge severity filter (all / crit / warn / crit+warn / none)
-    function filterEdgeSeverity(){
+    function edgeColumnFilters(){
+      const filters = [];
+      document.querySelectorAll('#edgeTable thead tr.edge-filter-row input.edge-col-filter').forEach((inp, idx) => {
+        filters[idx] = (inp.value || '').trim().toLowerCase();
+      });
+      return filters;
+    }
+
+    function rowMatchesEdgeColumnFilters(tr, filters){
+      const cells = tr.querySelectorAll('td');
+      for (let i = 0; i < filters.length; i++) {
+        const q = filters[i];
+        if (!q) continue;
+        const cell = cells[i];
+        if (!cell) return false;
+        const text = (cell.innerText || '').toLowerCase();
+        if (text.indexOf(q) === -1) return false;
+      }
+      return true;
+    }
+
+    function applyEdgeFilters(){
       const sel = document.getElementById('edgeSeverityFilter');
       const tbody = document.querySelector('#edgeTable tbody');
-      if (!sel || !tbody) return;
-
-      const mode = sel.value || 'all';
-      const rows = tbody.querySelectorAll('tr');
-
-      rows.forEach(tr => {
-        const cells = tr.querySelectorAll('td');
-        let hasCrit = false;
-        let hasWarn = false;
-
-        cells.forEach(td => {
-          if (td.classList.contains('sev-critical')) {
-            hasCrit = true;
-          }
-          if (td.classList.contains('sev-warning')) {
-            hasWarn = true;
-          }
-        });
-
-        let show = true;
-        if (mode === 'crit') {
-          show = hasCrit;
-        } else if (mode === 'warn') {
-          show = hasWarn && !hasCrit;
-        } else if (mode === 'critwarn') {
-          show = hasCrit || hasWarn;
-        } else if (mode === 'none') {
-          show = !hasCrit && !hasWarn;
-        } else { // 'all'
-          show = true;
-        }
-
-        tr.style.display = show ? '' : 'none';
+      if (!tbody) return;
+      const mode = (sel && sel.value) || 'all';
+      const colFilters = edgeColumnFilters();
+      tbody.querySelectorAll('tr').forEach(tr => {
+        const colOk = rowMatchesEdgeColumnFilters(tr, colFilters);
+        const sevOk = rowMatchesSeverityMode(tr, mode);
+        tr.style.display = (colOk && sevOk) ? '' : 'none';
       });
+    }
+
+    function filterEdgeSeverity(){
+      applyEdgeFilters();
+    }
+
+    function onEdgeColumnFilterInput(){
+      applyEdgeFilters();
+    }
+
+    function clearEdgeColumnFilters(){
+      document.querySelectorAll('#edgeTable thead tr.edge-filter-row input.edge-col-filter').forEach(inp => { inp.value = ''; });
+      applyEdgeFilters();
     }
 
     function rowMatchesSeverityMode(tr, mode){
@@ -8508,7 +8518,7 @@ async function runAISummary(){
     </div>
 
     <div class="controls" style="margin-top:4px; margin-bottom:4px">
-      <label for="edgeSeverityFilter" class="sub">Filter:</label>
+      <label for="edgeSeverityFilter" class="sub">Severity:</label>
       <select id="edgeSeverityFilter" onchange="filterEdgeSeverity()" style="min-width:180px; margin-left:6px;">
         <option value="all">All (no filter)</option>
         <option value="crit">Critical only</option>
@@ -8516,12 +8526,17 @@ async function runAISummary(){
         <option value="critwarn">Critical + Warning</option>
         <option value="none">No Critical/Warning</option>
       </select>
+      <button type="button" class="btn-xs" style="margin-left:10px" onclick="clearEdgeColumnFilters()">Clear column filters</button>
+      <span class="sub" style="margin-left:8px">Type in the row under each column header (contains, case-insensitive).</span>
     </div>
 
     <!-- top scrollbar synced to the edge table -->
     <div class="hscroll" id="edgeTopScroll"><div class="hscroll-inner" id="edgeTopInner"></div></div>
     <div class="table-wrap scrollshadow edge-table-shell" id="edgeWrap"><table id="edgeTable">
-      <thead><tr>{% for h in headers %}<th title="{{ h }}">{{ h }}</th>{% endfor %}</tr></thead>
+      <thead>
+        <tr class="edge-header-row">{% for h in headers %}<th title="{{ h }}">{{ h }}</th>{% endfor %}</tr>
+        <tr class="edge-filter-row">{% for h in headers %}<th><input type="text" class="edge-col-filter" placeholder="Filter" title="Filter {{ h }}" oninput="onEdgeColumnFilterInput()" aria-label="Filter {{ h }}"></th>{% endfor %}</tr>
+      </thead>
       <tbody>
         {% for r in rows %}
         <tr>
