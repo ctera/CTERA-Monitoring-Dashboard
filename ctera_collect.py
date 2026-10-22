@@ -477,6 +477,20 @@ FILER_CSV_HEADER = [
     'Max CPU',
     'Max Memory',
     'DB Size',
+    'RansomProtect ongoingIncidents',
+    'RansomProtect excludedUsersCount',
+    'RansomProtect blockedUsersCount',
+    'RansomProtect enabledState',
+    'RansomProtect activeState',
+    'RansomProtect errorState',
+    'AV config mode',
+    'AV runtime isAVEnabled',
+    'AV enabledState',
+    'AV activeState',
+    'AV errorState',
+    'AV warningState',
+    'AV DATVersion',
+    'AV DATDate',
 ]
 
 
@@ -508,6 +522,96 @@ def _config_is_true(val):
     if val is None:
         return False
     return str(val).strip().lower() in ("true", "1", "yes", "y", "on")
+
+
+def _parse_filer_cli_json(raw):
+    """Parse JSON (or scalar) from filer CLI `show /path` output."""
+    if raw is None:
+        return None
+    text = str(raw).strip()
+    if not text or text in ("Not Applicable", "N/A"):
+        return None
+    for line in text.splitlines():
+        line = line.strip()
+        if not line or line.lower().startswith("picked up _java_options"):
+            continue
+        if line.startswith("{") or line.startswith("["):
+            try:
+                return json.loads(line)
+            except json.JSONDecodeError:
+                pass
+    try:
+        return json.loads(text)
+    except json.JSONDecodeError:
+        return {"value": text}
+
+
+def _cli_json_field(obj, key, default="N/A"):
+    if not isinstance(obj, dict):
+        return default
+    if key not in obj:
+        return default
+    val = obj.get(key)
+    if val is None:
+        return default
+    if isinstance(val, bool):
+        return "true" if val else "false"
+    return str(val).strip() or default
+
+
+def _cli_show_scalar(cli_safe_fn, filer, path, default="N/A"):
+    raw = cli_safe_fn(filer, f"show {path}")
+    if raw is None or str(raw).strip() in ("", "Not Applicable", "N/A"):
+        return default
+    text = str(raw).strip()
+    for line in text.splitlines():
+        line = line.strip()
+        if line and not line.lower().startswith("picked up _java_options"):
+            parsed = _parse_filer_cli_json(line)
+            if isinstance(parsed, dict) and "value" in parsed and len(parsed) == 1:
+                return str(parsed["value"]).strip() or default
+            if not line.startswith("{"):
+                return line
+    return text
+
+
+def _collect_ransom_av_metrics(cli_safe_fn, filer, budget_ok):
+    na = "N/A"
+    out = {
+        "ransom": {k: na for k in (
+            "ongoingIncidents", "excludedUsersCount", "blockedUsersCount",
+            "enabledState", "activeState", "errorState",
+        )},
+        "av": {k: na for k in (
+            "config_mode", "runtime_isAVEnabled", "enabledState", "activeState",
+            "errorState", "warningState", "DATVersion", "DATDate",
+        )},
+    }
+    if not budget_ok():
+        return out
+    ransom_obj = _parse_filer_cli_json(
+        cli_safe_fn(filer, "show /status/dashboardServices/ransomProtect/")
+    )
+    if isinstance(ransom_obj, dict):
+        for key in out["ransom"]:
+            out["ransom"][key] = _cli_json_field(ransom_obj, key, na)
+    if not budget_ok():
+        return out
+    av_obj = _parse_filer_cli_json(
+        cli_safe_fn(filer, "show /status/dashboardServices/avService")
+    )
+    if isinstance(av_obj, dict):
+        for key in ("enabledState", "activeState", "errorState", "warningState", "DATVersion", "DATDate"):
+            out["av"][key] = _cli_json_field(av_obj, key, na)
+    if budget_ok():
+        out["av"]["config_mode"] = _cli_show_scalar(
+            cli_safe_fn, filer, "/config/av/realtime/mode", na
+        )
+    if budget_ok():
+        out["av"]["runtime_isAVEnabled"] = _cli_show_scalar(
+            cli_safe_fn, filer, "/status/av/realtime/isAVEnabled", na
+        )
+    return out
 
 
 def _append_filer_row(p_filename, row):
@@ -958,6 +1062,14 @@ def write_status(self, p_filename, all_tenants):
                     name,
                 )
 
+            security = _collect_ransom_av_metrics(
+                lambda f, cmd: cli_safe(self, f, cmd),
+                filer,
+                _budget_ok,
+            )
+            ransom = security["ransom"]
+            av = security["av"]
+
             _append_filer_row(
                 p_filename,
                 [
@@ -993,6 +1105,20 @@ def write_status(self, p_filename, all_tenants):
                     max_cpu_value,
                     max_mem_value,
                     db_size_value,
+                    ransom["ongoingIncidents"],
+                    ransom["excludedUsersCount"],
+                    ransom["blockedUsersCount"],
+                    ransom["enabledState"],
+                    ransom["activeState"],
+                    ransom["errorState"],
+                    av["config_mode"],
+                    av["runtime_isAVEnabled"],
+                    av["enabledState"],
+                    av["activeState"],
+                    av["errorState"],
+                    av["warningState"],
+                    av["DATVersion"],
+                    av["DATDate"],
                 ],
             )
 
@@ -1315,6 +1441,7 @@ def _get_storage_locations_from_postgres():
             dbname=pg_database,
             user=pg_user,
             password=pg_password,
+            sslmode=os.environ.get("PG_SSLMODE") or os.environ.get("PGSSLMODE") or "disable",
             connect_timeout=5,
         )
         with conn.cursor() as cur:
