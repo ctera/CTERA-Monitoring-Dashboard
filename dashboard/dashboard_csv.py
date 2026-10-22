@@ -4834,6 +4834,7 @@ HTML = """
       saveActive(id);
       if (id === 'edge') {
         syncEdgeScrollerSetup();
+        applyEdgeFilters();
       }
       if (id === 'pg' && document.getElementById('pg')) {
         showPgTab(loadPgActive());
@@ -4998,17 +4999,40 @@ HTML = """
       return true;
     }
 
+    function edgeFiltersActive(){
+      const sel = document.getElementById('edgeSeverityFilter');
+      const mode = (sel && sel.value) || 'all';
+      if (mode !== 'all') return true;
+      return edgeColumnFilters().some(q => q);
+    }
+
+    function updateEdgeFilterSummary(visible, total){
+      const el = document.getElementById('edgeFilterSummary');
+      if (!el) return;
+      const noun = total === 1 ? 'filer' : 'filers';
+      if (!edgeFiltersActive()) {
+        el.textContent = total ? (total + ' ' + noun) : '';
+        return;
+      }
+      el.textContent = 'Showing ' + visible + ' of ' + total + ' ' + noun;
+    }
+
     function applyEdgeFilters(){
       const sel = document.getElementById('edgeSeverityFilter');
       const tbody = document.querySelector('#edgeTable tbody');
       if (!tbody) return;
       const mode = (sel && sel.value) || 'all';
       const colFilters = edgeColumnFilters();
-      tbody.querySelectorAll('tr').forEach(tr => {
+      const rows = tbody.querySelectorAll('tr');
+      let visible = 0;
+      rows.forEach(tr => {
         const colOk = rowMatchesEdgeColumnFilters(tr, colFilters);
         const sevOk = rowMatchesSeverityMode(tr, mode);
-        tr.style.display = (colOk && sevOk) ? '' : 'none';
+        const show = colOk && sevOk;
+        tr.style.display = show ? '' : 'none';
+        if (show) visible += 1;
       });
+      updateEdgeFilterSummary(visible, rows.length);
     }
 
     function filterEdgeSeverity(){
@@ -8527,6 +8551,7 @@ async function runAISummary(){
         <option value="none">No Critical/Warning</option>
       </select>
       <button type="button" class="btn-xs" style="margin-left:10px" onclick="clearEdgeColumnFilters()">Clear column filters</button>
+      <span id="edgeFilterSummary" class="sub" style="margin-left:12px;font-weight:600"></span>
       <span class="sub" style="margin-left:8px">Type in the row under each column header (contains, case-insensitive).</span>
     </div>
 
