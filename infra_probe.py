@@ -21,6 +21,7 @@ from ssh_collect_from_pg import (
     as_root_command,
     connect_ssh,
     load_pkey,
+    main_db_exec_text_via_jump,
     parse_portal_manage_versions,
     ssh_exec_text,
 )
@@ -86,32 +87,65 @@ def probe_postgres(host, port, dbname, user, password, sslmode, timeout):
         return "FAIL", str(exc)
 
 
-def probe_maindb_ssh(jump_host, jump_port, jump_user, key_path, timeout):
+def _open_maindb_exec(args):
+    """Return (exec_fn, closer) using the same SSH paths as portal_jobs / ssh_collect_from_pg."""
+    if not str(args.ssh_key or "").strip():
+        raise ValueError("SSH key path is missing (ROOT_KEY)")
+    pkey = load_pkey(args.ssh_key)
+    timeout = int(args.timeout)
+
+    if args.ssh_mode == "via-jump":
+        jump_client = connect_ssh(
+            args.jump_host,
+            args.jump_user,
+            port=int(args.jump_port),
+            pkey=pkey,
+            timeout=timeout,
+        )
+
+        def exec_fn(cmd):
+            return main_db_exec_text_via_jump(
+                jump_client,
+                args.maindb_host,
+                args.maindb_ssh_user,
+                cmd,
+                target_sudo=bool(args.ssh_sudo),
+                jump_run_as_user=(str(args.jump_run_as_user or "").strip() or None),
+                timeout=timeout,
+                main_db_port=int(args.maindb_port),
+            )
+
+        return exec_fn, lambda: jump_client.close()
+
+    client = connect_ssh(
+        args.ssh_jump_host,
+        args.ssh_jump_user,
+        port=int(args.ssh_jump_port),
+        pkey=pkey,
+        timeout=timeout,
+    )
+
+    def exec_fn(cmd):
+        wrapped = as_root_command(cmd, use_sudo=bool(args.ssh_sudo))
+        return ssh_exec_text(client, wrapped, timeout=timeout + 15)
+
+    return exec_fn, lambda: client.close()
+
+
+def probe_maindb_ssh(exec_fn, timeout):
     try:
-        pkey = load_pkey(key_path)
-        client = connect_ssh(jump_host, jump_user, port=jump_port, pkey=pkey, timeout=timeout)
-        try:
-            out = ssh_exec_text(client, "echo infra-ssh-ok", timeout=timeout)
-            if "infra-ssh-ok" not in out:
-                return "FAIL", f"unexpected echo response: {out[:200]}"
-            return "OK", "SSH session established on MainDB forward"
-        finally:
-            client.close()
+        out = exec_fn("echo infra-ssh-ok")
+        if "infra-ssh-ok" not in out:
+            return "FAIL", f"unexpected echo response: {out[:200]}"
+        return "OK", "SSH command succeeded on MainDB"
     except Exception as exc:
         return "FAIL", str(exc)
 
 
-def probe_portal_manage(jump_host, jump_port, jump_user, key_path, use_sudo, timeout):
+def probe_portal_manage(exec_fn, timeout):
     try:
-        pkey = load_pkey(key_path)
-        client = connect_ssh(jump_host, jump_user, port=jump_port, pkey=pkey, timeout=timeout)
-        try:
-            def exec_fn(cmd):
-                wrapped = as_root_command(cmd, use_sudo=use_sudo)
-                return ssh_exec_text(client, wrapped, timeout=timeout + 15)
-
-            text = exec_fn(
-                """
+        text = exec_fn(
+            """
 export PATH="$PATH:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
 for candidate in \
   portal-manage.sh \
@@ -136,13 +170,11 @@ do
 done
 echo "__PORTAL_MANAGE_NOT_FOUND__"
 """.strip()
-            )
-            if text.strip() == "__PORTAL_MANAGE_NOT_FOUND__":
-                return "FAIL", "portal-manage.sh not found on MainDB"
-            ok, detail = assess_portal_manage_status(text)
-            return ("OK" if ok else "FAIL"), detail
-        finally:
-            client.close()
+        )
+        if text.strip() == "__PORTAL_MANAGE_NOT_FOUND__":
+            return "FAIL", "portal-manage.sh not found on MainDB"
+        ok, detail = assess_portal_manage_status(text)
+        return ("OK" if ok else "FAIL"), detail
     except Exception as exc:
         return "FAIL", str(exc)
 
@@ -174,9 +206,22 @@ def main():
     ap.add_argument("--pg-user", required=True)
     ap.add_argument("--pg-password", default=os.environ.get("PGPASSWORD") or "")
     ap.add_argument("--pg-sslmode", default="disable")
+    ap.add_argument(
+        "--ssh-mode",
+        choices=["local-forward", "via-jump"],
+        default="local-forward",
+        help="local-forward: SSH to 127.0.0.1:forwarded MainDB port; via-jump: hop from jump host like portal_jobs",
+    )
     ap.add_argument("--ssh-jump-host", default="127.0.0.1")
     ap.add_argument("--ssh-jump-port", type=int, default=22)
     ap.add_argument("--ssh-jump-user", default="root")
+    ap.add_argument("--jump-host", default="")
+    ap.add_argument("--jump-port", type=int, default=22)
+    ap.add_argument("--jump-user", default="")
+    ap.add_argument("--maindb-host", default="")
+    ap.add_argument("--maindb-port", type=int, default=22)
+    ap.add_argument("--maindb-ssh-user", default="")
+    ap.add_argument("--jump-run-as-user", default="")
     ap.add_argument("--ssh-key", default="")
     ap.add_argument("--ssh-sudo", action="store_true")
     ap.add_argument("--timeout", type=int, default=10)
@@ -204,21 +249,21 @@ def main():
         args.pg_sslmode,
         args.timeout,
     )
-    ssh_result, ssh_detail = probe_maindb_ssh(
-        args.ssh_jump_host,
-        args.ssh_jump_port,
-        args.ssh_jump_user,
-        args.ssh_key,
-        args.timeout,
-    )
-    pm_result, pm_detail = probe_portal_manage(
-        args.ssh_jump_host,
-        args.ssh_jump_port,
-        args.ssh_jump_user,
-        args.ssh_key,
-        args.ssh_sudo,
-        args.timeout,
-    )
+    exec_fn = None
+    closer = None
+    try:
+        exec_fn, closer = _open_maindb_exec(args)
+        ssh_result, ssh_detail = probe_maindb_ssh(exec_fn, args.timeout)
+        pm_result, pm_detail = probe_portal_manage(exec_fn, args.timeout)
+    except Exception as exc:
+        ssh_result, ssh_detail = "FAIL", str(exc)
+        pm_result, pm_detail = "FAIL", str(exc)
+    finally:
+        if closer:
+            try:
+                closer()
+            except Exception:
+                pass
 
     rows = [
         {

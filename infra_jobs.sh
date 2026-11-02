@@ -84,6 +84,28 @@ if [[ "${SERVER_METRICS_SUDO}" =~ ^(1|true|yes|on)$ ]]; then
   PROBE_ARGS+=(--ssh-sudo)
 fi
 
+build_probe_ssh_args() {
+  if [[ "${JUMP_HOST_ENABLED}" =~ ^(1|true|yes|on)$ && "${MAINDB_VIA_JUMP_PRECONFIGURED}" =~ ^(1|true|yes|on)$ ]]; then
+    PROBE_ARGS+=(
+      --ssh-mode via-jump
+      --jump-host "${JUMP_HOST}"
+      --jump-port "${JUMP_SSH_PORT}"
+      --jump-user "${JUMP_SSH_USER}"
+      --maindb-host "${PGHOST}"
+      --maindb-port "${SERVER_SSH_PORT}"
+      --maindb-ssh-user "${MAINDB_JUMP_USERNAME}"
+      --jump-run-as-user "${SERVER_METRICS_JUMP_RUN_AS_USER:-}"
+    )
+  else
+    PROBE_ARGS+=(
+      --ssh-mode local-forward
+      --ssh-jump-host "${SERVER_METRICS_JUMP_HOST}"
+      --ssh-jump-port "${LOCAL_MAINDB_SSH_PORT}"
+      --ssh-jump-user "${SERVER_METRICS_JUMP_USER}"
+    )
+  fi
+}
+
 source "${SCRIPT_DIR}/portal_maindb_tunnel.sh"
 trap cleanup_portal_maindb_tunnel EXIT
 
@@ -99,16 +121,14 @@ if [[ -n "${TUNNEL_ERR}" ]]; then
     "${PROBE_ARGS[@]}" \
     --tunnel-error "${TUNNEL_ERR}"
 else
+  build_probe_ssh_args
   collect_replace "${INFRA_CSV}" \
     python "${SCRIPT_DIR}/infra_probe.py" \
     "${PROBE_ARGS[@]}" \
     --pg-host "${LOCAL_PGHOST}" \
     --pg-port "${LOCAL_PGPORT}" \
     --pg-db "${PGDATABASE}" \
-    --pg-sslmode "${PG_SSLMODE}" \
-    --ssh-jump-host "${SERVER_METRICS_JUMP_HOST}" \
-    --ssh-jump-port "${LOCAL_MAINDB_SSH_PORT}" \
-    --ssh-jump-user "${SERVER_METRICS_JUMP_USER}"
+    --pg-sslmode "${PG_SSLMODE}"
 fi
 
 PORT="${PORT:-8080}"
