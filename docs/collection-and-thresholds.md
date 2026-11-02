@@ -29,7 +29,7 @@ This document lists what CTERA Monitoring Dashboard collects for each dataset an
 ## Notes
 
 - Storage nodes currently have no threshold rules in `thresholds.yaml`.
-- **Infrastructure probes** run on a separate schedule (default **10 minutes**). They use the same SSH paths as server metrics (`ssh_collect_from_pg.py --infra-out`): Postgres `SELECT 1`, SSH reachability per connected server, and `portal-manage.sh status` only on **application** servers (role from `/etc/ctera/.server_roles`). Application servers must report **CTERA Portal started**; other roles get **SKIP — Not application server**. MainDB also expects PostgreSQL running in `portal-manage status` when applicable.
+- **Infrastructure probes** run on a separate schedule (default **10 minutes**). They use the same SSH paths as server metrics (`ssh_collect_from_pg.py --infra-out`): Postgres `SELECT 1`, SSH reachability per connected server, and `portal-manage.sh status` on every connected server. A host is treated as an **application** server if `/etc/ctera/.server_roles` lists **application** among its roles (JSON array such as `["application"]`, comma-separated such as `Catalog node, application`, or similar) **or** if `portal-manage status` includes a **CTERA Portal:** line. Application servers must report **Started** on that line; other roles get **SKIP — Not application server**. MainDB also expects PostgreSQL running in `portal-manage status` when applicable.
 - Licenses are collected and displayed, but the dashboard's license severity handling is mostly code-driven rather than configured in `thresholds.yaml`.
 - Portal tasks filter out ignored task names before display.
 - Server health includes separate Docker thresholds in addition to the main server-metrics thresholds.
