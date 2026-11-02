@@ -355,12 +355,56 @@ fi
     return str(exec_text(cmd) or "").strip()
 
 
+def _role_name_includes_application(role_fragment):
+    frag = str(role_fragment or "").strip().lower()
+    if not frag:
+        return False
+    words = re.sub(r"[^a-z0-9]+", " ", frag).split()
+    if "application" in words:
+        return True
+    compact = re.sub(r"[^a-z0-9]+", "", frag)
+    return compact in {"application", "applicationserver", "applicationserver", "appserver", "app"}
+
+
 def server_roles_include_application(roles_text):
-    text = str(roles_text or "").strip().lower()
+    text = str(roles_text or "").strip()
     if not text:
         return False
-    tokens = re.split(r"[\s,;]+", text)
-    return "application" in tokens
+    stripped = text.strip()
+    if stripped.startswith("["):
+        try:
+            parsed = json.loads(stripped)
+            if isinstance(parsed, list):
+                return any(_role_name_includes_application(item) for item in parsed)
+        except json.JSONDecodeError:
+            pass
+    lower = text.lower()
+    for segment in re.split(r"[,;]+", lower):
+        if _role_name_includes_application(segment):
+            return True
+    return _role_name_includes_application(lower)
+
+
+def portal_manage_indicates_application_server(status_text):
+    return "ctera portal:" in str(status_text or "").lower()
+
+
+def portal_reported_started(status_text):
+    for line in str(status_text or "").splitlines():
+        lower = line.lower()
+        if "ctera portal" not in lower:
+            continue
+        if re.search(r"\bstarted\b", lower):
+            return True
+        if re.search(r"\b(stopped|failed|not running)\b", lower):
+            return False
+    return False
+
+
+def server_is_application_host(roles_text, status_text):
+    if server_roles_include_application(roles_text):
+        return True
+    return portal_manage_indicates_application_server(status_text)
 
 
 def parse_nomad_nodes(text):
@@ -724,18 +768,19 @@ def _line_looks_running(line):
 
 
 def assess_portal_manage_for_server(roles_text, status_text, main_db=False):
-    if not server_roles_include_application(roles_text):
+    body = str(status_text or "")
+    if body.strip() == "__PORTAL_MANAGE_NOT_FOUND__":
+        return "FAIL", "portal-manage.sh not found"
+
+    if not server_is_application_host(roles_text, body):
         return "SKIP", "Not application server"
 
-    body = str(status_text or "")
     if not body.strip():
         return "FAIL", "empty portal-manage status on application server"
-    if body.strip() == "__PORTAL_MANAGE_NOT_FOUND__":
-        return "FAIL", "portal-manage.sh not found on application server"
 
-    if "ctera portal started" not in body.lower():
+    if not portal_reported_started(body):
         snippet = body.strip().replace("\n", " ")[:240]
-        return "FAIL", f"Application server: expected CTERA Portal started; got: {snippet}"
+        return "FAIL", f"Application server: CTERA Portal not started; status: {snippet}"
 
     if main_db:
         db_ok = False
@@ -922,41 +967,31 @@ def collect_infrastructure_probes(args):
             ssh_fail += 1
 
         roles_text = read_server_roles_text(exec_fn)
-        if not server_roles_include_application(roles_text):
+        try:
+            text = exec_fn(PORTAL_MANAGE_STATUS_COMMAND)
+            result, detail = assess_portal_manage_for_server(roles_text, text, main_db=main_db)
             rows.append({
                 "CheckType": "portal_manage",
                 "TargetName": name,
                 "TargetHost": host,
-                "Result": "SKIP",
-                "Detail": "Not application server",
+                "Result": result,
+                "Detail": detail,
                 "CheckedAtUTC": ts,
             })
-        else:
-            try:
-                text = exec_fn(PORTAL_MANAGE_STATUS_COMMAND)
-                result, detail = assess_portal_manage_for_server(roles_text, text, main_db=main_db)
-                rows.append({
-                    "CheckType": "portal_manage",
-                    "TargetName": name,
-                    "TargetHost": host,
-                    "Result": result,
-                    "Detail": detail,
-                    "CheckedAtUTC": ts,
-                })
-                if result == "OK":
-                    pm_ok += 1
-                elif result == "FAIL":
-                    pm_fail += 1
-            except Exception as exc:
-                rows.append({
-                    "CheckType": "portal_manage",
-                    "TargetName": name,
-                    "TargetHost": host,
-                    "Result": "FAIL",
-                    "Detail": str(exc),
-                    "CheckedAtUTC": ts,
-                })
+            if result == "OK":
+                pm_ok += 1
+            elif result == "FAIL":
                 pm_fail += 1
+        except Exception as exc:
+            rows.append({
+                "CheckType": "portal_manage",
+                "TargetName": name,
+                "TargetHost": host,
+                "Result": "FAIL",
+                "Detail": str(exc),
+                "CheckedAtUTC": ts,
+            })
+            pm_fail += 1
 
     _infra_write_rows(out_path, rows)
     if jump_client:
