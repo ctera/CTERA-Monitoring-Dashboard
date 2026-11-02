@@ -395,6 +395,14 @@ def server_roles_include_application(roles_text):
     return _role_name_includes_application(text)
 
 
+def portal_manage_indicates_not_application_server(status_text):
+    for line in str(status_text or "").splitlines():
+        lower = line.lower()
+        if "ctera portal:" in lower and "not application server" in lower:
+            return True
+    return False
+
+
 def portal_manage_indicates_application_server(status_text):
     for line in str(status_text or "").splitlines():
         lower = line.lower()
@@ -809,14 +817,26 @@ def _line_looks_running(line):
 
 def assess_portal_manage_for_server(roles_text, status_text, main_db=False):
     body = str(status_text or "")
+    roles = parse_server_roles_list(roles_text)
+    has_roles = bool(roles)
+    has_application_role = server_roles_include_application(roles_text) if has_roles else False
 
-    if not server_is_application_host(roles_text, body):
-        roles = parse_server_roles_list(roles_text)
-        detail = f"Roles: {', '.join(roles)}" if roles else "No application role in /etc/ctera/.server_roles"
-        return INFRA_RESULT_NOT_APPLICATION, detail
+    if has_roles and not has_application_role:
+        return INFRA_RESULT_NOT_APPLICATION, f"Roles: {', '.join(roles)}"
 
     if body.strip() == "__PORTAL_MANAGE_NOT_FOUND__":
-        return "FAIL", "portal-manage.sh not found on application server"
+        if has_application_role:
+            return "FAIL", "portal-manage.sh not found on application server"
+        return "FAIL", "portal-manage.sh not found (server role unknown or missing)"
+
+    if portal_manage_indicates_not_application_server(body):
+        return INFRA_RESULT_NOT_APPLICATION, "CTERA Portal: Not application server"
+
+    is_app = has_application_role or portal_manage_indicates_application_server(body)
+    if not is_app:
+        if has_roles:
+            return INFRA_RESULT_NOT_APPLICATION, f"Roles: {', '.join(roles)}"
+        return "FAIL", "Unable to verify server role (no application in .server_roles and no CTERA Portal status)"
 
     if not body.strip():
         return "FAIL", "empty portal-manage status on application server"
@@ -1028,24 +1048,18 @@ def collect_infrastructure_probes(args):
             try:
                 roles_text = read_server_roles_text(exec_fn)
             except Exception as exc:
-                rows.append({
-                    "CheckType": "portal_manage",
-                    "TargetName": name,
-                    "TargetHost": host,
-                    "Result": INFRA_RESULT_NOT_APPLICATION,
-                    "Detail": f"Could not read server roles: {exc}",
-                    "CheckedAtUTC": ts,
-                })
-                continue
+                roles_text = ""
 
             try:
                 text = exec_fn(PORTAL_MANAGE_STATUS_COMMAND)
                 result, detail = assess_portal_manage_for_server(roles_text, text, main_db=main_db)
             except Exception as exc:
-                if server_is_application_host(roles_text, ""):
+                if server_roles_include_application(roles_text):
                     result, detail = "FAIL", str(exc)
+                elif parse_server_roles_list(roles_text):
+                    result, detail = INFRA_RESULT_NOT_APPLICATION, f"Roles: {', '.join(parse_server_roles_list(roles_text))}"
                 else:
-                    result, detail = INFRA_RESULT_NOT_APPLICATION, "Not application server"
+                    result, detail = "FAIL", str(exc)
             rows.append({
                 "CheckType": "portal_manage",
                 "TargetName": name,
