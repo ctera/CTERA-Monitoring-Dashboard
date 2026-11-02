@@ -420,6 +420,20 @@ def portal_reported_started(status_text):
     return False
 
 
+def portal_ctera_portal_fail_detail(status_text):
+    for line in str(status_text or "").splitlines():
+        lower = line.lower()
+        if "ctera portal" not in lower or "not application server" in lower:
+            continue
+        if re.search(r"\bstarted\b", lower):
+            return None
+        trimmed = line.strip()
+        if re.search(r"\b(not running|stopped|failed)\b", lower):
+            return trimmed or "CTERA Portal not running"
+        return trimmed or "CTERA Portal not started"
+    return "CTERA Portal not started"
+
+
 def server_is_application_host(roles_text, status_text):
     roles = parse_server_roles_list(roles_text)
     if roles:
@@ -749,6 +763,8 @@ INFRA_CSV_HEADERS = [
     "CheckedAtUTC",
 ]
 
+INFRA_RESULT_NOT_APPLICATION = "Not application server"
+
 
 def _infra_utc_now():
     return datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
@@ -793,14 +809,16 @@ def assess_portal_manage_for_server(roles_text, status_text, main_db=False):
         return "FAIL", "portal-manage.sh not found"
 
     if not server_is_application_host(roles_text, body):
-        return "SKIP", "Not application server"
+        roles = parse_server_roles_list(roles_text)
+        detail = f"Roles: {', '.join(roles)}" if roles else "No application role in /etc/ctera/.server_roles"
+        return INFRA_RESULT_NOT_APPLICATION, detail
 
     if not body.strip():
         return "FAIL", "empty portal-manage status on application server"
 
     if not portal_reported_started(body):
-        snippet = body.strip().replace("\n", " ")[:240]
-        return "FAIL", f"Application server: CTERA Portal not started; status: {snippet}"
+        problem = portal_ctera_portal_fail_detail(body) or "CTERA Portal not started"
+        return "FAIL", f"Application server — {problem}"
 
     if main_db:
         db_ok = False
