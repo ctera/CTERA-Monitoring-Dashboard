@@ -1161,7 +1161,9 @@ chmod +x \
   "${INSTALL_DIR}/upgrade.sh" \
   "${INSTALL_DIR}/scheduler_jobs.sh" \
   "${INSTALL_DIR}/portal_jobs.sh" \
-  "${INSTALL_DIR}/filer_jobs.sh"
+  "${INSTALL_DIR}/filer_jobs.sh" \
+  "${INSTALL_DIR}/infra_jobs.sh" \
+  "${INSTALL_DIR}/portal_maindb_tunnel.sh"
 
 if [[ ! -d "${INSTALL_DIR}/venv" ]]; then
   section "Creating virtual environment"

@@ -8,6 +8,7 @@ This document lists what CTERA Monitoring Dashboard collects for each dataset an
 |---|---:|---:|---|
 | Filers | 32 | 7 | ctera_collect.py, thresholds.yaml |
 | Tenants | 9 | 1 | pg_collect_tenants.py, thresholds.yaml |
+| Infrastructure | 6 | 1 | infra_probe.py, infra_jobs.sh, thresholds.yaml |
 | Portal Servers | 4 | 1 | ctera_collect.py, thresholds.yaml |
 | Storage Nodes | 6 | 0 | ctera_collect.py, thresholds.yaml |
 | Portal Tasks | 9 | 2 | ctera_collect.py, thresholds.yaml |
@@ -28,6 +29,7 @@ This document lists what CTERA Monitoring Dashboard collects for each dataset an
 ## Notes
 
 - Storage nodes currently have no threshold rules in `thresholds.yaml`.
+- **Infrastructure probes** run on a separate schedule (default **10 minutes** per portal environment). They write `infrastructure.csv` with MainDB Postgres (`SELECT 1`), SSH reachability, and `portal-manage.sh status` parsing. Alerts use the **Infrastructure** dataset (`Result` = `FAIL` is critical by default). This is independent of the full portal collector (default 60 minutes).
 - Licenses are collected and displayed, but the dashboard's license severity handling is mostly code-driven rather than configured in `thresholds.yaml`.
 - Portal tasks filter out ignored task names before display.
 - Server health includes separate Docker thresholds in addition to the main server-metrics thresholds.

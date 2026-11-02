@@ -38,6 +38,11 @@ tenants:
     Deleted:
       warn: { eq: true }
 
+infrastructure:
+  default:
+    Result:
+      crit: { eq: FAIL }
+
 portal:
   servers:
     default:

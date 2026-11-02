@@ -55,6 +55,15 @@ sanitize_minutes() {
   fi
 }
 
+sanitize_infra_minutes() {
+  local value="${1:-}"
+  if [[ "${value}" =~ ^[0-9]+$ ]] && [[ "${value}" -gt 0 ]]; then
+    printf '%s' "${value}"
+  else
+    printf '10'
+  fi
+}
+
 mark_run() {
   local job_name="$1"
   local env_id="$2"
@@ -184,7 +193,7 @@ if [[ "${paused_setting}" =~ ^(1|true|yes|on)$ ]]; then
   exit 0
 fi
 
-sql="SELECT id, environment_name, COALESCE(portal_schedule_minutes,60), COALESCE(filer_schedule_minutes,60) FROM environments WHERE enabled = 1 ORDER BY lower(environment_name), id;"
+sql="SELECT id, environment_name, COALESCE(portal_schedule_minutes,60), COALESCE(filer_schedule_minutes,60), COALESCE(infra_schedule_minutes,10) FROM environments WHERE enabled = 1 ORDER BY lower(environment_name), id;"
 rows="$(sqlite3 -tabs "${DB_PATH}" "${sql}")"
 if [[ -z "${rows}" ]]; then
   log "No enabled portal environments found. Scheduler idle."
@@ -192,10 +201,12 @@ if [[ -z "${rows}" ]]; then
 fi
 
 DUE_JOBS=()
-while IFS=$'\t' read -r env_id env_name portal_minutes filer_minutes; do
+while IFS=$'\t' read -r env_id env_name portal_minutes filer_minutes infra_minutes; do
   [[ -z "${env_id:-}" ]] && continue
+  infra_minutes="$(sanitize_infra_minutes "${infra_minutes}")"
   claim_due_job "${env_id}" "${env_name}" "portal" "${portal_minutes}"
   claim_due_job "${env_id}" "${env_name}" "filer" "${filer_minutes}"
+  claim_due_job "${env_id}" "${env_name}" "infra" "${infra_minutes}"
 done <<< "${rows}"
 
 # Drop the global lock before collectors run so the next cron tick can schedule other work.

@@ -1299,9 +1299,10 @@ fi
 chmod 600 "${CONFIG_FILE}"
 
 chmod +x "${INSTALL_DIR}"/*jobs.sh
+chmod +x "${INSTALL_DIR}/portal_maindb_tunnel.sh"
 chmod +x "${INSTALL_DIR}/scheduler_jobs.sh"
 chmod +x "${INSTALL_DIR}/install_featherdash.sh"
-touch "${LOG_DIR}/portal.log" "${LOG_DIR}/filer.log" "${LOG_DIR}/scheduler.log"
+touch "${LOG_DIR}/portal.log" "${LOG_DIR}/filer.log" "${LOG_DIR}/infra.log" "${LOG_DIR}/scheduler.log"
 chown -R "${SERVICE_USER}:${SERVICE_USER}" "${INSTALL_DIR}" "${DATA_DIR}" "${LOG_DIR}"
 chown root:"${SERVICE_USER}" "${CONFIG_FILE}"
 chmod 640 "${CONFIG_FILE}"
