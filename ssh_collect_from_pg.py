@@ -366,27 +366,44 @@ def _role_name_includes_application(role_fragment):
     return compact in {"application", "applicationserver", "applicationserver", "appserver", "app"}
 
 
+def parse_server_roles_list(roles_text):
+    text = str(roles_text or "").strip()
+    if not text:
+        return []
+    if text.startswith("["):
+        try:
+            parsed = json.loads(text)
+            if isinstance(parsed, list):
+                return [str(item).strip() for item in parsed if str(item).strip()]
+        except json.JSONDecodeError:
+            pass
+    parts = []
+    for segment in re.split(r"[,;]+", text):
+        segment = segment.strip()
+        if segment:
+            parts.append(segment)
+    return parts
+
+
 def server_roles_include_application(roles_text):
+    roles = parse_server_roles_list(roles_text)
+    if roles:
+        return any(_role_name_includes_application(item) for item in roles)
     text = str(roles_text or "").strip()
     if not text:
         return False
-    stripped = text.strip()
-    if stripped.startswith("["):
-        try:
-            parsed = json.loads(stripped)
-            if isinstance(parsed, list):
-                return any(_role_name_includes_application(item) for item in parsed)
-        except json.JSONDecodeError:
-            pass
-    lower = text.lower()
-    for segment in re.split(r"[,;]+", lower):
-        if _role_name_includes_application(segment):
-            return True
-    return _role_name_includes_application(lower)
+    return _role_name_includes_application(text)
 
 
 def portal_manage_indicates_application_server(status_text):
-    return "ctera portal:" in str(status_text or "").lower()
+    for line in str(status_text or "").splitlines():
+        lower = line.lower()
+        if "ctera portal" not in lower:
+            continue
+        if "not application server" in lower:
+            return False
+        return True
+    return False
 
 
 def portal_reported_started(status_text):
@@ -394,6 +411,8 @@ def portal_reported_started(status_text):
         lower = line.lower()
         if "ctera portal" not in lower:
             continue
+        if "not application server" in lower:
+            return False
         if re.search(r"\bstarted\b", lower):
             return True
         if re.search(r"\b(stopped|failed|not running)\b", lower):
@@ -402,8 +421,9 @@ def portal_reported_started(status_text):
 
 
 def server_is_application_host(roles_text, status_text):
-    if server_roles_include_application(roles_text):
-        return True
+    roles = parse_server_roles_list(roles_text)
+    if roles:
+        return server_roles_include_application(roles_text)
     return portal_manage_indicates_application_server(status_text)
 
 
