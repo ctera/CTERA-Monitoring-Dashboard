@@ -1886,6 +1886,7 @@ _EMAIL_SETTING_DEFAULTS = {
     "smtp_password": "",
     "sender_name": "CTERA Monitoring Dashboard",
     "sender_email": "",
+    "test_email_target": "",
     "use_tls": "true",
     "use_ssl": "false",
 }
@@ -2530,7 +2531,7 @@ def _delete_local_user(user_id):
 def _save_email_settings(payload):
     current = _load_email_settings(include_secret=True)
     merged = dict(current)
-    for key in ("smtp_host", "smtp_port", "smtp_username", "sender_name", "sender_email"):
+    for key in ("smtp_host", "smtp_port", "smtp_username", "sender_name", "sender_email", "test_email_target"):
         if key in payload:
             merged[key] = str(payload.get(key) or "").strip()
     merged["use_tls"] = "true" if _bool_setting(payload.get("use_tls"), current.get("use_tls", True)) else "false"
@@ -3581,6 +3582,32 @@ def _delete_environment(env_id):
     return _environment_payload()["items"]
 
 
+def _read_infra_probe_severity(env_id):
+    cfg = load_conf_for_environment(str(env_id))
+    ext = _load_dashboard_thresholds(cfg)
+    probes_csv = (cfg.get("infrastructure") or {}).get("probes_csv") or ""
+    if probes_csv and not os.path.isabs(probes_csv):
+        probes_csv = os.path.join(APP_DIR, probes_csv)
+    probes_csv = os.path.normpath(os.path.abspath(probes_csv)) if probes_csv else ""
+    rows, headers = read_csv_rows(probes_csv)
+    if not rows:
+        return {"bad": 0, "warn": 0, "rows": 0}
+    counts = _count_row_severity(rows, headers, make_infrastructure_warn_fn(ext))
+    return {"bad": counts["bad"], "warn": counts["warn"], "rows": len(rows)}
+
+
+def _admin_enabled_environments_infra_health():
+    bad = warn = rows = 0
+    for env in _list_environments(include_secret=False):
+        if not env.get("enabled"):
+            continue
+        sev = _read_infra_probe_severity(env["id"])
+        bad += sev["bad"]
+        warn += sev["warn"]
+        rows += sev["rows"]
+    return {"bad": bad, "warn": warn, "rows": rows}
+
+
 def _environment_payload():
     items = _list_environments(include_secret=False)
     for item in items:
@@ -3588,6 +3615,10 @@ def _environment_payload():
         item["portal_last_run_at"] = _scheduler_last_run_iso("portal", env_id)
         item["filer_last_run_at"] = _scheduler_last_run_iso("filer", env_id)
         item["infra_last_run_at"] = _scheduler_last_run_iso("infra", env_id)
+        infra_sev = _read_infra_probe_severity(env_id)
+        item["infra_critical"] = int(infra_sev.get("bad") or 0)
+        item["infra_warning"] = int(infra_sev.get("warn") or 0)
+        item["infra_probe_rows"] = int(infra_sev.get("rows") or 0)
     return {
         "items": items,
         "count": len(items),
@@ -5937,8 +5968,8 @@ async function runAISummary(){
       if (active) active.textContent = String(state.active || 0);
       if (cleared) cleared.textContent = String(state.cleared || 0);
       if (total) total.textContent = String(state.total || 0);
-      const ids = ['smtpHost','smtpPort','smtpUsername','senderName','senderEmail'];
-      const keys = ['smtp_host','smtp_port','smtp_username','sender_name','sender_email'];
+      const ids = ['smtpHost','smtpPort','smtpUsername','senderName','senderEmail','testEmailTarget'];
+      const keys = ['smtp_host','smtp_port','smtp_username','sender_name','sender_email','test_email_target'];
       ids.forEach((id, index) => {
         const el = document.getElementById(id);
         if (el) el.value = settings[keys[index]] || '';
@@ -6055,6 +6086,7 @@ async function runAISummary(){
         smtp_password: document.getElementById('smtpPassword').value,
         sender_name: document.getElementById('senderName').value,
         sender_email: document.getElementById('senderEmail').value,
+        test_email_target: document.getElementById('testEmailTarget').value,
         use_tls: document.getElementById('smtpUseTls').checked,
         use_ssl: document.getElementById('smtpUseSsl').checked,
       };
@@ -6092,6 +6124,7 @@ async function runAISummary(){
         || String(document.getElementById('smtpUsername').value || '') !== String(saved.smtp_username || '')
         || String(document.getElementById('senderName').value || '') !== String(saved.sender_name || '')
         || String(document.getElementById('senderEmail').value || '') !== String(saved.sender_email || '')
+        || String(document.getElementById('testEmailTarget').value || '') !== String(saved.test_email_target || '')
         || Boolean(document.getElementById('smtpUseTls').checked) !== Boolean(saved.use_tls)
         || Boolean(document.getElementById('smtpUseSsl').checked) !== Boolean(saved.use_ssl)
         || String(document.getElementById('smtpPassword').value || '').trim() !== '';
@@ -6099,10 +6132,14 @@ async function runAISummary(){
 
     async function sendNotificationTestEmail(){
       const status = document.getElementById('notifySettingsStatus');
-      const target = document.getElementById('testEmailTarget').value;
+      const targetEl = document.getElementById('testEmailTarget');
+      const target = String((targetEl && targetEl.value) || '').trim();
       const saved = notificationConfig.settings || {};
+      const pwTyped = String(document.getElementById('smtpPassword').value || '').trim();
       if (notificationSettingsDirty()) {
-        const message = 'Save Email Settings first, then click Send Test Email.';
+        const message = pwTyped
+          ? 'SMTP password is entered but not saved yet. Click Save Email Settings, then Send Test Email.'
+          : 'Save Email Settings first, then click Send Test Email.';
         if (status) {
           status.dataset.preserved = '1';
           status.textContent = message;
@@ -6841,6 +6878,21 @@ async function runAISummary(){
       return text;
     }
 
+    function formatInfraHealthCell(env){
+      const bad = Number(env && env.infra_critical) || 0;
+      const warn = Number(env && env.infra_warning) || 0;
+      if (bad > 0) {
+        return '<span class="pill pill-bad" title="Infrastructure probe FAIL rows">' + bad + ' critical</span>';
+      }
+      if (warn > 0) {
+        return '<span class="pill pill-info" title="Infrastructure probe warning rows">' + warn + ' warning</span>';
+      }
+      if ((Number(env && env.infra_probe_rows) || 0) > 0) {
+        return '<span class="pill pill-ok">OK</span>';
+      }
+      return '<span class="pill pill-muted" title="No infrastructure.csv rows yet">No probes</span>';
+    }
+
     function renderEnvironmentList(){
       const body = document.getElementById('environmentListBody');
       const empty = document.getElementById('environmentListEmpty');
@@ -6856,6 +6908,7 @@ async function runAISummary(){
           + '<td>' + (env.portal_fqdn || env.portal_ip || '-') + '</td>'
           + '<td>' + (env.main_db_ip || env.pg_host || '-') + '</td>'
           + '<td>' + (env.enabled ? '<span class="pill pill-ok">Enabled</span>' : '<span class="pill pill-muted">Disabled</span>') + '</td>'
+          + '<td>' + formatInfraHealthCell(env) + '</td>'
           + '<td>' + formatPortalLastRunCell(env) + '</td>'
           + '<td>' + formatLocalTimestamp(env.updated_at || env.created_at || '') + '</td>';
         const actionsTd = document.createElement('td');
@@ -7942,6 +7995,7 @@ async function runAISummary(){
               <th>Portal</th>
               <th>MainDB</th>
               <th>Status</th>
+              <th>Infrastructure</th>
               <th>Last portal success</th>
               <th>Updated</th>
               <th>Actions</th>
@@ -11000,10 +11054,37 @@ def index():
     overall_rows = sum(card["rows"] for card in overview_cards)
     overall_bad = sum(card["bad"] for card in overview_cards)
     overall_warn = sum(card["warn"] for card in overview_cards)
+    if not current_env_id:
+        admin_infra = _admin_enabled_environments_infra_health()
+        overall_bad = int(admin_infra.get("bad") or 0)
+        overall_warn = int(admin_infra.get("warn") or 0)
+        overall_rows = int(admin_infra.get("rows") or 0)
+        for card in overview_cards:
+            if card.get("tab") == "infra":
+                card["bad"] = overall_bad
+                card["warn"] = overall_warn
+                card["rows"] = overall_rows
+                card["ok"] = max(overall_rows - overall_bad - overall_warn, 0)
+                denom = max(overall_rows, 1)
+                card["bad_pct"] = round((overall_bad / denom) * 100, 2)
+                card["warn_pct"] = round((overall_warn / denom) * 100, 2)
+                card["ok_pct"] = round((card["ok"] / denom) * 100, 2)
+                if overall_bad:
+                    card["status_text"] = "Critical"
+                    card["status_class"] = "crit"
+                elif overall_warn:
+                    card["status_text"] = "Warning"
+                    card["status_class"] = "warn"
+                else:
+                    card["status_text"] = "OK"
+                    card["status_class"] = "ok"
+                break
     has_portal_critical = portal_counts["bad"] > 0
     has_postgres_critical = pg_counts["bad"] > 0
     has_servers_health_critical = hosts_counts["bad"] > 0
     has_infra_critical = infra_counts["bad"] > 0
+    if not current_env_id:
+        has_infra_critical = overall_bad > 0
     has_high_risk_critical = has_portal_critical or has_postgres_critical or has_servers_health_critical or has_infra_critical
     edge_only_critical = edge_counts["bad"] > 0 and not has_high_risk_critical
     if has_high_risk_critical:
