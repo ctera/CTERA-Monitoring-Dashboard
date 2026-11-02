@@ -4821,6 +4821,7 @@ HTML = """
       overview: 'dashboard',
       jobs: 'dashboard',
       tenants: 'portal',
+      infra: 'portal',
       portal: 'portal',
       pg: 'portal',
       svrhlth: 'portal',

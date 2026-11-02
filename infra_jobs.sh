@@ -97,7 +97,7 @@ if [[ -n "${TUNNEL_ERR}" ]]; then
   collect_replace "${INFRA_CSV}" \
     python "${SCRIPT_DIR}/infra_probe.py" \
     "${PROBE_ARGS[@]}" \
-    --tunnel-error "${TUNNEL_ERR}" || true
+    --tunnel-error "${TUNNEL_ERR}"
 else
   collect_replace "${INFRA_CSV}" \
     python "${SCRIPT_DIR}/infra_probe.py" \
@@ -108,7 +108,7 @@ else
     --pg-sslmode "${PG_SSLMODE}" \
     --ssh-jump-host "${SERVER_METRICS_JUMP_HOST}" \
     --ssh-jump-port "${LOCAL_MAINDB_SSH_PORT}" \
-    --ssh-jump-user "${SERVER_METRICS_JUMP_USER}" || true
+    --ssh-jump-user "${SERVER_METRICS_JUMP_USER}"
 fi
 
 PORT="${PORT:-8080}"

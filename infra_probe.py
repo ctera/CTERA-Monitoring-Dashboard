@@ -123,18 +123,21 @@ for candidate in \
   /usr/bin/portal.sh \
   /opt/ctera/bin/portal.sh
 do
+  resolved=""
   if command -v "$candidate" >/dev/null 2>&1; then
     resolved="$(command -v "$candidate")"
-    "$resolved" status 2>&1 && exit 0
+  elif [ -x "$candidate" ]; then
+    resolved="$candidate"
   fi
-  if [ -x "$candidate" ]; then
-    "$candidate" status 2>&1 && exit 0
+  if [ -n "$resolved" ]; then
+    "$resolved" status 2>&1
+    exit 0
   fi
 done
 echo "__PORTAL_MANAGE_NOT_FOUND__"
 """.strip()
             )
-            if "__PORTAL_MANAGE_NOT_FOUND__" in text:
+            if text.strip() == "__PORTAL_MANAGE_NOT_FOUND__":
                 return "FAIL", "portal-manage.sh not found on MainDB"
             ok, detail = assess_portal_manage_status(text)
             return ("OK" if ok else "FAIL"), detail
