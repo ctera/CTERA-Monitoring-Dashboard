@@ -20,6 +20,7 @@ import socket
 import time
 import json
 import re
+from datetime import datetime, timezone
 
 import paramiko
 import psycopg2
@@ -343,6 +344,25 @@ fi
     return "replication" in text
 
 
+def read_server_roles_text(exec_text):
+    cmd = r"""
+if [ -f /etc/ctera/.server_roles ]; then
+  cat /etc/ctera/.server_roles 2>/dev/null
+else
+  echo ''
+fi
+"""
+    return str(exec_text(cmd) or "").strip()
+
+
+def server_roles_include_application(roles_text):
+    text = str(roles_text or "").strip().lower()
+    if not text:
+        return False
+    tokens = re.split(r"[\s,;]+", text)
+    return "application" in tokens
+
+
 def parse_nomad_nodes(text):
     lines = [line.rstrip() for line in text.splitlines() if line.strip()]
     if len(lines) < 2:
@@ -630,6 +650,327 @@ true
     raise RuntimeError("portal-manage/portal status returned no parsable version line")
 
 
+PORTAL_MANAGE_STATUS_COMMAND = """
+export PATH="$PATH:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+for candidate in \
+  portal-manage.sh \
+  /usr/local/bin/portal-manage.sh \
+  /usr/bin/portal-manage.sh \
+  /opt/ctera/bin/portal-manage.sh \
+  portal.sh \
+  /usr/local/bin/portal.sh \
+  /usr/bin/portal.sh \
+  /opt/ctera/bin/portal.sh
+do
+  resolved=""
+  if command -v "$candidate" >/dev/null 2>&1; then
+    resolved="$(command -v "$candidate")"
+  elif [ -x "$candidate" ]; then
+    resolved="$candidate"
+  fi
+  if [ -n "$resolved" ]; then
+    "$resolved" status 2>&1
+    exit 0
+  fi
+done
+echo "__PORTAL_MANAGE_NOT_FOUND__"
+""".strip()
+
+INFRA_CSV_HEADERS = [
+    "CheckType",
+    "TargetName",
+    "TargetHost",
+    "Result",
+    "Detail",
+    "CheckedAtUTC",
+]
+
+
+def _infra_utc_now():
+    return datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+
+
+def _infra_write_rows(path, rows):
+    os.makedirs(os.path.dirname(os.path.abspath(path)) or ".", exist_ok=True)
+    with open(path, "w", newline="", encoding="utf-8") as handle:
+        writer = csv.DictWriter(handle, fieldnames=INFRA_CSV_HEADERS, extrasaction="ignore")
+        writer.writeheader()
+        for row in rows:
+            writer.writerow(row)
+
+
+def _infra_tunnel_failure_rows(maindb_host, maindb_label, error_message):
+    ts = _infra_utc_now()
+    msg = str(error_message or "MainDB SSH tunnel setup failed").strip()
+    base = {
+        "TargetName": maindb_label or "MainDB",
+        "TargetHost": maindb_host or "",
+        "CheckedAtUTC": ts,
+    }
+    return [
+        {**base, "CheckType": "postgres", "Result": "FAIL", "Detail": msg},
+        {**base, "CheckType": "server_ssh", "Result": "FAIL", "Detail": msg},
+        {**base, "CheckType": "portal_manage", "Result": "FAIL", "Detail": msg},
+    ]
+
+
+def _line_looks_running(line):
+    lower = str(line or "").lower()
+    if not lower.strip():
+        return False
+    if re.search(r"\b(stopped|failed|inactive|dead|not running)\b", lower):
+        return False
+    return bool(re.search(r"\brunning\b|\bactive\b|\bstarted\b", lower))
+
+
+def assess_portal_manage_for_server(roles_text, status_text, main_db=False):
+    if not server_roles_include_application(roles_text):
+        return "SKIP", "Not application server"
+
+    body = str(status_text or "")
+    if not body.strip():
+        return "FAIL", "empty portal-manage status on application server"
+    if body.strip() == "__PORTAL_MANAGE_NOT_FOUND__":
+        return "FAIL", "portal-manage.sh not found on application server"
+
+    if "ctera portal started" not in body.lower():
+        snippet = body.strip().replace("\n", " ")[:240]
+        return "FAIL", f"Application server: expected CTERA Portal started; got: {snippet}"
+
+    if main_db:
+        db_ok = False
+        for line in body.splitlines():
+            lower = line.lower()
+            if re.search(r"\b(postgres|postgresql)\b", lower) and _line_looks_running(line):
+                db_ok = True
+                break
+        if not db_ok:
+            return "FAIL", "MainDB: PostgreSQL not reported running in portal-manage status"
+
+    image, service = parse_portal_manage_versions(body)
+    if image or service:
+        return "OK", f"CTERA Portal started | Image {image} | Service {service}"
+    return "OK", "CTERA Portal started"
+
+
+def build_server_exec_fn(jump_client, args, server):
+    host = server.get("default_ipaddr") or server.get("public_ipaddr")
+    if not host:
+        return None
+
+    if jump_client and args.via_main_db_host and not server.get("main_db"):
+        return lambda cmd, h=host: target_exec_text_via_main_db(
+            jump_client,
+            args.via_main_db_host,
+            args.via_main_db_user or args.user,
+            h,
+            args.user,
+            cmd,
+            target_sudo=args.sudo,
+            jump_run_as_user=args.jump_run_as_user,
+            timeout=args.ssh_timeout,
+            main_db_port=args.via_main_db_port,
+        )
+    if jump_client and args.via_main_db_host and server.get("main_db"):
+        return lambda cmd: main_db_exec_text_via_jump(
+            jump_client,
+            args.via_main_db_host,
+            args.via_main_db_user or args.user,
+            cmd,
+            target_sudo=args.sudo,
+            jump_run_as_user=args.jump_run_as_user,
+            timeout=args.ssh_timeout,
+            main_db_port=args.via_main_db_port,
+        )
+    if jump_client and not server.get("main_db"):
+        return lambda cmd, h=host: jump_exec_text(
+            jump_client,
+            h,
+            args.user,
+            cmd,
+            target_sudo=args.sudo,
+            jump_run_as_user=args.jump_run_as_user,
+            timeout=args.ssh_timeout,
+        )
+    if jump_client and server.get("main_db"):
+        return lambda cmd: ssh_exec_text(jump_client, as_root_command(cmd, use_sudo=args.sudo))
+    return None
+
+
+def collect_infrastructure_probes(args):
+    out_path = str(args.infra_out or "").strip()
+    if not out_path:
+        raise ValueError("--infra-out path is required")
+
+    tunnel_error = str(getattr(args, "tunnel_error", "") or "").strip()
+    maindb_label = str(getattr(args, "infra_maindb_label", "") or args.via_main_db_host or args.pg_host or "MainDB")
+    maindb_host = str(getattr(args, "infra_maindb_host", "") or args.via_main_db_host or "")
+
+    if tunnel_error:
+        _infra_write_rows(out_path, _infra_tunnel_failure_rows(maindb_host, maindb_label, tunnel_error))
+        print(f"Wrote tunnel-failure infrastructure probes to {out_path}", flush=True)
+        return
+
+    if not args.pg_password:
+        raise ValueError("Postgres password required (--pg-password or PGPASSWORD)")
+
+    conn = psycopg2.connect(
+        host=args.pg_host,
+        port=args.pg_port,
+        dbname=args.pg_db,
+        user=args.pg_user,
+        password=args.pg_password,
+        sslmode=args.pg_sslmode,
+    )
+    servers = fetch_servers(conn, only_connected=True)
+    conn.close()
+
+    pkey = load_pkey(args.key, args.passphrase) if args.key else None
+    jump_pkey = load_pkey(args.jump_key, args.jump_passphrase) if args.jump_key else None
+    jump_client = None
+    if args.jump_host:
+        jump_client = connect_ssh(
+            args.jump_host,
+            args.jump_user or args.user,
+            port=args.jump_port,
+            pkey=jump_pkey or pkey,
+            password=(None if (jump_pkey or pkey) else args.password),
+            timeout=args.ssh_timeout,
+        )
+
+    ts = _infra_utc_now()
+    rows = []
+
+    try:
+        pg_conn = psycopg2.connect(
+            host=args.pg_host,
+            port=args.pg_port,
+            dbname=args.pg_db,
+            user=args.pg_user,
+            password=args.pg_password,
+            sslmode=args.pg_sslmode,
+            connect_timeout=max(1, int(args.ssh_timeout)),
+        )
+        try:
+            with pg_conn.cursor() as cur:
+                cur.execute("SELECT 1")
+                cur.fetchone()
+            pg_result, pg_detail = "OK", "SELECT 1 succeeded"
+        finally:
+            pg_conn.close()
+    except Exception as exc:
+        pg_result, pg_detail = "FAIL", str(exc)
+
+    rows.append({
+        "CheckType": "postgres",
+        "TargetName": maindb_label,
+        "TargetHost": maindb_host,
+        "Result": pg_result,
+        "Detail": pg_detail,
+        "CheckedAtUTC": ts,
+    })
+
+    ssh_ok = ssh_fail = pm_ok = pm_fail = 0
+    for server in servers:
+        name = str(server.get("name") or "").strip() or str(server.get("uid") or "server")
+        host = str(server.get("default_ipaddr") or server.get("public_ipaddr") or "").strip()
+        main_db = bool(server.get("main_db"))
+        exec_fn = build_server_exec_fn(jump_client, args, server)
+
+        if not exec_fn:
+            rows.append({
+                "CheckType": "server_ssh",
+                "TargetName": name,
+                "TargetHost": host,
+                "Result": "SKIP",
+                "Detail": "No SSH path configured for this server",
+                "CheckedAtUTC": ts,
+            })
+            rows.append({
+                "CheckType": "portal_manage",
+                "TargetName": name,
+                "TargetHost": host,
+                "Result": "SKIP",
+                "Detail": "No SSH path configured for this server",
+                "CheckedAtUTC": ts,
+            })
+            continue
+
+        try:
+            out = exec_fn("echo infra-ssh-ok")
+            if "infra-ssh-ok" in out:
+                rows.append({
+                    "CheckType": "server_ssh",
+                    "TargetName": name,
+                    "TargetHost": host,
+                    "Result": "OK",
+                    "Detail": "SSH reachable",
+                    "CheckedAtUTC": ts,
+                })
+                ssh_ok += 1
+            else:
+                raise RuntimeError(f"unexpected echo: {out[:200]}")
+        except Exception as exc:
+            rows.append({
+                "CheckType": "server_ssh",
+                "TargetName": name,
+                "TargetHost": host,
+                "Result": "FAIL",
+                "Detail": str(exc),
+                "CheckedAtUTC": ts,
+            })
+            ssh_fail += 1
+
+        roles_text = read_server_roles_text(exec_fn)
+        if not server_roles_include_application(roles_text):
+            rows.append({
+                "CheckType": "portal_manage",
+                "TargetName": name,
+                "TargetHost": host,
+                "Result": "SKIP",
+                "Detail": "Not application server",
+                "CheckedAtUTC": ts,
+            })
+        else:
+            try:
+                text = exec_fn(PORTAL_MANAGE_STATUS_COMMAND)
+                result, detail = assess_portal_manage_for_server(roles_text, text, main_db=main_db)
+                rows.append({
+                    "CheckType": "portal_manage",
+                    "TargetName": name,
+                    "TargetHost": host,
+                    "Result": result,
+                    "Detail": detail,
+                    "CheckedAtUTC": ts,
+                })
+                if result == "OK":
+                    pm_ok += 1
+                elif result == "FAIL":
+                    pm_fail += 1
+            except Exception as exc:
+                rows.append({
+                    "CheckType": "portal_manage",
+                    "TargetName": name,
+                    "TargetHost": host,
+                    "Result": "FAIL",
+                    "Detail": str(exc),
+                    "CheckedAtUTC": ts,
+                })
+                pm_fail += 1
+
+    _infra_write_rows(out_path, rows)
+    if jump_client:
+        try:
+            jump_client.close()
+        except Exception:
+            pass
+    print(
+        f"Wrote infrastructure probes to {out_path} "
+        f"(postgres={pg_result}, servers_ssh ok={ssh_ok} fail={ssh_fail}, portal_manage ok={pm_ok} fail={pm_fail})",
+        flush=True,
+    )
+
+
 # ---------------------------
 # Postgres fetch (with Name join)
 # ---------------------------
@@ -749,7 +1090,7 @@ def main():
     ap.add_argument("--pg-port", type=int, default=5432)
     ap.add_argument("--pg-db", default="postgres")
     ap.add_argument("--pg-user", required=True)
-    ap.add_argument("--pg-password", required=True)
+    ap.add_argument("--pg-password", default=os.environ.get("PGPASSWORD") or None)
     ap.add_argument("--pg-sslmode", choices=["disable","allow","prefer","require","verify-ca","verify-full"], default="disable")
 
     ap.add_argument("--only-connected", action="store_true", help="Only collect from rows where servers.connected = true")
@@ -770,7 +1111,11 @@ def main():
     ap.add_argument("--via-main-db-host", default=None, help="When jump-host access to MainDB is already configured, SSH onward to this MainDB host from the jump host")
     ap.add_argument("--via-main-db-port", type=int, default=22, help="SSH port to use when the jump host connects onward to MainDB")
     ap.add_argument("--via-main-db-user", default=None, help="SSH username to use from the jump host when connecting onward to MainDB")
-    ap.add_argument("--out", required=True, help="Output CSV path")
+    ap.add_argument("--out", default=None, help="Output CSV path for server metrics")
+    ap.add_argument("--infra-out", default=None, help="Write infrastructure probe CSV to this path and exit")
+    ap.add_argument("--tunnel-error", default="", help="Infrastructure: write FAIL rows when MainDB tunnel setup failed")
+    ap.add_argument("--infra-maindb-label", default="", help="Infrastructure: display name for MainDB/postgres row")
+    ap.add_argument("--infra-maindb-host", default="", help="Infrastructure: MainDB host/IP for reporting")
     ap.add_argument("--nomad-out", default=None, help="Optional CSV output path for Nomad node status snapshots")
     ap.add_argument("--consul-out", default=None, help="Optional CSV output path for Consul member snapshots")
     ap.add_argument("--docker-out", default=None, help="Optional CSV output path for Docker container snapshots")
@@ -778,6 +1123,13 @@ def main():
     ap.add_argument("--snapshots-out", default=None, help="Optional CSV output path for portal storage snapshot status")
 
     args = ap.parse_args()
+    if not args.pg_password:
+        args.pg_password = os.environ.get("PGPASSWORD") or ""
+    if args.infra_out:
+        collect_infrastructure_probes(args)
+        return
+    if not args.out:
+        ap.error("--out is required unless --infra-out is set")
 
     # Connect to Postgres
     conn = psycopg2.connect(
