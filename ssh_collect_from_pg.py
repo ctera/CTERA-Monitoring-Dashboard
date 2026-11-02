@@ -398,7 +398,7 @@ def server_roles_include_application(roles_text):
 def portal_manage_indicates_application_server(status_text):
     for line in str(status_text or "").splitlines():
         lower = line.lower()
-        if "ctera portal" not in lower:
+        if "ctera portal:" not in lower:
             continue
         if "not application server" in lower:
             return False
@@ -794,6 +794,10 @@ def _infra_tunnel_failure_rows(maindb_host, maindb_label, error_message):
     ]
 
 
+def _infra_collection_failure_rows(maindb_host, maindb_label, error_message):
+    return _infra_tunnel_failure_rows(maindb_host, maindb_label, error_message)
+
+
 def _line_looks_running(line):
     lower = str(line or "").lower()
     if not lower.strip():
@@ -805,13 +809,14 @@ def _line_looks_running(line):
 
 def assess_portal_manage_for_server(roles_text, status_text, main_db=False):
     body = str(status_text or "")
-    if body.strip() == "__PORTAL_MANAGE_NOT_FOUND__":
-        return "FAIL", "portal-manage.sh not found"
 
     if not server_is_application_host(roles_text, body):
         roles = parse_server_roles_list(roles_text)
         detail = f"Roles: {', '.join(roles)}" if roles else "No application role in /etc/ctera/.server_roles"
         return INFRA_RESULT_NOT_APPLICATION, detail
+
+    if body.strip() == "__PORTAL_MANAGE_NOT_FOUND__":
+        return "FAIL", "portal-manage.sh not found on application server"
 
     if not body.strip():
         return "FAIL", "empty portal-manage status on application server"
@@ -894,120 +899,153 @@ def collect_infrastructure_probes(args):
         print(f"Wrote tunnel-failure infrastructure probes to {out_path}", flush=True)
         return
 
-    if not args.pg_password:
-        raise ValueError("Postgres password required (--pg-password or PGPASSWORD)")
-
-    conn = psycopg2.connect(
-        host=args.pg_host,
-        port=args.pg_port,
-        dbname=args.pg_db,
-        user=args.pg_user,
-        password=args.pg_password,
-        sslmode=args.pg_sslmode,
-    )
-    servers = fetch_servers(conn, only_connected=True)
-    conn.close()
-
-    pkey = load_pkey(args.key, args.passphrase) if args.key else None
-    jump_pkey = load_pkey(args.jump_key, args.jump_passphrase) if args.jump_key else None
-    jump_client = None
-    if args.jump_host:
-        jump_client = connect_ssh(
-            args.jump_host,
-            args.jump_user or args.user,
-            port=args.jump_port,
-            pkey=jump_pkey or pkey,
-            password=(None if (jump_pkey or pkey) else args.password),
-            timeout=args.ssh_timeout,
-        )
-
-    ts = _infra_utc_now()
     rows = []
-
+    jump_client = None
     try:
-        pg_conn = psycopg2.connect(
+        if not args.pg_password:
+            raise ValueError("Postgres password required (--pg-password or PGPASSWORD)")
+
+        conn = psycopg2.connect(
             host=args.pg_host,
             port=args.pg_port,
             dbname=args.pg_db,
             user=args.pg_user,
             password=args.pg_password,
             sslmode=args.pg_sslmode,
-            connect_timeout=max(1, int(args.ssh_timeout)),
         )
-        try:
-            with pg_conn.cursor() as cur:
-                cur.execute("SELECT 1")
-                cur.fetchone()
-            pg_result, pg_detail = "OK", "SELECT 1 succeeded"
-        finally:
-            pg_conn.close()
-    except Exception as exc:
-        pg_result, pg_detail = "FAIL", str(exc)
+        servers = fetch_servers(conn, only_connected=True)
+        conn.close()
 
-    rows.append({
-        "CheckType": "postgres",
-        "TargetName": maindb_label,
-        "TargetHost": maindb_host,
-        "Result": pg_result,
-        "Detail": pg_detail,
-        "CheckedAtUTC": ts,
-    })
+        pkey = load_pkey(args.key, args.passphrase) if args.key else None
+        jump_pkey = load_pkey(args.jump_key, args.jump_passphrase) if args.jump_key else None
+        if args.jump_host:
+            jump_client = connect_ssh(
+                args.jump_host,
+                args.jump_user or args.user,
+                port=args.jump_port,
+                pkey=jump_pkey or pkey,
+                password=(None if (jump_pkey or pkey) else args.password),
+                timeout=args.ssh_timeout,
+            )
 
-    ssh_ok = ssh_fail = pm_ok = pm_fail = 0
-    for server in servers:
-        name = str(server.get("name") or "").strip() or str(server.get("uid") or "server")
-        host = str(server.get("default_ipaddr") or server.get("public_ipaddr") or "").strip()
-        main_db = bool(server.get("main_db"))
-        exec_fn = build_server_exec_fn(jump_client, args, server)
-
-        if not exec_fn:
-            rows.append({
-                "CheckType": "server_ssh",
-                "TargetName": name,
-                "TargetHost": host,
-                "Result": "SKIP",
-                "Detail": "No SSH path configured for this server",
-                "CheckedAtUTC": ts,
-            })
-            rows.append({
-                "CheckType": "portal_manage",
-                "TargetName": name,
-                "TargetHost": host,
-                "Result": "SKIP",
-                "Detail": "No SSH path configured for this server",
-                "CheckedAtUTC": ts,
-            })
-            continue
+        ts = _infra_utc_now()
+        rows = []
 
         try:
-            out = exec_fn("echo infra-ssh-ok")
-            if "infra-ssh-ok" in out:
+            pg_conn = psycopg2.connect(
+                host=args.pg_host,
+                port=args.pg_port,
+                dbname=args.pg_db,
+                user=args.pg_user,
+                password=args.pg_password,
+                sslmode=args.pg_sslmode,
+                connect_timeout=max(1, int(args.ssh_timeout)),
+            )
+            try:
+                with pg_conn.cursor() as cur:
+                    cur.execute("SELECT 1")
+                    cur.fetchone()
+                pg_result, pg_detail = "OK", "SELECT 1 succeeded"
+            finally:
+                pg_conn.close()
+        except Exception as exc:
+            pg_result, pg_detail = "FAIL", str(exc)
+
+        rows.append({
+            "CheckType": "postgres",
+            "TargetName": maindb_label,
+            "TargetHost": maindb_host,
+            "Result": pg_result,
+            "Detail": pg_detail,
+            "CheckedAtUTC": ts,
+        })
+
+        ssh_ok = ssh_fail = pm_ok = pm_fail = 0
+        for server in servers:
+            name = str(server.get("name") or "").strip() or str(server.get("uid") or "server")
+            host = str(server.get("default_ipaddr") or server.get("public_ipaddr") or "").strip()
+            main_db = bool(server.get("main_db"))
+            exec_fn = build_server_exec_fn(jump_client, args, server)
+
+            if not exec_fn:
                 rows.append({
                     "CheckType": "server_ssh",
                     "TargetName": name,
                     "TargetHost": host,
-                    "Result": "OK",
-                    "Detail": "SSH reachable",
+                    "Result": "SKIP",
+                    "Detail": "No SSH path configured for this server",
                     "CheckedAtUTC": ts,
                 })
-                ssh_ok += 1
-            else:
-                raise RuntimeError(f"unexpected echo: {out[:200]}")
-        except Exception as exc:
-            rows.append({
-                "CheckType": "server_ssh",
-                "TargetName": name,
-                "TargetHost": host,
-                "Result": "FAIL",
-                "Detail": str(exc),
-                "CheckedAtUTC": ts,
-            })
-            ssh_fail += 1
+                rows.append({
+                    "CheckType": "portal_manage",
+                    "TargetName": name,
+                    "TargetHost": host,
+                    "Result": INFRA_RESULT_NOT_APPLICATION,
+                    "Detail": "No SSH path configured for this server",
+                    "CheckedAtUTC": ts,
+                })
+                continue
 
-        roles_text = read_server_roles_text(exec_fn)
-        try:
-            text = exec_fn(PORTAL_MANAGE_STATUS_COMMAND)
-            result, detail = assess_portal_manage_for_server(roles_text, text, main_db=main_db)
+            ssh_reachable = False
+            try:
+                out = exec_fn("echo infra-ssh-ok")
+                if "infra-ssh-ok" in out:
+                    rows.append({
+                        "CheckType": "server_ssh",
+                        "TargetName": name,
+                        "TargetHost": host,
+                        "Result": "OK",
+                        "Detail": "SSH reachable",
+                        "CheckedAtUTC": ts,
+                    })
+                    ssh_ok += 1
+                    ssh_reachable = True
+                else:
+                    raise RuntimeError(f"unexpected echo: {out[:200]}")
+            except Exception as exc:
+                rows.append({
+                    "CheckType": "server_ssh",
+                    "TargetName": name,
+                    "TargetHost": host,
+                    "Result": "FAIL",
+                    "Detail": str(exc),
+                    "CheckedAtUTC": ts,
+                })
+                ssh_fail += 1
+
+            if not ssh_reachable:
+                rows.append({
+                    "CheckType": "portal_manage",
+                    "TargetName": name,
+                    "TargetHost": host,
+                    "Result": INFRA_RESULT_NOT_APPLICATION,
+                    "Detail": "SSH unreachable; portal-manage not checked",
+                    "CheckedAtUTC": ts,
+                })
+                continue
+
+            roles_text = ""
+            try:
+                roles_text = read_server_roles_text(exec_fn)
+            except Exception as exc:
+                rows.append({
+                    "CheckType": "portal_manage",
+                    "TargetName": name,
+                    "TargetHost": host,
+                    "Result": INFRA_RESULT_NOT_APPLICATION,
+                    "Detail": f"Could not read server roles: {exc}",
+                    "CheckedAtUTC": ts,
+                })
+                continue
+
+            try:
+                text = exec_fn(PORTAL_MANAGE_STATUS_COMMAND)
+                result, detail = assess_portal_manage_for_server(roles_text, text, main_db=main_db)
+            except Exception as exc:
+                if server_is_application_host(roles_text, ""):
+                    result, detail = "FAIL", str(exc)
+                else:
+                    result, detail = INFRA_RESULT_NOT_APPLICATION, "Not application server"
             rows.append({
                 "CheckType": "portal_manage",
                 "TargetName": name,
@@ -1020,28 +1058,22 @@ def collect_infrastructure_probes(args):
                 pm_ok += 1
             elif result == "FAIL":
                 pm_fail += 1
-        except Exception as exc:
-            rows.append({
-                "CheckType": "portal_manage",
-                "TargetName": name,
-                "TargetHost": host,
-                "Result": "FAIL",
-                "Detail": str(exc),
-                "CheckedAtUTC": ts,
-            })
-            pm_fail += 1
 
-    _infra_write_rows(out_path, rows)
-    if jump_client:
-        try:
-            jump_client.close()
-        except Exception:
-            pass
-    print(
-        f"Wrote infrastructure probes to {out_path} "
-        f"(postgres={pg_result}, servers_ssh ok={ssh_ok} fail={ssh_fail}, portal_manage ok={pm_ok} fail={pm_fail})",
-        flush=True,
-    )
+        print(
+            f"Wrote infrastructure probes to {out_path} "
+            f"(postgres={pg_result}, servers_ssh ok={ssh_ok} fail={ssh_fail}, portal_manage ok={pm_ok} fail={pm_fail})",
+            flush=True,
+        )
+    except Exception as exc:
+        rows = _infra_collection_failure_rows(maindb_host, maindb_label, str(exc))
+        print(f"Wrote infrastructure probe failure rows to {out_path}: {exc}", flush=True)
+    finally:
+        _infra_write_rows(out_path, rows)
+        if jump_client:
+            try:
+                jump_client.close()
+            except Exception:
+                pass
 
 
 # ---------------------------
