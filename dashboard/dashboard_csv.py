@@ -42,7 +42,7 @@ DEFAULT_HIDDEN_TASK_NAMES = {
     "csrrequestsprocessor",
     "syslogconnectorstatusnotifier",
 }
-JOB_NAMES = ("portal", "filer")
+JOB_NAMES = ("portal", "filer", "infra")
 # Auto-recover wedged collectors: no log progress, or absolute max runtime.
 JOB_STALE_LOG_SECONDS = int(os.environ.get("FEATHERDASH_JOB_STALE_SECONDS", "900"))
 JOB_MAX_RUNTIME_SECONDS = int(os.environ.get("FEATHERDASH_JOB_MAX_RUNTIME_SECONDS", "7200"))
@@ -550,7 +550,10 @@ DEFAULT_CONF = {
         "nomad_csv": _data_path("nomad_nodes.csv"),
         "consul_csv": _data_path("consul_members.csv"),
         "docker_csv": _data_path("docker_containers.csv"),
-    }
+    },
+    "infrastructure": {
+        "probes_csv": _data_path("infrastructure.csv"),
+    },
 }
 
 # ---------------- config / theme / brand ----------------
@@ -568,7 +571,7 @@ def load_conf():
         cfg = {}
     base = dict(DEFAULT_CONF)
     for k, v in cfg.items():
-        if k in ("ui", "theme", "brand", "portal", "postgres", "servers_health") and isinstance(v, dict):
+        if k in ("ui", "theme", "brand", "portal", "postgres", "servers_health", "infrastructure") and isinstance(v, dict):
             merged = {**base.get(k, {}), **v}
             if k == "postgres":
                 default_topics = ((base.get("postgres") or {}).get("topics") or {})
@@ -651,6 +654,10 @@ def load_conf_for_environment(env_id=None):
         "nomad_csv": os.path.join(data_dir, "nomad_nodes.csv"),
         "consul_csv": os.path.join(data_dir, "consul_members.csv"),
         "docker_csv": os.path.join(data_dir, "docker_containers.csv"),
+    }
+    cfg["infrastructure"] = {
+        **(cfg.get("infrastructure") or {}),
+        "probes_csv": os.path.join(data_dir, "infrastructure.csv"),
     }
     return cfg
 
@@ -1811,6 +1818,40 @@ def make_tenants_warn_fn(ext):
     return warn
 
 
+def make_infrastructure_warn_fn(ext):
+    def _rules(row):
+        eff = {}
+        sec = (ext.get("infrastructure") or {}) if isinstance(ext, dict) else {}
+        if isinstance(sec, dict):
+            eff.update(sec.get("default", {}) or {})
+            eff.update((sec.get("by_host", {}) or {}).get(row.get("TargetHost", ""), {}) or {})
+            eff.update((sec.get("by_check", {}) or {}).get(row.get("CheckType", ""), {}) or {})
+        return eff
+
+    def warn(col, val, row):
+        rule = _rules(row).get(col)
+        return eval_level(val, rule, row=row) if rule else ''
+
+    return warn
+
+
+def make_infrastructure_style_fn(ext):
+    def _rules(row):
+        eff = {}
+        sec = (ext.get("infrastructure") or {}) if isinstance(ext, dict) else {}
+        if isinstance(sec, dict):
+            eff.update(sec.get("default", {}) or {})
+            eff.update((sec.get("by_host", {}) or {}).get(row.get("TargetHost", ""), {}) or {})
+            eff.update((sec.get("by_check", {}) or {}).get(row.get("CheckType", ""), {}) or {})
+        return eff
+
+    def style(col, val, row):
+        rule = _rules(row).get(col)
+        return _style_from_rule(rule, val)
+
+    return style
+
+
 def _thresholds_path(cfg):
     th_src = cfg.get("thresholds_from") or {}
     th_path = th_src.get("path") or os.environ.get("FEATHERDASH_THRESHOLDS") or os.path.join(PROJECT_DIR, "thresholds.yaml")
@@ -2295,6 +2336,7 @@ def _ensure_notifications_db(conn=None):
                 openai_key TEXT NOT NULL DEFAULT '',
                 portal_schedule_minutes INTEGER NOT NULL DEFAULT 60,
                 filer_schedule_minutes INTEGER NOT NULL DEFAULT 60,
+                infra_schedule_minutes INTEGER NOT NULL DEFAULT 10,
                 enabled INTEGER NOT NULL DEFAULT 1,
                 created_at TEXT NOT NULL,
                 updated_at TEXT NOT NULL
@@ -2323,6 +2365,7 @@ def _ensure_notifications_db(conn=None):
             ("jump_ssh_username", "TEXT NOT NULL DEFAULT 'root'"),
             ("jump_ssh_key_path", "TEXT NOT NULL DEFAULT ''"),
             ("jump_ssh_password", "TEXT NOT NULL DEFAULT ''"),
+            ("infra_schedule_minutes", "INTEGER NOT NULL DEFAULT 10"),
         ]
         for col_name, col_def in environment_additions:
             if col_name not in cols:
@@ -2698,7 +2741,7 @@ def _list_environments(include_secret=False):
                    jump_host_enabled, main_db_via_jump_preconfigured, jump_host, jump_ssh_port, main_db_jump_username, jump_ssh_mode, jump_ssh_username, jump_ssh_key_path, jump_ssh_password,
                    main_db_ip, main_db_ssh_port, ssh_mode, ssh_username, ssh_key_path, ssh_password, sudo_required,
                    pg_host, pg_port, pg_database, pg_user, pg_password, openai_key,
-                   portal_schedule_minutes, filer_schedule_minutes, enabled, created_at, updated_at
+                   portal_schedule_minutes, filer_schedule_minutes, infra_schedule_minutes, enabled, created_at, updated_at
             FROM environments
             ORDER BY lower(environment_name), id
             """
@@ -2741,6 +2784,7 @@ def _list_environments(include_secret=False):
             "openai_key_set": bool(row["openai_key"]),
             "portal_schedule_minutes": int(row["portal_schedule_minutes"] or 60),
             "filer_schedule_minutes": int(row["filer_schedule_minutes"] or 60),
+            "infra_schedule_minutes": int(row["infra_schedule_minutes"] or 10),
             "enabled": bool(row["enabled"]),
             "created_at": row["created_at"],
             "updated_at": row["updated_at"],
@@ -3372,7 +3416,7 @@ def _save_environment(payload):
         "portal_fqdn", "portal_ip", "ctera_username", "main_db_ip", "main_db_ssh_port",
         "jump_host", "jump_ssh_port", "main_db_jump_username", "jump_ssh_mode", "jump_ssh_username", "jump_ssh_key_path",
         "ssh_mode", "ssh_username", "ssh_key_path",
-        "pg_host", "pg_port", "pg_database", "pg_user", "portal_schedule_minutes", "filer_schedule_minutes"
+        "pg_host", "pg_port", "pg_database", "pg_user", "portal_schedule_minutes", "filer_schedule_minutes", "infra_schedule_minutes"
     ]
     merged["environment_name"] = name
     for field in fields:
@@ -3466,6 +3510,7 @@ def _save_environment(payload):
         raise ValueError("Upload an initial SSH private key for this SSH access mode.")
     merged["portal_schedule_minutes"] = int(_coerce_threshold_value(merged.get("portal_schedule_minutes")) or 60)
     merged["filer_schedule_minutes"] = int(_coerce_threshold_value(merged.get("filer_schedule_minutes")) or 60)
+    merged["infra_schedule_minutes"] = int(_coerce_threshold_value(merged.get("infra_schedule_minutes")) or 10)
     merged["pg_port"] = str(merged.get("pg_port") or "5432")
     with _notifications_conn() as conn:
         if env_id:
@@ -3476,7 +3521,7 @@ def _save_environment(payload):
                     main_db_ip = ?, main_db_ssh_port = ?, jump_host_enabled = ?, main_db_via_jump_preconfigured = ?, jump_host = ?, jump_ssh_port = ?, main_db_jump_username = ?, jump_ssh_mode = ?, jump_ssh_username = ?, jump_ssh_key_path = ?, jump_ssh_password = ?,
                     ssh_mode = ?, ssh_username = ?, ssh_key_path = ?, ssh_password = ?, sudo_required = ?,
                     pg_host = ?, pg_port = ?, pg_database = ?, pg_user = ?, pg_password = ?, openai_key = ?,
-                    portal_schedule_minutes = ?, filer_schedule_minutes = ?, enabled = ?, updated_at = ?
+                    portal_schedule_minutes = ?, filer_schedule_minutes = ?, infra_schedule_minutes = ?, enabled = ?, updated_at = ?
                 WHERE id = ?
                 """,
                 (
@@ -3491,6 +3536,7 @@ def _save_environment(payload):
                     str(merged.get("pg_port") or "5432"), str(merged.get("pg_database") or "postgres"),
                     str(merged.get("pg_user") or "postgres"), str(merged.get("pg_password") or ""),
                     str(merged.get("openai_key") or ""), merged["portal_schedule_minutes"], merged["filer_schedule_minutes"],
+                    merged["infra_schedule_minutes"],
                     merged["enabled"], now, int(env_id),
                 ),
             )
@@ -3502,8 +3548,8 @@ def _save_environment(payload):
                     jump_host_enabled, main_db_via_jump_preconfigured, jump_host, jump_ssh_port, main_db_jump_username, jump_ssh_mode, jump_ssh_username, jump_ssh_key_path, jump_ssh_password,
                     ssh_mode, ssh_username, ssh_key_path, ssh_password, sudo_required,
                     pg_host, pg_port, pg_database, pg_user, pg_password, openai_key,
-                    portal_schedule_minutes, filer_schedule_minutes, enabled, created_at, updated_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    portal_schedule_minutes, filer_schedule_minutes, infra_schedule_minutes, enabled, created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     merged["environment_name"], str(merged.get("portal_fqdn") or ""), str(merged.get("portal_ip") or ""),
@@ -3517,6 +3563,7 @@ def _save_environment(payload):
                     str(merged.get("pg_port") or "5432"), str(merged.get("pg_database") or "postgres"),
                     str(merged.get("pg_user") or "postgres"), str(merged.get("pg_password") or ""),
                     str(merged.get("openai_key") or ""), merged["portal_schedule_minutes"], merged["filer_schedule_minutes"],
+                    merged["infra_schedule_minutes"],
                     merged["enabled"], now, now,
                 ),
             )
@@ -3540,6 +3587,7 @@ def _environment_payload():
         env_id = item.get("id")
         item["portal_last_run_at"] = _scheduler_last_run_iso("portal", env_id)
         item["filer_last_run_at"] = _scheduler_last_run_iso("filer", env_id)
+        item["infra_last_run_at"] = _scheduler_last_run_iso("infra", env_id)
     return {
         "items": items,
         "count": len(items),
@@ -3641,6 +3689,8 @@ def _alert_row_key(dataset_key, row):
         candidates = ["Filer Name", "Name", "Tenant"]
     elif dataset_key == "tenants":
         candidates = ["Tenant", "UID", "Name"]
+    elif dataset_key == "infrastructure":
+        candidates = ["CheckType", "TargetName", "TargetHost"]
     elif dataset_key == "portal_servers":
         candidates = ["Name", "Host", "UID"]
     elif dataset_key == "portal_storage":
@@ -3686,6 +3736,8 @@ def _warn_fn_for_dataset(cfg, dataset_key):
         return lambda field_name, value, row: make_edge_warn_fn(cfg.get("thresholds"), ext)(field_name, value, row)
     if dataset_key == "tenants":
         return lambda field_name, value, row: make_tenants_warn_fn(ext)(field_name, value, row)
+    if dataset_key == "infrastructure":
+        return lambda field_name, value, row: make_infrastructure_warn_fn(ext)(field_name, value, row)
     if dataset_key == "portal_servers":
         return lambda field_name, value, row: make_portal_warn_fn(ext, "servers")(field_name, value, row)
     if dataset_key == "portal_storage":
@@ -3981,6 +4033,10 @@ def _threshold_dataset_configs(cfg):
     if portal_cfg.get("tasks_csv"):
         datasets.append({"key": "portal_tasks", "label": "Portal Tasks", "kind": "portal", "section": "tasks", "path": portal_cfg.get("tasks_csv")})
 
+    infra_csv = (cfg.get("infrastructure") or {}).get("probes_csv")
+    if infra_csv:
+        datasets.append({"key": "infrastructure", "label": "Infrastructure", "kind": "infrastructure", "path": infra_csv})
+
     metrics_csv = (cfg.get("servers_health") or {}).get("metrics_csv")
     if metrics_csv:
         datasets.append({"key": "servers_health", "label": "Servers Health", "kind": "servers_health", "path": metrics_csv})
@@ -4082,6 +4138,9 @@ def _dataset_rule_container(doc, dataset_key, create=False):
     if dataset_key == "tenants":
         tenants = doc.setdefault("tenants", {}) if create else (doc.get("tenants") or {})
         return tenants.setdefault("default", {}) if create else (tenants.get("default") or {})
+    if dataset_key == "infrastructure":
+        sec = doc.setdefault("infrastructure", {}) if create else (doc.get("infrastructure") or {})
+        return sec.setdefault("default", {}) if create else (sec.get("default") or {})
     if dataset_key == "servers_health":
         sec = doc.setdefault("servers_health", {}) if create else (doc.get("servers_health") or {})
         return sec.setdefault("default", {}) if create else (sec.get("default") or {})
@@ -4114,6 +4173,12 @@ def _prune_empty_threshold_sections(doc, dataset_key):
             (doc.get("tenants") or {}).pop("default", None)
         if not (doc.get("tenants") or {}):
             doc.pop("tenants", None)
+        return
+    if dataset_key == "infrastructure":
+        if not ((doc.get("infrastructure") or {}).get("default")):
+            (doc.get("infrastructure") or {}).pop("default", None)
+        if not (doc.get("infrastructure") or {}):
+            doc.pop("infrastructure", None)
         return
     if dataset_key == "servers_health":
         if not ((doc.get("servers_health") or {}).get("default")):
@@ -4756,6 +4821,7 @@ HTML = """
       overview: 'dashboard',
       jobs: 'dashboard',
       tenants: 'portal',
+      infra: 'portal',
       portal: 'portal',
       pg: 'portal',
       svrhlth: 'portal',
@@ -5438,7 +5504,7 @@ async function runAISummary(){
         const resp = await fetch('/job_status?_=' + Date.now(), { cache: 'no-store' });
         const data = await resp.json();
         let shouldAutoRefresh = false;
-        ['portal','filer'].forEach(name => {
+        ['portal','filer','infra'].forEach(name => {
           const card = data[name] || {};
           const previousStatus = jobStatusSnapshot[name];
           const currentStatus = card.status || 'idle';
@@ -5470,7 +5536,7 @@ async function runAISummary(){
         });
         const allBtn = document.getElementById('runBtn_all');
         if (allBtn) {
-          allBtn.disabled = ['portal','filer'].some(name => (data[name] || {}).status === 'running');
+          allBtn.disabled = ['portal','filer','infra'].some(name => (data[name] || {}).status === 'running');
         }
         if (shouldAutoRefresh) {
           scheduleAutoRefresh('Collector finished. Refreshing data...');
@@ -5481,7 +5547,7 @@ async function runAISummary(){
     }
 
     async function runCollector(jobName, forcedEnvironmentId){
-      const targetJobs = jobName === 'all' ? ['portal','filer'] : [jobName];
+      const targetJobs = jobName === 'all' ? ['infra','portal','filer'] : [jobName];
       const environmentId = forcedEnvironmentId || effectiveEnvironmentContext();
       if (environmentId === 'admin') {
         alert('Select a portal environment first.');
@@ -6575,6 +6641,7 @@ async function runAISummary(){
         envOpenAiKey: '',
         envPortalSchedule: '60',
         envFilerSchedule: '60',
+        envInfraSchedule: '10',
       };
       Object.entries(values).forEach(([id, value]) => {
         const el = document.getElementById(id);
@@ -6661,6 +6728,7 @@ async function runAISummary(){
         envOpenAiKey: '',
         envPortalSchedule: String(env.portal_schedule_minutes || 60),
         envFilerSchedule: String(env.filer_schedule_minutes || 60),
+        envInfraSchedule: String(env.infra_schedule_minutes || 10),
       };
       Object.entries(values).forEach(([id, value]) => {
         const el = document.getElementById(id);
@@ -6920,6 +6988,7 @@ async function runAISummary(){
         openai_key: document.getElementById('envOpenAiKey').value,
         portal_schedule_minutes: document.getElementById('envPortalSchedule').value,
         filer_schedule_minutes: document.getElementById('envFilerSchedule').value,
+        infra_schedule_minutes: document.getElementById('envInfraSchedule').value,
         enabled: document.getElementById('envEnabled').checked,
         ssh_mode: document.getElementById('envInitialSshMode').value,
         ssh_username: document.getElementById('envInitialSshUsername').value || 'root',
@@ -7303,6 +7372,11 @@ async function runAISummary(){
               <span class="tabbtn-meta">{% if tenants_counts.bad %}<span class="tabbadge crit" title="Critical rows">{{ tenants_counts.bad }}</span>{% endif %}{% if tenants_counts.warn %}<span class="tabbadge warn" title="Warning rows">{{ tenants_counts.warn }}</span>{% endif %}</span>
             </button>
 
+            <button class="tabbtn nav-child" data-tab="infra" onclick="showTab('infra')">
+              <span class="tabbtn-text"><span class="tabicon"><svg viewBox="0 0 24 24"><path d="M12 3 3 8v8l9 5 9-5V8Z"></path><path d="M12 12 3 8"></path><path d="m12 12 9-4"></path><path d="M12 12v9"></path></svg></span>Infrastructure</span>
+              <span class="tabbtn-meta">{% if infra_counts.bad %}<span class="tabbadge crit" title="Critical rows">{{ infra_counts.bad }}</span>{% endif %}{% if infra_counts.warn %}<span class="tabbadge warn" title="Warning rows">{{ infra_counts.warn }}</span>{% endif %}</span>
+            </button>
+
             <button class="tabbtn nav-child" data-tab="portal" onclick="showTab('portal')">
               <span class="tabbtn-text"><span class="tabicon"><svg viewBox="0 0 24 24"><path d="M4 20h16"></path><path d="M6 20V9l6-4 6 4v11"></path><path d="M9 20v-5h6v5"></path></svg></span>Portal Admin</span>
               <span class="tabbtn-meta">{% if portal_counts.bad %}<span class="tabbadge crit" title="Critical rows">{{ portal_counts.bad }}</span>{% endif %}{% if portal_counts.warn %}<span class="tabbadge warn" title="Warning rows">{{ portal_counts.warn }}</span>{% endif %}</span>
@@ -7547,14 +7621,33 @@ async function runAISummary(){
           <div class="ops-actions">
             <button id="runBtn_portal" class="ops-btn" onclick="runCollector('portal')">Run Portal Jobs</button>
             <button id="runBtn_filer" class="ops-btn" onclick="runCollector('filer')">Run Filer Jobs</button>
+            <button id="runBtn_infra" class="ops-btn" onclick="runCollector('infra')">Run Infrastructure Probes</button>
             <button id="runBtn_all" class="ops-btn primary" onclick="runCollector('all')">Run All Collectors</button>
           </div>
           <div class="hero-sub">Use these when you want fresh CSVs right now instead of waiting for cron.</div>
         </div>
-        <div class="hero-sub">Watch live logs in a terminal with <code>tail -F /var/log/ctera-monitoring-dashboard/portal.log</code> or <code>tail -F /var/log/ctera-monitoring-dashboard/filer.log</code>.</div>
+        <div class="hero-sub">Watch live logs in a terminal with <code>tail -F /var/log/ctera-monitoring-dashboard/portal.log</code>, <code>tail -F /var/log/ctera-monitoring-dashboard/filer.log</code>, or <code>tail -F /var/log/ctera-monitoring-dashboard/infra.log</code>.</div>
       </div>
 
       <div class="ops-status-grid">
+        <article class="ops-status-card">
+          <div class="ops-status-head">
+            <div>
+              <h3>Infrastructure Probes</h3>
+              <div class="hero-sub">MainDB Postgres, SSH, and portal-manage status (fast liveness).</div>
+            </div>
+            <span id="jobBadge_infra" class="ops-badge idle">Idle</span>
+          </div>
+          <div class="ops-meta">
+            <span>Started <strong id="jobStarted_infra">&mdash;</strong></span>
+            <span>Finished <strong id="jobFinished_infra">&mdash;</strong></span>
+            <span>Exit <strong id="jobExit_infra">&mdash;</strong></span>
+          </div>
+          <div class="hero-sub">Recent output</div>
+          <pre id="jobTail_infra" class="ops-logtail">No recent log lines.</pre>
+          <div class="ops-loghint">Tail command: <code id="jobTailCmd_infra">tail -F /var/log/ctera-monitoring-dashboard/infra.log</code></div>
+        </article>
+
         <article class="ops-status-card">
           <div class="ops-status-head">
             <div>
@@ -7836,7 +7929,7 @@ async function runAISummary(){
       </div>
       <div style="display:flex; align-items:center; gap:10px; flex-wrap:wrap; margin:0 0 12px 0;">
         <span id="schedulerPauseState" class="pill pill-ok">Automatic collectors active</span>
-        <span class="threshold-summary">When paused, cron will skip all automatic portal and filer jobs. Manual runs and bootstrap still work.</span>
+        <span class="threshold-summary">When paused, cron will skip all automatic portal, filer, and infrastructure jobs. Manual runs and bootstrap still work.</span>
       </div>
       <div class="env-note">Review <strong>Prerequisites</strong> before adding a portal. Then use <strong>New Portal Environment</strong> to add it. The dashboard uses the initial SSH access mode one time to bootstrap access and retrieve what it needs, then uses the installed key going forward.</div>
       <div class="threshold-status" id="environmentStatus">Loading portal environments...</div>
@@ -8383,6 +8476,34 @@ async function runAISummary(){
   </div>
 
   <!-- TENANTS -->
+  <div id="infra" class="tabpane" style="display:none">
+    <div class="legend">
+      <span class="dot dcrit"></span>Critical
+      <span class="dot dwarn" style="margin-left:14px"></span>Warning
+    </div>
+    <div class="controls">
+      <strong>Infrastructure Probes</strong>
+      <div class="hero-sub" style="margin-left:8px">Lightweight MainDB checks (Postgres, SSH, portal-manage). Default schedule: every 10 minutes.</div>
+    </div>
+    <div class="sub">File: <code>{{ infra_src }}</code> &nbsp;•&nbsp; Updated: <span class="sub" data-local-time="{{ infra_mtime }}">{{ infra_mtime or '—' }}</span></div>
+    <div class="table-wrap" style="margin-top:12px">
+      <table id="infraTable">
+        <thead><tr>{% for h in infra_headers %}<th>{{ display_header(h) }}</th>{% endfor %}</tr></thead>
+        <tbody>
+          {% for r in infra_rows %}
+          <tr>
+            {% for h in infra_headers %}
+              {% set cell = r.get(h, '') %}
+              {% set sev = warn_infra_cell(h, cell, r) %}
+              <td class="{{ style_infra_cell(h, cell, r) }} {{ 'sev-critical' if sev == 'bad' else ('sev-warning' if sev == 'warn' else '') }}">{{ display_cell(h, cell) }}</td>
+            {% endfor %}
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  </div>
+
   <div id="tenants" class="tabpane" style="display:none">
     <div class="legend">
       <span class="dot dcrit"></span>Critical
@@ -9295,6 +9416,11 @@ async function runAISummary(){
           <div class="threshold-field">
             <label for="envFilerSchedule">Edge Filer Collectors (minutes)</label>
             <input id="envFilerSchedule" class="threshold-input" type="number" min="1" step="1" placeholder="60">
+          </div>
+          <div class="threshold-field">
+            <label for="envInfraSchedule">Infrastructure Probes (minutes)</label>
+            <input id="envInfraSchedule" class="threshold-input" type="number" min="1" step="1" placeholder="10">
+            <div class="env-secret-hint">Fast MainDB reachability checks (Postgres, SSH, portal-manage). Default 10.</div>
           </div>
           <div class="threshold-field" style="grid-column:1 / -1;">
             <label class="notify-checkbox" for="envEnabled">
@@ -10680,6 +10806,16 @@ def index():
     )
     tenant_type_chart = _top_counts(tenants_rows, ["PortalType", "Type"], limit=4)
 
+    infra_src = (cfg.get("infrastructure") or {}).get("probes_csv") or ""
+    if infra_src and not os.path.isabs(infra_src):
+        infra_src = os.path.join(APP_DIR, infra_src)
+    infra_src = os.path.normpath(os.path.abspath(infra_src)) if infra_src else ""
+    infra_mtime = _file_mtime_iso(infra_src)
+    infra_rows, infra_headers = read_csv_rows(infra_src)
+    warn_infra_cell = make_infrastructure_warn_fn(ext)
+    style_infra_cell = make_infrastructure_style_fn(ext)
+    infra_counts = _count_row_severity(infra_rows, infra_headers, warn_infra_cell)
+
     # EDGE
     rows, headers = read_csv_rows(cfg["csv_path"])
     csv_mtime = _file_mtime_iso(cfg["csv_path"])
@@ -10855,6 +10991,7 @@ def index():
     pg_rows_total = sum(int(v.get("row_count", 0) or 0) for v in pg_views)
     overview_cards = [
         _overview_card("Tenants", "tenants", len(tenants_rows), tenants_counts, tenants_mtime),
+        _overview_card("Infrastructure", "infra", len(infra_rows), infra_counts, infra_mtime),
         _overview_card("Edge Filers", "edge", len(rows), edge_counts, csv_mtime),
         _overview_card("Portal", "portal", portal_rows_total, portal_counts, portal_servers_mtime),
         _overview_card("Postgres", "pg", pg_rows_total, pg_counts, _file_mtime_iso(os.path.join(base_dir, "wraparound_summary.csv"))),
@@ -10866,7 +11003,8 @@ def index():
     has_portal_critical = portal_counts["bad"] > 0
     has_postgres_critical = pg_counts["bad"] > 0
     has_servers_health_critical = hosts_counts["bad"] > 0
-    has_high_risk_critical = has_portal_critical or has_postgres_critical or has_servers_health_critical
+    has_infra_critical = infra_counts["bad"] > 0
+    has_high_risk_critical = has_portal_critical or has_postgres_critical or has_servers_health_critical or has_infra_critical
     edge_only_critical = edge_counts["bad"] > 0 and not has_high_risk_critical
     if has_high_risk_critical:
         overall_risk_label = "High Risk"
@@ -10879,6 +11017,7 @@ def index():
         overall_risk_class = "risk-low"
     freshness_items = [
         {"label": "Tenants", "updated_utc": tenants_mtime},
+        {"label": "Infrastructure", "updated_utc": infra_mtime},
         {"label": "Edge Filers", "updated_utc": csv_mtime},
         {"label": "Portal Servers", "updated_utc": portal_servers_mtime},
         {"label": "Portal Storage", "updated_utc": portal_storage_mtime},
@@ -10892,6 +11031,7 @@ def index():
     # Drop bulky raw/json columns from HTML tables — they balloon `/` past 1MB and
     # break browsers on constrained network paths (stuck Send-Q / empty response).
     headers = _display_headers(headers)
+    infra_headers = _display_headers(infra_headers)
     tenants_headers = _display_headers(tenants_headers)
     servers_headers = _display_headers(servers_headers)
     storage_headers = _display_headers(storage_headers)
@@ -10922,6 +11062,8 @@ def index():
         overview_cards=overview_cards, freshness_items=freshness_items,
         overall_rows=overall_rows, overall_bad=overall_bad, overall_warn=overall_warn,
         overall_risk_label=overall_risk_label, overall_risk_class=overall_risk_class,
+        infra_src=infra_src, infra_mtime=infra_mtime, infra_rows=infra_rows, infra_headers=infra_headers,
+        warn_infra_cell=warn_infra_cell, style_infra_cell=style_infra_cell, infra_counts=infra_counts,
         # edge
         csv_path=cfg["csv_path"], csv_mtime=csv_mtime, rows=rows, headers=headers,
         warn_edge=warn_edge, style_edge=style_edge, edge_counts=edge_counts,
