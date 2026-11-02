@@ -11056,35 +11056,43 @@ def index():
     overall_warn = sum(card["warn"] for card in overview_cards)
     if not current_env_id:
         admin_infra = _admin_enabled_environments_infra_health()
-        overall_bad = int(admin_infra.get("bad") or 0)
-        overall_warn = int(admin_infra.get("warn") or 0)
-        overall_rows = int(admin_infra.get("rows") or 0)
         for card in overview_cards:
-            if card.get("tab") == "infra":
-                card["bad"] = overall_bad
-                card["warn"] = overall_warn
-                card["rows"] = overall_rows
-                card["ok"] = max(overall_rows - overall_bad - overall_warn, 0)
-                denom = max(overall_rows, 1)
-                card["bad_pct"] = round((overall_bad / denom) * 100, 2)
-                card["warn_pct"] = round((overall_warn / denom) * 100, 2)
-                card["ok_pct"] = round((card["ok"] / denom) * 100, 2)
-                if overall_bad:
-                    card["status_text"] = "Critical"
-                    card["status_class"] = "crit"
-                elif overall_warn:
-                    card["status_text"] = "Warning"
-                    card["status_class"] = "warn"
-                else:
-                    card["status_text"] = "OK"
-                    card["status_class"] = "ok"
-                break
+            if card.get("tab") != "infra":
+                continue
+            bad = int(admin_infra.get("bad") or 0)
+            warn = int(admin_infra.get("warn") or 0)
+            total = int(admin_infra.get("rows") or 0)
+            ok = max(total - bad - warn, 0)
+            denom = max(total, 1)
+            card["bad"] = bad
+            card["warn"] = warn
+            card["rows"] = total
+            card["ok"] = ok
+            card["bad_pct"] = round((bad / denom) * 100, 2)
+            card["warn_pct"] = round((warn / denom) * 100, 2)
+            card["ok_pct"] = round((ok / denom) * 100, 2)
+            if bad:
+                card["status_text"] = "Critical"
+                card["status_class"] = "crit"
+            elif warn:
+                card["status_text"] = "Warning"
+                card["status_class"] = "warn"
+            else:
+                card["status_text"] = "OK"
+                card["status_class"] = "ok"
+            break
+        overall_rows = sum(card["rows"] for card in overview_cards)
+        overall_bad = sum(card["bad"] for card in overview_cards)
+        overall_warn = sum(card["warn"] for card in overview_cards)
     has_portal_critical = portal_counts["bad"] > 0
     has_postgres_critical = pg_counts["bad"] > 0
     has_servers_health_critical = hosts_counts["bad"] > 0
     has_infra_critical = infra_counts["bad"] > 0
     if not current_env_id:
-        has_infra_critical = overall_bad > 0
+        has_infra_critical = int(admin_infra.get("bad") or 0) > 0
+        has_portal_critical = False
+        has_postgres_critical = False
+        has_servers_health_critical = False
     has_high_risk_critical = has_portal_critical or has_postgres_critical or has_servers_health_critical or has_infra_critical
     edge_only_critical = edge_counts["bad"] > 0 and not has_high_risk_critical
     if has_high_risk_critical:
