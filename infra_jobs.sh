@@ -32,7 +32,18 @@ PGDATABASE="${PGDATABASE:-postgres}"
 PGUSER="${PGUSER:-postgres}"
 SERVER_SSH_USER="${SERVER_SSH_USER:-root}"
 SERVER_SSH_PORT="${SERVER_SSH_PORT:-22}"
+SERVER_METRICS_MODE="${SERVER_METRICS_MODE:-jump}"
+SERVER_METRICS_TARGET_USER="${SERVER_METRICS_TARGET_USER:-ctera}"
+SERVER_METRICS_JUMP_HOST="${SERVER_METRICS_JUMP_HOST:-${PGHOST}}"
+SERVER_METRICS_JUMP_USER="${SERVER_METRICS_JUMP_USER:-${SERVER_SSH_USER}}"
+SERVER_METRICS_JUMP_RUN_AS_USER="${SERVER_METRICS_JUMP_RUN_AS_USER:-ctera}"
 SERVER_METRICS_SUDO="${SERVER_METRICS_SUDO:-true}"
+JUMP_HOST_ENABLED="${JUMP_HOST_ENABLED:-false}"
+JUMP_HOST="${JUMP_HOST:-}"
+JUMP_SSH_USER="${JUMP_SSH_USER:-root}"
+JUMP_SSH_PORT="${JUMP_SSH_PORT:-22}"
+MAINDB_VIA_JUMP_PRECONFIGURED="${MAINDB_VIA_JUMP_PRECONFIGURED:-false}"
+MAINDB_JUMP_USERNAME="${MAINDB_JUMP_USERNAME:-${SERVER_SSH_USER}}"
 FEATHERDASH_DATA_DIR="${FEATHERDASH_DATA_DIR:-/var/lib/ctera-monitoring-dashboard/data}"
 INFRA_CSV="${FEATHERDASH_DATA_DIR}/infrastructure.csv"
 MAINDB_LABEL="${PGHOST:-MainDB}"
@@ -59,7 +70,7 @@ collect_replace() {
   local rc=0
   rm -f "${tmp}"
   set +e
-  "$@" --out "${tmp}"
+  "$@" --infra-out "${tmp}"
   rc=$?
   set -e
   if [[ "${rc}" -eq 0 ]]; then
@@ -71,41 +82,6 @@ collect_replace() {
   return "${rc}"
 }
 
-PROBE_ARGS=(
-  --maindb-label "${MAINDB_LABEL}"
-  --maindb-host "${PGHOST}"
-  --pg-user "${PGUSER}"
-  --pg-password "${PGPASSWORD}"
-  --ssh-key "${ROOT_KEY:-}"
-  --timeout 10
-)
-
-if [[ "${SERVER_METRICS_SUDO}" =~ ^(1|true|yes|on)$ ]]; then
-  PROBE_ARGS+=(--ssh-sudo)
-fi
-
-build_probe_ssh_args() {
-  if [[ "${JUMP_HOST_ENABLED}" =~ ^(1|true|yes|on)$ && "${MAINDB_VIA_JUMP_PRECONFIGURED}" =~ ^(1|true|yes|on)$ ]]; then
-    PROBE_ARGS+=(
-      --ssh-mode via-jump
-      --jump-host "${JUMP_HOST}"
-      --jump-port "${JUMP_SSH_PORT}"
-      --jump-user "${JUMP_SSH_USER}"
-      --maindb-host "${PGHOST}"
-      --maindb-port "${SERVER_SSH_PORT}"
-      --maindb-ssh-user "${MAINDB_JUMP_USERNAME}"
-      --jump-run-as-user "${SERVER_METRICS_JUMP_RUN_AS_USER:-}"
-    )
-  else
-    PROBE_ARGS+=(
-      --ssh-mode local-forward
-      --ssh-jump-host "${SERVER_METRICS_JUMP_HOST}"
-      --ssh-jump-port "${LOCAL_MAINDB_SSH_PORT}"
-      --ssh-jump-user "${SERVER_METRICS_JUMP_USER}"
-    )
-  fi
-}
-
 source "${SCRIPT_DIR}/portal_maindb_tunnel.sh"
 trap cleanup_portal_maindb_tunnel EXIT
 
@@ -115,20 +91,64 @@ if ! setup_portal_maindb_tunnel; then
   echo "${TUNNEL_ERR}" >&2
 fi
 
+INFRA_ARGS=(
+  --pg-host "${LOCAL_PGHOST:-${PGHOST}}"
+  --pg-port "${LOCAL_PGPORT:-${PGPORT}}"
+  --pg-db "${PGDATABASE}"
+  --pg-user "${PGUSER}"
+  --pg-password "${PGPASSWORD}"
+  --pg-sslmode "${PG_SSLMODE:-disable}"
+  --infra-maindb-label "${MAINDB_LABEL}"
+  --infra-maindb-host "${PGHOST}"
+  --only-connected
+  --ssh-timeout 10
+)
+
 if [[ -n "${TUNNEL_ERR}" ]]; then
+  INFRA_ARGS+=(--tunnel-error "${TUNNEL_ERR}")
+fi
+
+if [[ -n "${ROOT_KEY:-}" && -r "${ROOT_KEY}" ]]; then
+  if [[ "${SERVER_METRICS_MODE}" == "jump" ]]; then
+    if [[ "${JUMP_HOST_ENABLED}" =~ ^(1|true|yes|on)$ && "${MAINDB_VIA_JUMP_PRECONFIGURED}" =~ ^(1|true|yes|on)$ ]]; then
+      INFRA_ARGS+=(
+        --user "${SERVER_METRICS_TARGET_USER}"
+        --key "${ROOT_KEY}"
+        --jump-host "${JUMP_HOST}"
+        --jump-port "${JUMP_SSH_PORT}"
+        --jump-user "${JUMP_SSH_USER}"
+        --jump-key "${ROOT_KEY}"
+        --via-main-db-host "${PGHOST}"
+        --via-main-db-port "${SERVER_SSH_PORT}"
+        --via-main-db-user "${MAINDB_JUMP_USERNAME}"
+      )
+    else
+      INFRA_ARGS+=(
+        --user "${SERVER_METRICS_TARGET_USER}"
+        --key "${ROOT_KEY}"
+        --jump-host "${SERVER_METRICS_JUMP_HOST}"
+        --jump-port "${LOCAL_MAINDB_SSH_PORT:-22}"
+        --jump-user "${SERVER_METRICS_JUMP_USER}"
+        --jump-key "${ROOT_KEY}"
+      )
+    fi
+    if [[ -n "${SERVER_METRICS_JUMP_RUN_AS_USER}" ]]; then
+      INFRA_ARGS+=(--jump-run-as-user "${SERVER_METRICS_JUMP_RUN_AS_USER}")
+    fi
+  else
+    INFRA_ARGS+=(--user "${SERVER_SSH_USER}" --port "${SERVER_SSH_PORT}" --key "${ROOT_KEY}")
+  fi
+  if [[ "${SERVER_METRICS_SUDO}" =~ ^(1|true|yes|on)$ ]]; then
+    INFRA_ARGS+=(--sudo)
+  fi
   collect_replace "${INFRA_CSV}" \
-    python "${SCRIPT_DIR}/infra_probe.py" \
-    "${PROBE_ARGS[@]}" \
-    --tunnel-error "${TUNNEL_ERR}"
+    python "${SCRIPT_DIR}/ssh_collect_from_pg.py" "${INFRA_ARGS[@]}"
 else
-  build_probe_ssh_args
+  echo "ROOT_KEY missing; writing infrastructure failure rows." >&2
   collect_replace "${INFRA_CSV}" \
-    python "${SCRIPT_DIR}/infra_probe.py" \
-    "${PROBE_ARGS[@]}" \
-    --pg-host "${LOCAL_PGHOST}" \
-    --pg-port "${LOCAL_PGPORT}" \
-    --pg-db "${PGDATABASE}" \
-    --pg-sslmode "${PG_SSLMODE}"
+    python "${SCRIPT_DIR}/ssh_collect_from_pg.py" \
+    "${INFRA_ARGS[@]}" \
+    --tunnel-error "ROOT_KEY is not set or not readable (${ROOT_KEY:-unset})"
 fi
 
 PORT="${PORT:-8080}"
