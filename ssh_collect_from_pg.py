@@ -697,11 +697,16 @@ def parse_portal_manage_versions(text):
         line = line.strip()
         if not line:
             continue
-        match = re.search(r"Image version\s+([^\s|]+)\s*\|\s*Service version\s+([^\s|]+)", line, re.IGNORECASE)
+        match = re.search(
+            r"Image version\s+([^\s|]+)\s*\|\s*Service version\s+([^\s|]+)",
+            line,
+            re.IGNORECASE,
+        )
         if match:
+            return str(match.group(1) or "").strip(), str(match.group(2) or "").strip()
+        match = re.search(r"^Image version\s+(\S+)\s*$", line, re.IGNORECASE)
+        if match and not image_version:
             image_version = str(match.group(1) or "").strip()
-            service_version = str(match.group(2) or "").strip()
-            break
     return image_version, service_version
 
 
