@@ -815,6 +815,16 @@ def _line_looks_running(line):
     return bool(re.search(r"\brunning\b|\bactive\b|\bstarted\b", lower))
 
 
+def _portal_manage_database_running(status_text):
+    for line in str(status_text or "").splitlines():
+        lower = line.lower()
+        if re.search(r"\b(postgres|postgresql)\b", lower) and _line_looks_running(line):
+            return True
+        if "database service" in lower and _line_looks_running(line):
+            return True
+    return False
+
+
 def assess_portal_manage_for_server(roles_text, status_text, main_db=False):
     body = str(status_text or "")
     roles = parse_server_roles_list(roles_text)
@@ -846,14 +856,8 @@ def assess_portal_manage_for_server(roles_text, status_text, main_db=False):
         return "FAIL", f"Application server — {problem}"
 
     if main_db:
-        db_ok = False
-        for line in body.splitlines():
-            lower = line.lower()
-            if re.search(r"\b(postgres|postgresql)\b", lower) and _line_looks_running(line):
-                db_ok = True
-                break
-        if not db_ok:
-            return "FAIL", "MainDB: PostgreSQL not reported running in portal-manage status"
+        if not _portal_manage_database_running(body):
+            return "FAIL", "MainDB: database service not reported running in portal-manage status"
 
     image, service = parse_portal_manage_versions(body)
     if image or service:
