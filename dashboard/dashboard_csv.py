@@ -144,6 +144,34 @@ def _is_truthy(value):
     return str(value or "").strip().lower() in {"1", "true", "yes", "y", "on"}
 
 
+def _portal_versions_from_hosts_rows(hosts_rows):
+    if not hosts_rows:
+        return "", ""
+    ordered = sorted(hosts_rows, key=lambda row: (0 if _is_truthy(row.get("MainDB")) else 1))
+    for row in ordered:
+        image = str(row.get("ImageVersion") or "").strip()
+        service = str(row.get("ServiceVersion") or "").strip()
+        if image or service:
+            return image, service
+    return "", ""
+
+
+def _portal_versions_from_infra_rows(infra_rows):
+    if not infra_rows:
+        return "", ""
+    for row in infra_rows:
+        if str(row.get("CheckType") or "").strip().lower() != "portal_manage":
+            continue
+        detail = str(row.get("Detail") or "")
+        image_match = re.search(r"\bImage\s+([^\s|]+)", detail)
+        if not image_match:
+            continue
+        service_match = re.search(r"\bService\s+([^\s|]+)", detail)
+        service = service_match.group(1).strip() if service_match else ""
+        return image_match.group(1).strip(), service
+    return "", ""
+
+
 def _parse_env_settings_file(path):
     values = {}
     try:
@@ -7546,7 +7574,7 @@ async function runAISummary(){
         <div class="sidebar-version-card" title="{{ portal_build_summary or ('Dashboard ' ~ app_version) }}">
           {% if portal_image_version %}
           <div class="sidebar-version-primary">{{ portal_image_version }}</div>
-          <div class="sidebar-version-secondary">Service {{ portal_service_version or '-' }}</div>
+          <div class="sidebar-version-secondary">{% if portal_service_version %}Service {{ portal_service_version }}{% else %}Portal image{% endif %}</div>
           {% else %}
           <div class="sidebar-version-primary">{{ app_version }}</div>
           <div class="sidebar-version-secondary">Dashboard Version</div>
@@ -11004,6 +11032,14 @@ def index():
     portal_build_host = str(main_db_host_row.get("Name") or main_db_host_row.get("Host") or "").strip()
     portal_image_version = str(main_db_host_row.get("ImageVersion") or "").strip()
     portal_service_version = str(main_db_host_row.get("ServiceVersion") or "").strip()
+    if not portal_image_version:
+        fb_image, fb_service = _portal_versions_from_hosts_rows(hosts_rows)
+        portal_image_version = portal_image_version or fb_image
+        portal_service_version = portal_service_version or fb_service
+    if not portal_image_version:
+        fb_image, fb_service = _portal_versions_from_infra_rows(infra_rows)
+        portal_image_version = portal_image_version or fb_image
+        portal_service_version = portal_service_version or fb_service
     portal_build_summary_parts = []
     if portal_image_version:
         portal_build_summary_parts.append(f"Image {portal_image_version}")
