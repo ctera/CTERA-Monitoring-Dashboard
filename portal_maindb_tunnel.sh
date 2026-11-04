@@ -41,6 +41,7 @@ setup_portal_maindb_tunnel() {
   LOCAL_PGHOST="${PGHOST}"
   LOCAL_PGPORT="${PGPORT}"
   LOCAL_MAINDB_SSH_PORT=""
+  unset SERVER_METRICS_JUMP_CONNECT_PORT
 
   if [[ "${JUMP_HOST_ENABLED}" =~ ^(1|true|yes|on)$ ]]; then
     require_var JUMP_HOST
@@ -151,8 +152,11 @@ setup_portal_maindb_tunnel() {
       -L "127.0.0.1:${LOCAL_MAINDB_SSH_PORT}:127.0.0.1:${SERVER_SSH_PORT}" \
       "${PORTAL_TUNNEL_TARGET}" || return 1
     LOCAL_PGHOST="127.0.0.1"
-    SERVER_METRICS_JUMP_HOST="127.0.0.1"
+    # Paramiko jump: direct to MainDB SSH (manual ssh -p PORT user@PGHOST). Local forward to
+    # remote 127.0.0.1:PORT often gets RST when sshd does not listen on loopback (common on cloud).
+    SERVER_METRICS_JUMP_HOST="${PGHOST}"
     SERVER_METRICS_JUMP_USER="${SERVER_SSH_USER}"
+    SERVER_METRICS_JUMP_CONNECT_PORT="${SERVER_SSH_PORT}"
     echo "MainDB Postgres via SSH tunnel (${PORTAL_TUNNEL_TARGET} -> remote 127.0.0.1:${PGPORT}, local ${LOCAL_PGHOST}:${LOCAL_PGPORT})"
   else
     echo "ERROR: MainDB Postgres must be reached via SSH to localhost on MainDB (ROOT_KEY missing or unreadable: ${ROOT_KEY:-unset})." >&2
@@ -170,5 +174,8 @@ setup_portal_maindb_tunnel() {
   export LOCAL_MAINDB_SSH_PORT
   export SERVER_METRICS_JUMP_HOST
   export SERVER_METRICS_JUMP_USER
+  if [[ -n "${SERVER_METRICS_JUMP_CONNECT_PORT:-}" ]]; then
+    export SERVER_METRICS_JUMP_CONNECT_PORT
+  fi
   return 0
 }
