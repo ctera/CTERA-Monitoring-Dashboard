@@ -142,7 +142,7 @@ if [[ -n "${ROOT_KEY:-}" && -r "${ROOT_KEY}" ]]; then
         --user "${SERVER_METRICS_TARGET_USER}"
         --key "${ROOT_KEY}"
         --jump-host "${SERVER_METRICS_JUMP_HOST}"
-        --jump-port "${LOCAL_MAINDB_SSH_PORT:-22}"
+        --jump-port "${SERVER_METRICS_JUMP_CONNECT_PORT:-${LOCAL_MAINDB_SSH_PORT:-22}}"
         --jump-user "${SERVER_METRICS_JUMP_USER}"
         --jump-key "${ROOT_KEY}"
       )
