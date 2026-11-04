@@ -108,6 +108,12 @@ if [[ -n "${TUNNEL_ERR}" ]]; then
   INFRA_ARGS+=(--tunnel-error "${TUNNEL_ERR}")
 fi
 
+if [[ "${SERVER_METRICS_MODE}" == "jump" && -n "${ROOT_KEY:-}" && -r "${ROOT_KEY}" ]]; then
+  if [[ -z "${LOCAL_MAINDB_SSH_PORT:-}" ]]; then
+    INFRA_ARGS+=(--tunnel-error "MainDB SSH local forward missing after tunnel setup (check MainDB SSH port ${SERVER_SSH_PORT} and key access).")
+  fi
+fi
+
 if [[ -n "${ROOT_KEY:-}" && -r "${ROOT_KEY}" ]]; then
   if [[ "${SERVER_METRICS_MODE}" == "jump" ]]; then
     if [[ "${JUMP_HOST_ENABLED}" =~ ^(1|true|yes|on)$ && "${MAINDB_VIA_JUMP_PRECONFIGURED}" =~ ^(1|true|yes|on)$ ]]; then

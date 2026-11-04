@@ -1088,7 +1088,10 @@ def collect_infrastructure_probes(args):
             flush=True,
         )
     except Exception as exc:
-        rows = _infra_collection_failure_rows(maindb_host, maindb_label, str(exc))
+        jump_hint = ""
+        if getattr(args, "jump_host", None):
+            jump_hint = f" (jump {args.jump_host}:{getattr(args, 'jump_port', '')} as {args.jump_user or args.user})"
+        rows = _infra_collection_failure_rows(maindb_host, maindb_label, f"{exc}{jump_hint}")
         print(f"Wrote infrastructure probe failure rows to {out_path}: {exc}", flush=True)
     finally:
         _infra_write_rows(out_path, rows)

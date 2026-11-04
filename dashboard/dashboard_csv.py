@@ -3405,7 +3405,8 @@ def _write_runtime_env_file(env):
         f"MAINDB_JUMP_USERNAME={_env_quote_line(env.get('main_db_jump_username') or ssh_user)}",
         "SERVER_METRICS_MODE='jump'",
         "SERVER_METRICS_TARGET_USER='ctera'",
-        f"SERVER_METRICS_JUMP_HOST={_env_quote_line('127.0.0.1' if jump_enabled else pg_host)}",
+        # Collectors SSH via local forward after portal_maindb_tunnel.sh (not direct to PGHOST).
+        f"SERVER_METRICS_JUMP_HOST='127.0.0.1'",
         f"SERVER_METRICS_JUMP_USER={_env_quote_line(ssh_user)}",
         "SERVER_METRICS_JUMP_RUN_AS_USER='ctera'",
         f"SERVER_METRICS_SUDO={_env_quote_line('true' if env.get('sudo_required') else 'false')}",
