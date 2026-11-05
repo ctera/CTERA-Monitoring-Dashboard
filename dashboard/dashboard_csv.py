@@ -3831,27 +3831,114 @@ def _recipients_for_notification(dataset_key, severity, notify_cfg):
     return scoped
 
 
+_INFRA_ALERT_CHECK_LABELS = {
+    "postgres": "PostgreSQL",
+    "server_ssh": "SSH",
+    "portal_manage": "portal-manage",
+}
+
+
+def _infra_alert_server_label(row):
+    name = str(row.get("TargetName") or "").strip()
+    host = str(row.get("TargetHost") or "").strip()
+    if name and host and name != host:
+        return f"{name} ({host})"
+    return name or host or "unknown server"
+
+
+def _group_infrastructure_alert_matches(matches):
+    """Group by server; list which checks failed (not error Detail text)."""
+    index = {}
+    order = []
+    for match in matches:
+        row = match.get("row") or {}
+        host = str(row.get("TargetHost") or "").strip()
+        name = str(row.get("TargetName") or "").strip()
+        key = (host, name)
+        if key not in index:
+            index[key] = {"host": host, "name": name, "checks": []}
+            order.append(key)
+        check_type = str(row.get("CheckType") or "").strip().lower()
+        label = _INFRA_ALERT_CHECK_LABELS.get(check_type, check_type or "check")
+        if label not in index[key]["checks"]:
+            index[key]["checks"].append(label)
+    return [index[key] for key in order]
+
+
+def _format_infrastructure_alert_body(summary):
+    matches = summary.get("matches") or []
+    groups = _group_infrastructure_alert_matches(matches)
+    lines = [
+        f"CTERA Monitoring Dashboard — {summary['severity'].upper()} alert",
+        "",
+        f"Portal: {summary['dataset_label']}",
+        "",
+        "Failed services:",
+    ]
+    for group in groups[:15]:
+        server = _infra_alert_server_label(group)
+        services = ", ".join(group["checks"]) if group["checks"] else "unknown"
+        lines.append(f"  • {server} — {services}")
+    if len(groups) > 15:
+        lines.append(f"  • … and {len(groups) - 15} more server(s)")
+    lines.append("")
+    lines.append("See the Infrastructure tab in the dashboard for details.")
+    return lines
+
+
 def _format_alert_email_subject(summary):
-    return f"[{summary['severity'].upper()}] {summary['dataset_label']} - {summary['field_name']} ({summary['match_count']} match{'es' if summary['match_count'] != 1 else ''})"
+    severity = summary["severity"].upper()
+    if summary.get("dataset_key") == "infrastructure":
+        hosts = []
+        services = []
+        seen_hosts = set()
+        seen_svc = set()
+        for match in summary.get("matches") or []:
+            row = match.get("row") or {}
+            host = str(row.get("TargetHost") or row.get("TargetName") or "").strip()
+            if host and host not in seen_hosts:
+                seen_hosts.add(host)
+                hosts.append(host)
+            check_type = str(row.get("CheckType") or "").strip().lower()
+            label = _INFRA_ALERT_CHECK_LABELS.get(check_type, check_type)
+            if label and label not in seen_svc:
+                seen_svc.add(label)
+                services.append(label)
+        host_hint = ""
+        if len(hosts) == 1:
+            host_hint = f" ({hosts[0]})"
+        elif len(hosts) > 1:
+            host_hint = f" ({len(hosts)} servers)"
+        svc_hint = ", ".join(services[:4]) if services else "infrastructure"
+        if len(services) > 4:
+            svc_hint += ", …"
+        return f"[{severity}] {summary['dataset_label']}: {svc_hint}{host_hint}"
+    return (
+        f"[{severity}] {summary['dataset_label']} - {summary['field_name']} "
+        f"({summary['match_count']} match{'es' if summary['match_count'] != 1 else ''})"
+    )
 
 
 def _format_alert_email_body(summary):
-    lines = [
-        f"CTERA Monitoring Dashboard detected a {summary['severity']} threshold match.",
-        "",
-        f"Dataset: {summary['dataset_label']}",
-        f"Field: {summary['field_name']}",
-        f"Threshold: {summary['rule_text']}",
-        f"Matches: {summary['match_count']}",
-        "",
-        "Top matching rows:",
-    ]
-    for match in summary["matches"][:10]:
-        lines.append(f"- {match['row_key']}: current value = {match['value']}")
-    if summary["repeat_minutes"] > 0:
-        lines.extend(["", f"This alert is configured to repeat every {summary['repeat_minutes']} minute(s) while it stays active."])
+    if summary.get("dataset_key") == "infrastructure":
+        lines = _format_infrastructure_alert_body(summary)
     else:
-        lines.extend(["", "This alert is configured as once-only until it clears and reappears."])
+        lines = [
+            f"CTERA Monitoring Dashboard detected a {summary['severity']} threshold match.",
+            "",
+            f"Dataset: {summary['dataset_label']}",
+            f"Field: {summary['field_name']}",
+            f"Threshold: {summary['rule_text']}",
+            f"Matches: {summary['match_count']}",
+            "",
+            "Top matching rows:",
+        ]
+        for match in summary["matches"][:10]:
+            lines.append(f"- {match['row_key']}: {match['value']}")
+    if summary["repeat_minutes"] > 0:
+        lines.extend(["", f"Alert policy: repeat every {summary['repeat_minutes']} minute(s) while active."])
+    else:
+        lines.extend(["", "Alert policy: once-only until cleared, then notify again if it returns."])
     return "\n".join(lines)
 
 
@@ -3943,11 +4030,20 @@ def run_threshold_notifications(env_id=None):
                     row_key = _alert_row_key(dataset_key, row)
                     alert_key = f"{env_prefix}{dataset_key}|{field['name']}|{row_key}|{normalized}"
                     current_active_keys.add(alert_key)
+                    row_snapshot = {
+                        key: str(row.get(key) or "").strip()
+                        for key in (
+                            "CheckType", "TargetName", "TargetHost", "Detail", "CheckedAtUTC",
+                            "CollectionError", "StatusText", "Message", "Name", "Host", "Filer Name",
+                        )
+                        if str(row.get(key) or "").strip()
+                    }
                     matches.append({
                         "alert_key": alert_key,
                         "severity": normalized,
                         "row_key": row_key,
                         "value": display_cell(field["name"], raw_value),
+                        "row": row_snapshot,
                     })
                 if not matches:
                     continue
