@@ -3853,6 +3853,16 @@ def _infra_alert_server_label(name, host):
     return name or host or "MainDB"
 
 
+def _infra_roles_from_row(row):
+    roles = str(row.get("ServerRoles") or "").strip()
+    if roles:
+        return roles
+    detail = str(row.get("Detail") or "").strip()
+    if detail.startswith("Roles:"):
+        return detail.split(":", 1)[1].strip().split(" —")[0].strip()
+    return ""
+
+
 def _infra_email_short_detail(detail, check_type):
     text = str(detail or "").strip()
     if not text:
@@ -3878,8 +3888,11 @@ def _group_infrastructure_alert_matches(matches):
         name = str(row.get("TargetName") or row.get("Name") or "").strip()
         key = (host, name)
         if key not in index:
-            index[key] = {"host": host, "name": name, "checks": [], "details": {}}
+            index[key] = {"host": host, "name": name, "checks": [], "details": {}, "roles": ""}
             order.append(key)
+        roles = _infra_roles_from_row(row)
+        if roles and not index[key].get("roles"):
+            index[key]["roles"] = roles
         check_type = str(row.get("CheckType") or "").strip().lower()
         label = _INFRA_ALERT_CHECK_LABELS.get(check_type, check_type or "check")
         if label not in index[key]["checks"]:
@@ -3900,19 +3913,19 @@ def _format_infrastructure_alert_body(summary):
     ]
     for group in groups[:15]:
         server = _infra_alert_server_label(group.get("name"), group.get("host"))
+        lines.append(f"  {server}")
+        roles = str(group.get("roles") or "").strip()
+        if roles:
+            lines.append(f"    Roles (/etc/ctera/.server_roles): {roles}")
         for check_label in group.get("checks") or []:
             detail = (group.get("details") or {}).get(check_label) or "check failed"
             if check_label == "portal-manage":
-                lines.append(f"  {server}")
                 lines.append(f"    portal-manage status: {detail}")
             elif check_label == "PostgreSQL":
-                lines.append(f"  {server}")
                 lines.append(f"    PostgreSQL: {detail}")
             elif check_label == "SSH":
-                lines.append(f"  {server}")
                 lines.append(f"    SSH: {detail}")
             else:
-                lines.append(f"  {server}")
                 lines.append(f"    {check_label}: {detail}")
     if len(groups) > 15:
         lines.append(f"  … plus {len(groups) - 15} more server(s)")
@@ -4064,7 +4077,7 @@ def run_threshold_notifications(env_id=None):
                     row_snapshot = {
                         key: str(row.get(key) or "").strip()
                         for key in (
-                            "CheckType", "TargetName", "TargetHost", "Detail", "CheckedAtUTC",
+                            "CheckType", "TargetName", "TargetHost", "ServerRoles", "Detail", "CheckedAtUTC",
                             "CollectionError", "StatusText", "Message", "Name", "Host", "Filer Name",
                         )
                         if str(row.get(key) or "").strip()

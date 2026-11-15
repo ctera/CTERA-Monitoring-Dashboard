@@ -771,10 +771,20 @@ INFRA_CSV_HEADERS = [
     "CheckType",
     "TargetName",
     "TargetHost",
+    "ServerRoles",
     "Result",
     "Detail",
     "CheckedAtUTC",
 ]
+
+
+def _infra_server_roles_label(roles_text, main_db=False):
+    roles = parse_server_roles_list(roles_text)
+    if roles:
+        return ", ".join(roles)
+    if main_db:
+        return "main_db (portal catalog; .server_roles missing or empty)"
+    return ""
 
 INFRA_RESULT_NOT_APPLICATION = "Not application server"
 
@@ -1015,6 +1025,13 @@ def collect_infrastructure_probes(args):
                 })
                 continue
 
+            roles_text = ""
+            try:
+                roles_text = read_server_roles_text(exec_fn)
+            except Exception:
+                roles_text = ""
+            roles_label = _infra_server_roles_label(roles_text, main_db=main_db)
+
             ssh_reachable = False
             try:
                 out = exec_fn("echo infra-ssh-ok")
@@ -1023,6 +1040,7 @@ def collect_infrastructure_probes(args):
                         "CheckType": "server_ssh",
                         "TargetName": name,
                         "TargetHost": host,
+                        "ServerRoles": roles_label,
                         "Result": "OK",
                         "Detail": "SSH reachable",
                         "CheckedAtUTC": ts,
@@ -1036,6 +1054,7 @@ def collect_infrastructure_probes(args):
                     "CheckType": "server_ssh",
                     "TargetName": name,
                     "TargetHost": host,
+                    "ServerRoles": roles_label,
                     "Result": "FAIL",
                     "Detail": str(exc),
                     "CheckedAtUTC": ts,
@@ -1047,17 +1066,12 @@ def collect_infrastructure_probes(args):
                     "CheckType": "portal_manage",
                     "TargetName": name,
                     "TargetHost": host,
+                    "ServerRoles": roles_label,
                     "Result": INFRA_RESULT_NOT_APPLICATION,
                     "Detail": "SSH unreachable; portal-manage not checked",
                     "CheckedAtUTC": ts,
                 })
                 continue
-
-            roles_text = ""
-            try:
-                roles_text = read_server_roles_text(exec_fn)
-            except Exception as exc:
-                roles_text = ""
 
             try:
                 text = exec_fn(PORTAL_MANAGE_STATUS_COMMAND)
@@ -1073,6 +1087,7 @@ def collect_infrastructure_probes(args):
                 "CheckType": "portal_manage",
                 "TargetName": name,
                 "TargetHost": host,
+                "ServerRoles": roles_label,
                 "Result": result,
                 "Detail": detail,
                 "CheckedAtUTC": ts,
