@@ -3838,81 +3838,125 @@ _INFRA_ALERT_CHECK_LABELS = {
 }
 
 
-def _infra_alert_server_label(row):
-    name = str(row.get("TargetName") or "").strip()
-    host = str(row.get("TargetHost") or "").strip()
+def _infra_alert_env_name(dataset_label):
+    label = str(dataset_label or "").strip()
+    if " / " in label:
+        return label.split(" / ", 1)[0].strip()
+    return label or "Unknown environment"
+
+
+def _infra_alert_server_label(name, host):
+    name = str(name or "").strip()
+    host = str(host or "").strip()
     if name and host and name != host:
         return f"{name} ({host})"
-    return name or host or "unknown server"
+    return name or host or "MainDB"
+
+
+def _infra_roles_from_row(row):
+    roles = str(row.get("ServerRoles") or "").strip()
+    if roles:
+        return roles
+    detail = str(row.get("Detail") or "").strip()
+    if detail.startswith("Roles:"):
+        return detail.split(":", 1)[1].strip().split(" —")[0].strip()
+    return ""
+
+
+def _infra_email_short_detail(detail, check_type):
+    text = str(detail or "").strip()
+    if not text:
+        if check_type == "portal_manage":
+            return "portal-manage status check failed (no detail in CSV)"
+        return "check failed"
+    jump_sep = "(jump "
+    if jump_sep in text:
+        text = text.split(jump_sep, 1)[0].strip().rstrip(",;")
+    text = " ".join(text.split())
+    if len(text) > 140:
+        text = text[:137].rstrip() + "..."
+    return text
 
 
 def _group_infrastructure_alert_matches(matches):
-    """Group by server; list which checks failed (not error Detail text)."""
+    """Group by server; keep one short Detail line per failed check."""
     index = {}
     order = []
     for match in matches:
         row = match.get("row") or {}
-        host = str(row.get("TargetHost") or "").strip()
-        name = str(row.get("TargetName") or "").strip()
+        host = str(row.get("TargetHost") or row.get("Host") or "").strip()
+        name = str(row.get("TargetName") or row.get("Name") or "").strip()
         key = (host, name)
         if key not in index:
-            index[key] = {"host": host, "name": name, "checks": []}
+            index[key] = {"host": host, "name": name, "checks": [], "details": {}, "roles": ""}
             order.append(key)
+        roles = _infra_roles_from_row(row)
+        if roles and not index[key].get("roles"):
+            index[key]["roles"] = roles
         check_type = str(row.get("CheckType") or "").strip().lower()
         label = _INFRA_ALERT_CHECK_LABELS.get(check_type, check_type or "check")
         if label not in index[key]["checks"]:
             index[key]["checks"].append(label)
+        detail = _infra_email_short_detail(row.get("Detail") or "", check_type)
+        if label not in index[key]["details"] or len(detail) > len(index[key]["details"].get(label, "")):
+            index[key]["details"][label] = detail
     return [index[key] for key in order]
 
 
 def _format_infrastructure_alert_body(summary):
     matches = summary.get("matches") or []
     groups = _group_infrastructure_alert_matches(matches)
+    env_name = _infra_alert_env_name(summary.get("dataset_label"))
     lines = [
-        f"CTERA Monitoring Dashboard — {summary['severity'].upper()} alert",
+        f"{summary['severity'].upper()}: {env_name}",
         "",
-        f"Portal: {summary['dataset_label']}",
-        "",
-        "Failed services:",
     ]
     for group in groups[:15]:
-        server = _infra_alert_server_label(group)
-        services = ", ".join(group["checks"]) if group["checks"] else "unknown"
-        lines.append(f"  • {server} — {services}")
+        server = _infra_alert_server_label(group.get("name"), group.get("host"))
+        lines.append(f"  {server}")
+        roles = str(group.get("roles") or "").strip()
+        if roles:
+            lines.append(f"    Roles (/etc/ctera/.server_roles): {roles}")
+        for check_label in group.get("checks") or []:
+            detail = (group.get("details") or {}).get(check_label) or "check failed"
+            if check_label == "portal-manage":
+                lines.append(f"    portal-manage status: {detail}")
+            elif check_label == "PostgreSQL":
+                lines.append(f"    PostgreSQL: {detail}")
+            elif check_label == "SSH":
+                lines.append(f"    SSH: {detail}")
+            else:
+                lines.append(f"    {check_label}: {detail}")
     if len(groups) > 15:
-        lines.append(f"  • … and {len(groups) - 15} more server(s)")
+        lines.append(f"  … plus {len(groups) - 15} more server(s)")
     lines.append("")
-    lines.append("See the Infrastructure tab in the dashboard for details.")
+    lines.append(f"Open the dashboard → {env_name} → Infrastructure for full portal-manage output.")
     return lines
 
 
 def _format_alert_email_subject(summary):
     severity = summary["severity"].upper()
     if summary.get("dataset_key") == "infrastructure":
-        hosts = []
-        services = []
-        seen_hosts = set()
-        seen_svc = set()
+        env_name = _infra_alert_env_name(summary.get("dataset_label"))
+        groups = _group_infrastructure_alert_matches(summary.get("matches") or [])
+        if len(groups) == 1 and len(groups[0].get("checks") or []) == 1:
+            check_label = groups[0]["checks"][0]
+            server = _infra_alert_server_label(groups[0].get("name"), groups[0].get("host"))
+            detail = (groups[0].get("details") or {}).get(check_label) or ""
+            if check_label == "portal-manage" and detail:
+                short = detail if len(detail) <= 55 else detail[:52].rstrip() + "..."
+                return f"[{severity}] {env_name}: portal-manage — {short}"
+            return f"[{severity}] {env_name}: {check_label} on {server}"
+        check_counts = {}
         for match in summary.get("matches") or []:
-            row = match.get("row") or {}
-            host = str(row.get("TargetHost") or row.get("TargetName") or "").strip()
-            if host and host not in seen_hosts:
-                seen_hosts.add(host)
-                hosts.append(host)
-            check_type = str(row.get("CheckType") or "").strip().lower()
-            label = _INFRA_ALERT_CHECK_LABELS.get(check_type, check_type)
-            if label and label not in seen_svc:
-                seen_svc.add(label)
-                services.append(label)
-        host_hint = ""
-        if len(hosts) == 1:
-            host_hint = f" ({hosts[0]})"
-        elif len(hosts) > 1:
-            host_hint = f" ({len(hosts)} servers)"
-        svc_hint = ", ".join(services[:4]) if services else "infrastructure"
-        if len(services) > 4:
-            svc_hint += ", …"
-        return f"[{severity}] {summary['dataset_label']}: {svc_hint}{host_hint}"
+            ct = str((match.get("row") or {}).get("CheckType") or "").strip().lower()
+            label = _INFRA_ALERT_CHECK_LABELS.get(ct, ct or "check")
+            check_counts[label] = check_counts.get(label, 0) + 1
+        parts = [f"{k} ({v})" for k, v in sorted(check_counts.items())]
+        summary_part = ", ".join(parts[:3])
+        if len(parts) > 3:
+            summary_part += ", …"
+        return f"[{severity}] {env_name}: {summary_part or 'infrastructure failure'}"
     return (
         f"[{severity}] {summary['dataset_label']} - {summary['field_name']} "
         f"({summary['match_count']} match{'es' if summary['match_count'] != 1 else ''})"
@@ -4033,7 +4077,7 @@ def run_threshold_notifications(env_id=None):
                     row_snapshot = {
                         key: str(row.get(key) or "").strip()
                         for key in (
-                            "CheckType", "TargetName", "TargetHost", "Detail", "CheckedAtUTC",
+                            "CheckType", "TargetName", "TargetHost", "ServerRoles", "Detail", "CheckedAtUTC",
                             "CollectionError", "StatusText", "Message", "Name", "Host", "Filer Name",
                         )
                         if str(row.get(key) or "").strip()
