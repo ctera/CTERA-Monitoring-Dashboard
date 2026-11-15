@@ -3869,12 +3869,18 @@ def _infra_email_short_detail(detail, check_type):
         if check_type == "portal_manage":
             return "portal-manage status check failed (no detail in CSV)"
         return "check failed"
+    jump_suffix = ""
     jump_sep = "(jump "
-    if jump_sep in text:
-        text = text.split(jump_sep, 1)[0].strip().rstrip(",;")
+    jump_idx = text.find(jump_sep)
+    if jump_idx != -1:
+        jump_suffix = text[jump_idx:].strip()
+        text = text[:jump_idx].strip().rstrip(",;")
     text = " ".join(text.split())
-    if len(text) > 140:
-        text = text[:137].rstrip() + "..."
+    max_main = 100 if jump_suffix else 140
+    if len(text) > max_main:
+        text = text[: max_main - 3].rstrip() + "..."
+    if jump_suffix:
+        return f"{text} {jump_suffix}".strip()
     return text
 
 
